@@ -31,7 +31,7 @@ export interface LatestRelease {
 }
 
 const GITHUB_RELEASES_URL =
-  "https://api.github.com/repos/multica-ai/multica/releases?per_page=2";
+  "https://api.github.com/repos/furtherref/multica/releases?per_page=2";
 
 const REVALIDATE_SECONDS = 300;
 
