@@ -57,5 +57,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.target }}
-          path: apps/desktop/dist
+          path: |
+            apps/desktop/dist/**/*.AppImage
+            apps/desktop/dist/**/*.blockmap
+            apps/desktop/dist/**/*.deb
+            apps/desktop/dist/**/*.dmg
+            apps/desktop/dist/**/*.exe
+            apps/desktop/dist/**/*.rpm
+            apps/desktop/dist/**/latest*.yml
+            apps/desktop/dist/**/*.zip
           if-no-files-found: error
+          compression-level: 0
