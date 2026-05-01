@@ -1,6 +1,8 @@
 import { autoUpdater } from "electron-updater";
 import { app, BrowserWindow, ipcMain } from "electron";
 
+const AUTO_UPDATE_DISABLED = import.meta.env.MAIN_VITE_DISABLE_AUTO_UPDATE === "true";
+
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = true;
 
@@ -27,6 +29,18 @@ export type ManualUpdateCheckResult =
   | { ok: false; error: string };
 
 export function setupAutoUpdater(getMainWindow: () => BrowserWindow | null): void {
+  if (AUTO_UPDATE_DISABLED) {
+    ipcMain.handle("updater:download", async () => undefined);
+    ipcMain.handle("updater:install", () => undefined);
+    ipcMain.handle("updater:check", async (): Promise<ManualUpdateCheckResult> => ({
+      ok: true,
+      currentVersion: app.getVersion(),
+      latestVersion: app.getVersion(),
+      available: false,
+    }));
+    return;
+  }
+
   autoUpdater.on("update-available", (info) => {
     const win = getMainWindow();
     win?.webContents.send("updater:update-available", {

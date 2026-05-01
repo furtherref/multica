@@ -178,12 +178,32 @@ export function parsePackageArgs(argv) {
   const platformTargets = platformTargetsTemplate();
   const requestedPlatforms = [];
   const requestedArchs = [];
+  let viteMode = null;
   let allPlatforms = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     if (token === "--all-platforms") {
       allPlatforms = true;
+      continue;
+    }
+
+    if (token === "--mode") {
+      const mode = argv[i + 1];
+      if (!mode || mode.startsWith("-")) {
+        throw new Error("[package] --mode requires a value");
+      }
+      viteMode = mode;
+      i += 1;
+      continue;
+    }
+
+    if (token.startsWith("--mode=")) {
+      const mode = token.slice("--mode=".length);
+      if (!mode) {
+        throw new Error("[package] --mode requires a value");
+      }
+      viteMode = mode;
       continue;
     }
 
@@ -214,6 +234,7 @@ export function parsePackageArgs(argv) {
 
   return {
     allPlatforms,
+    viteMode,
     sharedArgs,
     platformTargets,
     requestedPlatforms: uniqueOrdered(requestedPlatforms),
@@ -336,7 +357,9 @@ function main() {
   // with `ENOENT`. On POSIX hosts the shim is a real executable so going
   // through the shell is harmless. See
   // https://nodejs.org/api/child_process.html#spawning-bat-and-cmd-files-on-windows
-  const viteResult = spawnSync("electron-vite", ["build"], {
+  const viteArgs = ["build"];
+  if (parsed.viteMode) viteArgs.push("--mode", parsed.viteMode);
+  const viteResult = spawnSync("electron-vite", viteArgs, {
     stdio: "inherit",
     cwd: desktopRoot,
     env: envWithLocalBins(),

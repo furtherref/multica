@@ -23,6 +23,7 @@ dist-electron
 # Desktop production config is public (backend URL, etc.) — track it so
 # `pnpm package` produces a release-ready build without extra setup.
 !apps/desktop/.env.production
+!apps/desktop/.env.furtherref
 
 # test coverage
 coverage

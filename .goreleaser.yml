@@ -56,20 +56,23 @@ changelog:
       - "^test:"
       - "^chore:"
 
-brews:
-  - name: multica
-    ids:
-      - versioned
-    repository:
-      owner: multica-ai
-      name: homebrew-tap
-      branch: main
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Formula
-    homepage: "https://github.com/multica-ai/multica"
-    description: "Multica CLI — local agent runtime and management tool for the Multica platform"
-    license: "Apache-2.0"
-    install: |
-      bin.install "multica"
-    test: |
-      system "#{bin}/multica", "version"
+# Homebrew tap publishing is intentionally disabled for the FurtherRef fork.
+# Re-enable this block when a `furtherref/homebrew-tap` repository and a
+# `HOMEBREW_TAP_GITHUB_TOKEN` Actions secret are available.
+#
+# brews:
+#   - name: multica
+#     ids:
+#       - versioned
+#     repository:
+#       owner: furtherref
+#       name: homebrew-tap
+#       branch: main
+#     directory: Formula
+#     homepage: "https://github.com/furtherref/multica"
+#     description: "Multica CLI — local agent runtime and management tool for the Multica platform"
+#     license: "Apache-2.0"
+#     install: |
+#       bin.install "multica"
+#     test: |
+#       system "#{bin}/multica", "version"
