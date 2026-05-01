@@ -4,6 +4,10 @@ directories:
   buildResources: build
 files:
   - "!**/.vscode/*"
+  # The desktop release job builds x64 and arm64 in one workspace. Without
+  # this explicit exclusion, the second architecture can package the first
+  # architecture's already-generated dist output into app.asar.
+  - "!dist/**"
   - "!src/*"
   - "!electron.vite.config.*"
   - "!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}"
