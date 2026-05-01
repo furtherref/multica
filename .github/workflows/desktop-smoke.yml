@@ -12,6 +12,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: macos-latest
+            target: mac
           - os: ubuntu-latest
             target: linux
           - os: windows-latest
@@ -49,7 +51,7 @@ jobs:
         working-directory: apps/desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: node scripts/package.mjs --${{ matrix.target }} --x64 --arm64 --publish never
+        run: node scripts/package.mjs --mode furtherref --${{ matrix.target }} --x64 --arm64 --publish never
 
       - name: Upload Desktop artifacts (${{ matrix.target }})
         uses: actions/upload-artifact@v4

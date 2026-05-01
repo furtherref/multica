@@ -79,6 +79,7 @@ describe("parsePackageArgs", () => {
       ]),
     ).toEqual({
       allPlatforms: false,
+      viteMode: null,
       sharedArgs: ["--publish", "never"],
       platformTargets: {
         mac: ["dmg", "zip"],
@@ -100,6 +101,18 @@ describe("parsePackageArgs", () => {
   it("tracks the all-platforms shortcut", () => {
     expect(parsePackageArgs(["--all-platforms", "--publish", "never"]).allPlatforms).toBe(true);
   });
+
+  it("consumes the vite mode without forwarding it to electron-builder", () => {
+    expect(parsePackageArgs(["--mode", "furtherref", "--mac", "--arm64"])).toEqual({
+      allPlatforms: false,
+      viteMode: "furtherref",
+      sharedArgs: [],
+      platformTargets: { mac: [], win: [], linux: [] },
+      requestedPlatforms: ["mac"],
+      requestedArchs: ["arm64"],
+    });
+    expect(parsePackageArgs(["--mode=furtherref"]).viteMode).toBe("furtherref");
+  });
 });
 
 describe("resolveBuildMatrix", () => {
@@ -108,6 +121,7 @@ describe("resolveBuildMatrix", () => {
       resolveBuildMatrix(
         {
           allPlatforms: false,
+          viteMode: null,
           sharedArgs: [],
           platformTargets: { mac: [], win: [], linux: [] },
           requestedPlatforms: [],
@@ -124,6 +138,7 @@ describe("resolveBuildMatrix", () => {
       resolveBuildMatrix(
         {
           allPlatforms: true,
+          viteMode: null,
           sharedArgs: [],
           platformTargets: { mac: [], win: [], linux: [] },
           requestedPlatforms: [],
@@ -146,6 +161,7 @@ describe("resolveBuildMatrix", () => {
       resolveBuildMatrix(
         {
           allPlatforms: false,
+          viteMode: null,
           sharedArgs: [],
           platformTargets: { mac: [], win: [], linux: [] },
           requestedPlatforms: ["win"],
@@ -165,6 +181,7 @@ describe("builderArgsForTarget", () => {
         { platform: "win", arch: "arm64" },
         {
           allPlatforms: false,
+          viteMode: null,
           sharedArgs: ["--publish", "never"],
           platformTargets: { mac: [], win: ["nsis"], linux: [] },
           requestedPlatforms: ["win"],
@@ -196,6 +213,7 @@ describe("builderArgsForTarget", () => {
         { platform: "win", arch: "x64" },
         {
           allPlatforms: false,
+          viteMode: null,
           sharedArgs: ["--publish", "always"],
           platformTargets: { mac: [], win: ["nsis"], linux: [] },
           requestedPlatforms: ["win"],
@@ -221,6 +239,7 @@ describe("builderArgsForTarget", () => {
         { platform: "linux", arch: "x64" },
         {
           allPlatforms: false,
+          viteMode: null,
           sharedArgs: ["--publish", "never"],
           platformTargets: { mac: [], win: [], linux: [] },
           requestedPlatforms: ["linux"],

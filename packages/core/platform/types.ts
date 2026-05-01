@@ -12,6 +12,13 @@ export interface ClientIdentity {
   os?: string;
 }
 
+export interface PublicAppConfig {
+  /** API base URL used by other clients, such as the CLI. */
+  apiBaseUrl?: string;
+  /** Public web app URL used for shareable links and auth callbacks. */
+  appUrl?: string;
+}
+
 export interface CoreProviderProps {
   children: React.ReactNode;
   /** API base URL. Default: "" (same-origin). */
@@ -28,4 +35,6 @@ export interface CoreProviderProps {
   onLogout?: () => void;
   /** Identifies the calling client (web/desktop + version + os) to the server. */
   identity?: ClientIdentity;
+  /** Public app endpoints exposed to shared UI. */
+  publicConfig?: PublicAppConfig;
 }

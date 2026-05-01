@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { getPublicAppConfig } from "@multica/core/platform";
 import { runtimeKeys } from "@multica/core/runtimes/queries";
 import { useWSEvent } from "@multica/core/realtime";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
@@ -117,9 +118,6 @@ export function ConnectRemoteDialog({ onClose }: { onClose: () => void }) {
 
 const INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash";
 
-const CONFIGURE_CMD = `multica config set server_url https://api.multica.ai
-multica config set app_url https://multica.ai`;
-
 const LOGIN_CMD = "multica login --token <YOUR_TOKEN>";
 
 const START_CMD = `multica daemon start --device-name "my-ec2-instance"
@@ -168,6 +166,11 @@ function InstructionsStep({
   onNext: () => void;
   onClose: () => void;
 }) {
+  const { apiBaseUrl, appUrl } = getPublicAppConfig();
+  const origin = window.location.origin;
+  const configureCmd = `multica config set server_url ${apiBaseUrl || origin}
+multica config set app_url ${appUrl || origin}`;
+
   return (
     <>
       <DialogHeader>
@@ -201,7 +204,7 @@ function InstructionsStep({
               2. Configure
             </div>
             <CodeBlock
-              code={CONFIGURE_CMD}
+              code={configureCmd}
               copyKey="config"
               copied={copied}
               onCopy={onCopy}

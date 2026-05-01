@@ -56,12 +56,8 @@ jobs:
 
   release:
     needs: verify
-    # Only run on the canonical upstream repo. Forks don't have the
-    # HOMEBREW_TAP_GITHUB_TOKEN secret and should not be publishing to
-    # `multica-ai/homebrew-tap` anyway. Without this guard, every fork's
-    # tag push fails this job (401 against the upstream tap), which makes
-    # downstream CI go red without affecting the actual artifact pipeline.
-    if: github.repository_owner == 'multica-ai'
+    # Only run on the configured release repo.
+    if: github.repository_owner == 'furtherref'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -82,7 +78,6 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
   # Multi-arch images are built natively per platform on dedicated runners
   # (amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm) and merged into a
@@ -322,17 +317,17 @@ jobs:
           docker buildx imagetools inspect \
             ghcr.io/${{ github.repository_owner }}/multica-web:${{ steps.meta.outputs.version }}
 
-  # Build the Desktop installers for Linux and Windows and upload them to
-  # the GitHub Release that the `release` job above just published. macOS
-  # Desktop continues to ship via the manual `release-desktop` skill so it
-  # can be signed + notarized with Apple Developer credentials that are
-  # not (yet) wired into CI.
+  # Build the Desktop installers and upload them to the GitHub Release that
+  # the `release` job above just published. macOS signing/notarization can be
+  # enabled later by wiring Apple Developer credentials into CI.
   desktop:
     needs: release
     strategy:
       fail-fast: false
       matrix:
         include:
+          - os: macos-latest
+            target: mac
           - os: ubuntu-latest
             target: linux
           - os: windows-latest
@@ -372,9 +367,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # electron-builder's GitHub publisher reads this:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable code signing on Linux/Windows for now — the public
-          # release is unsigned for these platforms, the CLI carries the
-          # trust boundary. Set CSC_LINK in repo secrets to enable
-          # Windows signing later.
+          # Disable code-signing certificate discovery for now. Wire Apple
+          # Developer / Windows signing credentials into repo secrets later
+          # to produce fully signed and notarized installers.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: node scripts/package.mjs --${{ matrix.target }} --x64 --arm64 --publish always
+        run: node scripts/package.mjs --mode furtherref --${{ matrix.target }} --x64 --arm64 --publish always

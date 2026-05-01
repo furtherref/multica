@@ -57,6 +57,10 @@ export function WebProviders({ children }: { children: React.ReactNode }) {
       onLogin={setLoggedInCookie}
       onLogout={clearLoggedInCookie}
       identity={identity}
+      publicConfig={{
+        apiBaseUrl: process.env.NEXT_PUBLIC_API_URL,
+        appUrl: process.env.NEXT_PUBLIC_APP_URL,
+      }}
     >
       {/* Suspense boundary is required by Next.js for useSearchParams in
           a client component mounted this high in the tree. */}

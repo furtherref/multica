@@ -10,7 +10,7 @@ import { QueryProvider } from "../provider";
 import { createLogger } from "../logger";
 import { defaultStorage } from "./storage";
 import { AuthInitializer } from "./auth-initializer";
-import type { CoreProviderProps, ClientIdentity } from "./types";
+import type { CoreProviderProps, ClientIdentity, PublicAppConfig } from "./types";
 import type { StorageAdapter } from "../types/storage";
 
 // Module-level singletons — created once at first render, never recreated.
@@ -18,6 +18,12 @@ import type { StorageAdapter } from "../types/storage";
 let initialized = false;
 let authStore: ReturnType<typeof createAuthStore>;
 let chatStore: ReturnType<typeof createChatStore>;
+let publicConfig: PublicAppConfig = {};
+
+export function getPublicAppConfig(): PublicAppConfig {
+  return publicConfig;
+}
+
 function initCore(
   apiBaseUrl: string,
   storage: StorageAdapter,
@@ -25,8 +31,11 @@ function initCore(
   onLogout?: () => void,
   cookieAuth?: boolean,
   identity?: ClientIdentity,
+  config?: PublicAppConfig,
 ) {
   if (initialized) return;
+
+  publicConfig = { ...config };
 
   const api = new ApiClient(apiBaseUrl, {
     logger: createLogger("api"),
@@ -65,11 +74,12 @@ export function CoreProvider({
   onLogin,
   onLogout,
   identity,
+  publicConfig: config,
 }: CoreProviderProps) {
   // Initialize singletons on first render only. Dependencies are read-once:
   // apiBaseUrl, storage, and callbacks are set at app boot and never change at runtime.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useMemo(() => initCore(apiBaseUrl, storage, onLogin, onLogout, cookieAuth, identity), []);
+  useMemo(() => initCore(apiBaseUrl, storage, onLogin, onLogout, cookieAuth, identity, config), []);
 
   return (
     <QueryProvider>
