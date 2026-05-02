@@ -17,7 +17,8 @@ set -euo pipefail
 REPO_URL="https://github.com/furtherref/multica.git"
 REPO_WEB_URL="https://github.com/furtherref/multica"  # without .git, for GitHub web APIs
 INSTALL_DIR="${MULTICA_INSTALL_DIR:-$HOME/.multica/server}"
-BREW_PACKAGE="furtherref/tap/multica"
+# TODO: Re-enable Homebrew installation after the Multica formula is published.
+# BREW_PACKAGE="furtherref/tap/multica"
 
 # Colors (disabled when not a terminal)
 if [ -t 1 ] || [ -t 2 ]; then
@@ -63,22 +64,23 @@ detect_os() {
 # ---------------------------------------------------------------------------
 # CLI Installation
 # ---------------------------------------------------------------------------
-install_cli_brew() {
-  info "Installing Multica CLI via Homebrew..."
-  if ! brew tap furtherref/tap 2>/dev/null; then
-    fail "Failed to add Homebrew tap. Check your network connection."
-  fi
-  # brew install exits non-zero if already installed on older Homebrew versions
-  if ! brew install "$BREW_PACKAGE" 2>/dev/null; then
-    if brew list "$BREW_PACKAGE" >/dev/null 2>&1; then
-      ok "Multica CLI already installed via Homebrew"
-    else
-      fail "Failed to install multica via Homebrew."
-    fi
-  else
-    ok "Multica CLI installed via Homebrew"
-  fi
-}
+# TODO: Re-enable Homebrew installation after the Multica formula is published.
+# install_cli_brew() {
+#   info "Installing Multica CLI via Homebrew..."
+#   if ! brew tap furtherref/tap 2>/dev/null; then
+#     fail "Failed to add Homebrew tap. Check your network connection."
+#   fi
+#   # brew install exits non-zero if already installed on older Homebrew versions
+#   if ! brew install "$BREW_PACKAGE" 2>/dev/null; then
+#     if brew list "$BREW_PACKAGE" >/dev/null 2>&1; then
+#       ok "Multica CLI already installed via Homebrew"
+#     else
+#       fail "Failed to install multica via Homebrew."
+#     fi
+#   else
+#     ok "Multica CLI installed via Homebrew"
+#   fi
+# }
 
 install_cli_binary() {
   info "Installing Multica CLI from GitHub Releases..."
@@ -189,16 +191,17 @@ pull_official_selfhost_images() {
   exit 1
 }
 
-upgrade_cli_brew() {
-  info "Upgrading Multica CLI via Homebrew..."
-  brew update 2>/dev/null || true
-  if brew upgrade "$BREW_PACKAGE" 2>/dev/null; then
-    ok "Multica CLI upgraded via Homebrew"
-  else
-    # brew upgrade exits non-zero if already up to date
-    ok "Multica CLI is already the latest version"
-  fi
-}
+# TODO: Re-enable Homebrew upgrades after the Multica formula is published.
+# upgrade_cli_brew() {
+#   info "Upgrading Multica CLI via Homebrew..."
+#   brew update 2>/dev/null || true
+#   if brew upgrade "$BREW_PACKAGE" 2>/dev/null; then
+#     ok "Multica CLI upgraded via Homebrew"
+#   else
+#     # brew upgrade exits non-zero if already up to date
+#     ok "Multica CLI is already the latest version"
+#   fi
+# }
 
 install_cli() {
   if command_exists multica; then
@@ -219,11 +222,12 @@ install_cli() {
     fi
 
     info "Multica CLI $current_ver installed, latest is $latest_ver — upgrading..."
-    if command_exists brew && brew list "$BREW_PACKAGE" >/dev/null 2>&1; then
-      upgrade_cli_brew
-    else
-      install_cli_binary
-    fi
+    # TODO: Re-enable Homebrew upgrades after the Multica formula is published.
+    # if command_exists brew && brew list "$BREW_PACKAGE" >/dev/null 2>&1; then
+    #   upgrade_cli_brew
+    # else
+    install_cli_binary
+    # fi
 
     local new_ver
     new_ver=$(multica version 2>/dev/null | awk '{print $2}' || echo "unknown")
@@ -231,11 +235,12 @@ install_cli() {
     return 0
   fi
 
-  if command_exists brew; then
-    install_cli_brew
-  else
-    install_cli_binary
-  fi
+  # TODO: Re-enable Homebrew installation after the Multica formula is published.
+  # if command_exists brew; then
+  #   install_cli_brew
+  # else
+  install_cli_binary
+  # fi
 
   # Verify
   if ! command_exists multica; then
