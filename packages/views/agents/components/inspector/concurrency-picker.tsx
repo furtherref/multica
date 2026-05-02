@@ -22,6 +22,13 @@ export function ConcurrencyPicker({
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(String(value));
 
+  // Reset draft from authoritative value whenever the popover (re-)opens or
+  // the prop changes from elsewhere — protects against stale draft state if
+  // the user closes mid-edit and reopens later.
+  useEffect(() => {
+    if (open) setDraft(String(value));
+  }, [open, value]);
+
   if (!canEdit) {
     return (
       <span className="font-mono text-xs tabular-nums text-muted-foreground">
@@ -29,13 +36,6 @@ export function ConcurrencyPicker({
       </span>
     );
   }
-
-  // Reset draft from authoritative value whenever the popover (re-)opens or
-  // the prop changes from elsewhere — protects against stale draft state if
-  // the user closes mid-edit and reopens later.
-  useEffect(() => {
-    if (open) setDraft(String(value));
-  }, [open, value]);
 
   const commit = async () => {
     const n = Number(draft);

@@ -41,24 +41,6 @@ export function RuntimePicker({
   const selected = runtimes.find((r) => r.id === value) ?? null;
   const Icon = selected?.runtime_mode === "cloud" ? Cloud : Monitor;
 
-  if (!canEdit) {
-    const isOnline = selected?.status === "online";
-    return (
-      <span className="inline-flex min-w-0 items-center gap-1.5 px-1.5 py-0.5 text-xs text-muted-foreground">
-        <Icon className="h-3 w-3 shrink-0" />
-        <span className="min-w-0 truncate font-mono">
-          {selected?.name ?? "No runtime"}
-        </span>
-        {selected && (
-          <span
-            className={`ml-auto h-1.5 w-1.5 shrink-0 rounded-full ${
-              isOnline ? "bg-success" : "bg-muted-foreground/40"
-            }`}
-          />
-        )}
-      </span>
-    );
-  }
   // The chip shows only the runtime name. `runtime.name` already comes back
   // from the back-end pre-formatted as e.g. "Claude (host.local)", so we
   // deliberately do NOT append `device_info` to the tooltip — that string
@@ -87,6 +69,25 @@ export function RuntimePicker({
       return 0;
     });
   }, [runtimes, filter, currentUserId]);
+
+  if (!canEdit) {
+    const isOnline = selected?.status === "online";
+    return (
+      <span className="inline-flex min-w-0 items-center gap-1.5 px-1.5 py-0.5 text-xs text-muted-foreground">
+        <Icon className="h-3 w-3 shrink-0" />
+        <span className="min-w-0 truncate font-mono">
+          {selected?.name ?? "No runtime"}
+        </span>
+        {selected && (
+          <span
+            className={`ml-auto h-1.5 w-1.5 shrink-0 rounded-full ${
+              isOnline ? "bg-success" : "bg-muted-foreground/40"
+            }`}
+          />
+        )}
+      </span>
+    );
+  }
 
   const getOwner = (id: string | null) =>
     id ? members.find((m) => m.user_id === id) ?? null : null;

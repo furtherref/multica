@@ -6,15 +6,22 @@ import reactHooksPlugin from "eslint-plugin-react-hooks";
 export default [
   ...baseConfig,
   {
+    files: ["**/*.{js,jsx,ts,tsx}"],
+    plugins: {
+      "react-hooks": reactHooksPlugin,
+    },
+    rules: {
+      ...reactHooksPlugin.configs["recommended-latest"].rules,
+    },
+  },
+  {
     files: ["**/*.{jsx,tsx}"],
     plugins: {
       react: reactPlugin,
-      "react-hooks": reactHooksPlugin,
     },
     rules: {
       ...reactPlugin.configs.recommended.rules,
       ...reactPlugin.configs["jsx-runtime"].rules,
-      ...reactHooksPlugin.configs["recommended-latest"].rules,
       "react/prop-types": "off",
       "react/no-unknown-property": "off",
     },
