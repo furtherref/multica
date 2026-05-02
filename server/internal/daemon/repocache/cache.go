@@ -140,6 +140,10 @@ func (c *Cache) Sync(workspaceID string, repos []RepoInfo) error {
 // Returns "" if not cached.
 func (c *Cache) Lookup(workspaceID, url string) string {
 	barePath := filepath.Join(c.root, workspaceID, bareDirName(url))
+	repoLock := c.lockForRepo(barePath)
+	repoLock.Lock()
+	defer repoLock.Unlock()
+
 	if isBareRepo(barePath) {
 		return barePath
 	}
