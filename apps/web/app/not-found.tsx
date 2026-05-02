@@ -1,4 +1,5 @@
 import { Instrument_Serif } from "next/font/google";
+import Link from "next/link";
 
 // Editorial-style 404. Cream + ink + terracotta palette is intentionally
 // inline — these brand experiments have not been promoted to design tokens.
@@ -49,13 +50,13 @@ export default function NotFound() {
         The URL may have changed, the resource may be deleted, or you arrived from a stale link.
       </p>
 
-      <a
+      <Link
         href="/"
         className="mt-12 inline-flex h-10 items-center rounded-full px-6 text-sm font-medium transition hover:opacity-90"
         style={{ background: INK, color: CREAM }}
       >
         Back to Multica
-      </a>
+      </Link>
     </section>
   );
 }
