@@ -54,7 +54,7 @@ export function runtimeListOptions(wsId: string, owner?: "me") {
 }
 
 const GITHUB_RELEASES_URL =
-  "https://api.github.com/repos/multica-ai/multica/releases/latest";
+  "https://api.github.com/repos/furtherref/multica/releases/latest";
 
 export function latestCliVersionOptions() {
   return queryOptions({

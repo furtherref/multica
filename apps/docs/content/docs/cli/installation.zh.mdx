@@ -8,13 +8,13 @@ description: Install the Multica CLI and start the agent daemon.
 ### Homebrew (macOS/Linux)
 
 ```bash
-brew install multica-ai/tap/multica
+brew install furtherref/tap/multica
 ```
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/multica-ai/multica.git
+git clone https://github.com/furtherref/multica.git
 cd multica
 make build
 cp server/bin/multica /usr/local/bin/multica
@@ -34,11 +34,11 @@ if [ "$ARCH" = "x86_64" ]; then
 fi
 
 # Get the latest release tag from GitHub
-LATEST=$(curl -sI https://github.com/multica-ai/multica/releases/latest \
+LATEST=$(curl -sI https://github.com/furtherref/multica/releases/latest \
   | grep -i '^location:' | sed 's/.*tag\///' | tr -d '\r\n')
 
 # Download and extract
-curl -sL "https://github.com/multica-ai/multica/releases/download/${LATEST}/multica_${OS}_${ARCH}.tar.gz" \
+curl -sL "https://github.com/furtherref/multica/releases/download/${LATEST}/multica_${OS}_${ARCH}.tar.gz" \
   -o /tmp/multica.tar.gz
 tar -xzf /tmp/multica.tar.gz -C /tmp multica
 sudo mv /tmp/multica /usr/local/bin/multica
@@ -48,7 +48,7 @@ rm /tmp/multica.tar.gz
 ### Update
 
 ```bash
-brew upgrade multica-ai/tap/multica
+brew upgrade furtherref/tap/multica
 ```
 
 For install script or manual installs, use:

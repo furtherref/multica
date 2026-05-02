@@ -25,7 +25,7 @@ Two commands to set up everything:
 
 ```bash
 # Install CLI + provision self-host server
-curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --with-server
+curl -fsSL https://raw.githubusercontent.com/furtherref/multica/main/scripts/install.sh | bash -s -- --with-server
 
 # Configure CLI, authenticate, and start the daemon
 multica setup self-host
@@ -34,7 +34,7 @@ multica setup self-host
 This installs the CLI, checks out the latest self-host assets, pulls the official Multica images from GHCR, and configures everything for localhost. Then open http://localhost:3000 and pick a login method: configure `RESEND_API_KEY` in `.env` for email-based codes (recommended), or leave Resend unset and copy the generated code from backend logs. See [Step 2 — Log In](#step-2--log-in) for details.
 
 <Callout>
-If the self-host server is already running and you only need the CLI on a macOS/Linux machine, install it with Homebrew: `brew install multica-ai/tap/multica`.
+If the self-host server is already running and you only need the CLI on a macOS/Linux machine, install it with Homebrew: `brew install furtherref/tap/multica`.
 </Callout>
 
 <Callout>
@@ -46,7 +46,7 @@ For a step-by-step setup, see below.
 ### Step 1 — Start the Server
 
 ```bash
-git clone https://github.com/multica-ai/multica.git
+git clone https://github.com/furtherref/multica.git
 cd multica
 make selfhost
 ```
@@ -87,7 +87,7 @@ The daemon runs on your local machine (not inside Docker). It detects installed 
 ### a) Install the CLI and an AI agent
 
 ```bash
-brew install multica-ai/tap/multica
+brew install furtherref/tap/multica
 ```
 
 You also need at least one AI agent CLI:

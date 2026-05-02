@@ -70,7 +70,7 @@ macOS 版本已经签名 + 公证，第一次打开不会有"未知开发者"的
 **发布版的 Desktop 是锁死连 Multica Cloud 的**。后端 / WebSocket / Web 前端 URL（`VITE_API_URL` / `VITE_WS_URL` / `VITE_APP_URL`）在构建时就写死了，应用内**没有切换后端的入口**。要让 Desktop 连自部署后端，需要你自己从源码 build：
 
 ```bash
-git clone https://github.com/multica-ai/multica.git
+git clone https://github.com/furtherref/multica.git
 cd multica
 # 编辑 apps/desktop/.env.production：
 #   VITE_API_URL=https://api.your-domain
@@ -80,7 +80,7 @@ pnpm install
 pnpm --filter @multica/desktop package
 ```
 
-不想自己 build 的话，自部署的官方路径是 **Web 前端 + CLI**——见 [自部署快速上手](/self-host-quickstart)。Desktop 运行时切换后端的能力跟踪在 [issue #1371](https://github.com/multica-ai/multica/issues/1371)。
+不想自己 build 的话，自部署的官方路径是 **Web 前端 + CLI**——见 [自部署快速上手](/self-host-quickstart)。Desktop 运行时切换后端的能力跟踪在 [issue #1371](https://github.com/furtherref/multica/issues/1371)。
 </Callout>
 
 ## 下一步

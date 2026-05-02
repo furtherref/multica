@@ -116,7 +116,7 @@ export function ConnectRemoteDialog({ onClose }: { onClose: () => void }) {
 // Step 1: Installation instructions
 // ---------------------------------------------------------------------------
 
-const INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash";
+const INSTALL_CMD = "curl -fsSL https://raw.githubusercontent.com/furtherref/multica/main/scripts/install.sh | bash";
 
 const LOGIN_CMD = "multica login --token <YOUR_TOKEN>";
 
