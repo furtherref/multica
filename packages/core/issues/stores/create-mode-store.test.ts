@@ -19,9 +19,9 @@ describe("useCreateModeStore", () => {
     vi.stubGlobal("window", { localStorage });
   });
 
-  it("defaults to agent mode for first-time issue creation", async () => {
+  it("defaults to manual mode for first-time issue creation", async () => {
     const { useCreateModeStore } = await import("./create-mode-store");
 
-    expect(useCreateModeStore.getState().lastMode).toBe("agent");
+    expect(useCreateModeStore.getState().lastMode).toBe("manual");
   });
 });
