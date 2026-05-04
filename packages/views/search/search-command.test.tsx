@@ -261,7 +261,7 @@ describe("SearchCommand", () => {
     );
     await user.click(newIssue);
 
-    expect(mockOpenModal).toHaveBeenCalledWith("quick-create-issue");
+    expect(mockOpenModal).toHaveBeenCalledWith("create-issue");
     expect(useSearchStore.getState().open).toBe(false);
   });
 

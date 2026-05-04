@@ -560,7 +560,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             <SidebarMenuItem>
               <SidebarMenuButton
                 className="text-muted-foreground"
-                onClick={() => useModalStore.getState().open("quick-create-issue")}
+                onClick={() => useModalStore.getState().open("create-issue")}
               >
                 <span className="relative">
                   <SquarePen />

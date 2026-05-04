@@ -202,7 +202,7 @@ export function SearchCommand() {
         icon: Plus,
         keywords: ["new", "issue", "create", "add"],
         onSelect: () => {
-          useModalStore.getState().open("quick-create-issue");
+          useModalStore.getState().open("create-issue");
           setOpen(false);
         },
       },
