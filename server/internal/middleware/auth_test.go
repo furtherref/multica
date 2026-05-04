@@ -13,6 +13,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const middlewareRedisTestDB = 11
+
 // newRedisTestClient connects to REDIS_TEST_URL, flushes, and skips when
 // unset — same gating pattern the rest of the suite uses for Redis-backed
 // tests, so `go test ./...` works on a stock laptop without a Redis.
@@ -26,6 +28,10 @@ func newRedisTestClient(t *testing.T) *redis.Client {
 	if err != nil {
 		t.Fatalf("parse REDIS_TEST_URL: %v", err)
 	}
+	// Go runs package tests concurrently. Keep middleware cache tests on a
+	// package-local logical DB so FlushDB in other Redis-backed packages can't
+	// erase entries between Set and the request under test.
+	opts.DB = middlewareRedisTestDB
 	rdb := redis.NewClient(opts)
 	ctx := context.Background()
 	if err := rdb.Ping(ctx).Err(); err != nil {
