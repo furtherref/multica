@@ -18,7 +18,7 @@ export function LabsTab() {
   const [saving, setSaving] = useState(false);
 
   const coAuthoredByEnabled =
-    (workspace?.settings as Record<string, unknown>)?.co_authored_by_enabled !== false;
+    (workspace?.settings as Record<string, unknown>)?.co_authored_by_enabled === true;
 
   const handleToggle = async (checked: boolean) => {
     if (!workspace || saving) return;

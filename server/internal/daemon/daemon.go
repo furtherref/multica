@@ -397,20 +397,20 @@ func (d *Daemon) workspaceLastRepoSyncErr(workspaceID string) string {
 }
 
 // workspaceCoAuthoredByEnabled returns whether the Co-authored-by hook should
-// be installed for the given workspace. Defaults to true when the setting is
+// be installed for the given workspace. Defaults to false when the setting is
 // absent (new workspaces, older servers that don't send settings).
 func (d *Daemon) workspaceCoAuthoredByEnabled(workspaceID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	ws, ok := d.workspaces[workspaceID]
 	if !ok || len(ws.settings) == 0 {
-		return true // default: enabled
+		return false // default: disabled
 	}
 	var s struct {
 		CoAuthoredByEnabled *bool `json:"co_authored_by_enabled"`
 	}
 	if err := json.Unmarshal(ws.settings, &s); err != nil || s.CoAuthoredByEnabled == nil {
-		return true // default: enabled
+		return false // default: disabled
 	}
 	return *s.CoAuthoredByEnabled
 }
