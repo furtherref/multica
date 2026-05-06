@@ -1503,15 +1503,42 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 		OriginID:    task.ID,
 	})
 	if err != nil {
-		// No issue created — agent ran to completion but the CLI call must
-		// have failed. Surface as a failure inbox so the user sees something.
-		slog.Warn("quick-create completion: no issue found, writing failure inbox",
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("quick-create completion: origin lookup failed, writing failure inbox",
+				"task_id", util.UUIDToString(task.ID),
+				"agent_id", util.UUIDToString(task.AgentID),
+				"workspace_id", qc.WorkspaceID,
+				"origin_error", err,
+			)
+			s.notifyQuickCreateFailed(ctx, task, qc, "agent finished without creating an issue")
+			return
+		}
+		fallback, fallbackErr := s.Queries.GetLatestIssueCreatedByAgentSince(ctx, db.GetLatestIssueCreatedByAgentSinceParams{
+			WorkspaceID: workspaceID,
+			CreatorID:   task.AgentID,
+			CreatedAt:   task.StartedAt,
+		})
+		if fallbackErr != nil {
+			// No issue created — agent ran to completion but the CLI call must
+			// have failed. Surface as a failure inbox so the user sees something.
+			slog.Warn("quick-create completion: no issue found, writing failure inbox",
+				"task_id", util.UUIDToString(task.ID),
+				"agent_id", util.UUIDToString(task.AgentID),
+				"workspace_id", qc.WorkspaceID,
+				"origin_error", err,
+				"fallback_error", fallbackErr,
+			)
+			s.notifyQuickCreateFailed(ctx, task, qc, "agent finished without creating an issue")
+			return
+		}
+		issue = fallback
+		slog.Warn("quick-create completion: recovered unstamped issue via fallback",
 			"task_id", util.UUIDToString(task.ID),
 			"agent_id", util.UUIDToString(task.AgentID),
 			"workspace_id", qc.WorkspaceID,
+			"issue_id", util.UUIDToString(issue.ID),
+			"origin_error", err,
 		)
-		s.notifyQuickCreateFailed(ctx, task, qc, "agent finished without creating an issue")
-		return
 	}
 
 	// Link the new issue back to this task so subsequent reads of the task

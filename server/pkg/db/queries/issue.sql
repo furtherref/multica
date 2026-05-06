@@ -112,6 +112,20 @@ WHERE workspace_id = $1
   AND origin_id = $3
 LIMIT 1;
 
+-- name: GetLatestIssueCreatedByAgentSince :one
+-- Legacy/compatibility fallback for quick-create completion when the agent
+-- created an issue but the CLI did not stamp origin_type/origin_id. Prefer
+-- GetIssueByOrigin whenever possible; this is intentionally scoped to the
+-- same agent, workspace, and task start window to avoid linking unrelated
+-- issues.
+SELECT * FROM issue
+WHERE workspace_id = $1
+  AND creator_type = 'agent'
+  AND creator_id = $2
+  AND created_at >= $3
+ORDER BY created_at DESC
+LIMIT 1;
+
 -- name: CountCreatedIssueAssignees :many
 -- Count assignees on issues created by a specific user.
 SELECT

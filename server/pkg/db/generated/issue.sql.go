@@ -412,6 +412,57 @@ func (q *Queries) GetIssueByOrigin(ctx context.Context, arg GetIssueByOriginPara
 	return i, err
 }
 
+const getLatestIssueCreatedByAgentSince = `-- name: GetLatestIssueCreatedByAgentSince :one
+SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at FROM issue
+WHERE workspace_id = $1
+  AND creator_type = 'agent'
+  AND creator_id = $2
+  AND created_at >= $3
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+type GetLatestIssueCreatedByAgentSinceParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	CreatorID   pgtype.UUID        `json:"creator_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+// Legacy/compatibility fallback for quick-create completion when the agent
+// created an issue but the CLI did not stamp origin_type/origin_id. Prefer
+// GetIssueByOrigin whenever possible; this is intentionally scoped to the
+// same agent, workspace, and task start window to avoid linking unrelated
+// issues.
+func (q *Queries) GetLatestIssueCreatedByAgentSince(ctx context.Context, arg GetLatestIssueCreatedByAgentSinceParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, getLatestIssueCreatedByAgentSince, arg.WorkspaceID, arg.CreatorID, arg.CreatedAt)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+	)
+	return i, err
+}
+
 const getIssueInWorkspace = `-- name: GetIssueInWorkspace :one
 SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at FROM issue
 WHERE id = $1 AND workspace_id = $2
