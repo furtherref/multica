@@ -64,6 +64,12 @@
         "label": "智能体活动",
         "description": "智能体 task 完成或失败时"
       }
+    },
+    "system": {
+      "title": "系统通知",
+      "description": "控制 Multica 在后台时是否显示操作系统的原生通知横幅。",
+      "label": "显示系统通知",
+      "hint": "App 未获得焦点时，新的收件箱条目通过操作系统弹出通知横幅。"
     }
   },
   "tokens": {
