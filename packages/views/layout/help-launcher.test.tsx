@@ -1,7 +1,8 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { HelpLauncher } from "./help-launcher";
+import { renderWithI18n } from "../test/i18n";
 
 vi.mock("@multica/ui/components/ui/dropdown-menu", () => ({
   DropdownMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -31,7 +32,7 @@ vi.mock("@multica/ui/components/ui/dropdown-menu", () => ({
 
 describe("HelpLauncher", () => {
   it("links docs and changelog to the FurtherRef desktop site", () => {
-    render(<HelpLauncher />);
+    renderWithI18n(<HelpLauncher />);
 
     expect(screen.getByRole("link", { name: /docs/i })).toHaveAttribute(
       "href",

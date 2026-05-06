@@ -50,6 +50,8 @@ func gitEnv() []string {
 	)
 }
 
+var agentGitExcludePatterns = []string{".agent_context", "CLAUDE.md", "AGENTS.md", ".claude", ".opencode"}
+
 // RepoInfo describes a repository to cache.
 type RepoInfo struct {
 	URL string
@@ -439,7 +441,7 @@ func (c *Cache) CreateWorktree(params WorktreeParams) (*WorktreeResult, error) {
 			return nil, fmt.Errorf("update existing worktree: %w", err)
 		}
 
-		for _, pattern := range []string{".agent_context", "CLAUDE.md", "AGENTS.md", ".claude", ".config/opencode"} {
+		for _, pattern := range agentGitExcludePatterns {
 			_ = excludeFromGit(worktreePath, pattern)
 		}
 
@@ -479,7 +481,7 @@ func (c *Cache) CreateWorktree(params WorktreeParams) (*WorktreeResult, error) {
 	}
 
 	// Exclude agent context files from git tracking.
-	for _, pattern := range []string{".agent_context", "CLAUDE.md", "AGENTS.md", ".claude", ".config/opencode"} {
+	for _, pattern := range agentGitExcludePatterns {
 		_ = excludeFromGit(worktreePath, pattern)
 	}
 
@@ -815,6 +817,9 @@ func installCoAuthoredByHook(worktreePath string) error {
 	if err := os.WriteFile(hookPath, []byte(prepareCommitMsgHook), 0o755); err != nil {
 		return fmt.Errorf("write prepare-commit-msg hook: %w", err)
 	}
+	if out, err := exec.Command("git", "-C", worktreePath, "config", "core.hooksPath", hooksDir).CombinedOutput(); err != nil {
+		return fmt.Errorf("configure hooks path: %s: %w", strings.TrimSpace(string(out)), err)
+	}
 	return nil
 }
 
@@ -853,6 +858,9 @@ func removeCoAuthoredByHook(worktreePath string) error {
 	contents, err := os.ReadFile(hookPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			if err := unsetCoAuthoredByHooksPath(worktreePath, filepath.Dir(hookPath)); err != nil {
+				return err
+			}
 			return nil
 		}
 		return fmt.Errorf("read prepare-commit-msg hook: %w", err)
@@ -863,6 +871,23 @@ func removeCoAuthoredByHook(worktreePath string) error {
 	}
 	if err := os.Remove(hookPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove prepare-commit-msg hook: %w", err)
+	}
+	if err := unsetCoAuthoredByHooksPath(worktreePath, filepath.Dir(hookPath)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func unsetCoAuthoredByHooksPath(worktreePath, hooksDir string) error {
+	out, err := exec.Command("git", "-C", worktreePath, "config", "--get", "core.hooksPath").Output()
+	if err != nil {
+		return nil
+	}
+	if strings.TrimSpace(string(out)) != hooksDir {
+		return nil
+	}
+	if out, err := exec.Command("git", "-C", worktreePath, "config", "--unset", "core.hooksPath").CombinedOutput(); err != nil {
+		return fmt.Errorf("unset hooks path: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }

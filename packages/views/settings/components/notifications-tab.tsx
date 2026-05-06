@@ -8,40 +8,18 @@ import type { NotificationGroupKey, NotificationPreferences } from "@multica/cor
 import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { toast } from "sonner";
+import { useT } from "../../i18n";
 
-const notificationGroups: {
-  key: NotificationGroupKey;
-  label: string;
-  description: string;
-}[] = [
-  {
-    key: "assignments",
-    label: "Assignments",
-    description: "When you are assigned or unassigned from an issue",
-  },
-  {
-    key: "status_changes",
-    label: "Status changes",
-    description: "When an issue you follow changes status (e.g. todo, in progress, done)",
-  },
-  {
-    key: "comments",
-    label: "Comments & Mentions",
-    description: "New comments on issues you follow, or when someone @mentions you",
-  },
-  {
-    key: "updates",
-    label: "Priority & Due date",
-    description: "When priority or due date changes on issues you follow",
-  },
-  {
-    key: "agent_activity",
-    label: "Agent activity",
-    description: "When an agent task completes or fails",
-  },
+const NOTIFICATION_GROUP_KEYS: NotificationGroupKey[] = [
+  "assignments",
+  "status_changes",
+  "comments",
+  "updates",
+  "agent_activity",
 ];
 
 export function NotificationsTab() {
+  const { t } = useT("settings");
   const wsId = useWorkspaceId();
   const { data } = useQuery(notificationPreferenceOptions(wsId));
   const mutation = useUpdateNotificationPreferences();
@@ -58,7 +36,7 @@ export function NotificationsTab() {
       delete updated[key];
     }
     mutation.mutate(updated, {
-      onError: () => toast.error("Failed to update notification settings"),
+      onError: () => toast.error(t(($) => $.notifications.toast_failed)),
     });
   };
 
@@ -66,34 +44,30 @@ export function NotificationsTab() {
     <div className="space-y-4">
       <section className="space-y-4">
         <div>
-          <h2 className="text-sm font-semibold">Inbox Notifications</h2>
+          <h2 className="text-sm font-semibold">{t(($) => $.notifications.title)}</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Control which events generate inbox notifications. Muted event types
-            are silently filtered — you can still see them by visiting the issue
-            directly.
+            {t(($) => $.notifications.description)}
           </p>
         </div>
 
         <Card>
           <CardContent className="divide-y">
-            {notificationGroups.map((group) => {
-              const enabled = preferences[group.key] !== "muted";
+            {NOTIFICATION_GROUP_KEYS.map((key) => {
+              const enabled = preferences[key] !== "muted";
               return (
                 <div
-                  key={group.key}
+                  key={key}
                   className="flex items-center justify-between py-3 first:pt-0 last:pb-0"
                 >
                   <div className="space-y-0.5 pr-4">
-                    <p className="text-sm font-medium">{group.label}</p>
+                    <p className="text-sm font-medium">{t(($) => $.notifications.groups[key].label)}</p>
                     <p className="text-xs text-muted-foreground">
-                      {group.description}
+                      {t(($) => $.notifications.groups[key].description)}
                     </p>
                   </div>
                   <Switch
                     checked={enabled}
-                    onCheckedChange={(checked) =>
-                      handleToggle(group.key, checked)
-                    }
+                    onCheckedChange={(checked) => handleToggle(key, checked)}
                   />
                 </div>
               );

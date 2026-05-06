@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { screen, waitFor, fireEvent } from "@testing-library/react";
 import {
   QueryClient,
   QueryClientProvider,
@@ -57,9 +57,10 @@ vi.mock("@multica/core/api", () => ({
 }));
 
 import { InvitationsPage } from "./invitations-page";
+import { renderWithI18n } from "../test/i18n";
 
 function renderWithClient(client: QueryClient = new QueryClient()) {
-  return render(
+  return renderWithI18n(
     <QueryClientProvider client={client}>
       <InvitationsPage />
     </QueryClientProvider>,

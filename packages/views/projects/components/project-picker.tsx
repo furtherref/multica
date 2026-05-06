@@ -13,6 +13,7 @@ import {
   DropdownMenuSeparator,
 } from "@multica/ui/components/ui/dropdown-menu";
 import { ProjectIcon } from "./project-icon";
+import { useT } from "../../i18n";
 
 export function ProjectPicker({
   projectId,
@@ -27,6 +28,7 @@ export function ProjectPicker({
   align?: "start" | "center" | "end";
   required?: boolean;
 }) {
+  const { t } = useT("projects");
   const wsId = useWorkspaceId();
   const { data: projects = [] } = useQuery(projectListOptions(wsId));
   const current = projects.find((p) => p.id === projectId);
@@ -42,7 +44,7 @@ export function ProjectPicker({
         ) : (
           <FolderKanban className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         )}
-        <span className="truncate">{current ? current.title : "No project"}</span>
+        <span className="truncate">{current ? current.title : t(($) => $.picker.no_project)}</span>
         {required && (
           <span aria-label="Project required" className="text-destructive">
             *
@@ -61,11 +63,11 @@ export function ProjectPicker({
         {projectId && (
           <DropdownMenuItem onClick={() => onUpdate({ project_id: null })}>
             <X className="h-3.5 w-3.5 text-muted-foreground" />
-            Remove from project
+            {t(($) => $.picker.remove)}
           </DropdownMenuItem>
         )}
         {projects.length === 0 && (
-          <div className="px-2 py-1.5 text-xs text-muted-foreground">No projects yet</div>
+          <div className="px-2 py-1.5 text-xs text-muted-foreground">{t(($) => $.picker.empty)}</div>
         )}
       </DropdownMenuContent>
     </DropdownMenu>

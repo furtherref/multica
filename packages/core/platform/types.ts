@@ -1,3 +1,8 @@
+import type {
+  LocaleAdapter,
+  LocaleResources,
+  SupportedLocale,
+} from "../i18n";
 import type { StorageAdapter } from "../types/storage";
 
 /** Identifies the calling client to the server. Threaded through to
@@ -10,13 +15,6 @@ export interface ClientIdentity {
   version?: string;
   /** Operating system: "macos" | "windows" | "linux". */
   os?: string;
-}
-
-export interface PublicAppConfig {
-  /** API base URL used by other clients, such as the CLI. */
-  apiBaseUrl?: string;
-  /** Public web app URL used for shareable links and auth callbacks. */
-  appUrl?: string;
 }
 
 export interface CoreProviderProps {
@@ -35,6 +33,11 @@ export interface CoreProviderProps {
   onLogout?: () => void;
   /** Identifies the calling client (web/desktop + version + os) to the server. */
   identity?: ClientIdentity;
-  /** Public app endpoints exposed to shared UI. */
-  publicConfig?: PublicAppConfig;
+  /** Active locale, determined server-side (web) or at app boot (desktop). */
+  locale: SupportedLocale;
+  /** i18next resources, server-preloaded for the active locale. */
+  resources: Record<string, LocaleResources>;
+  /** Locale adapter for persisting user choice (used by Settings switcher).
+   *  Optional because some shells (e.g. CLI auth pages) don't need switching. */
+  localeAdapter?: LocaleAdapter;
 }

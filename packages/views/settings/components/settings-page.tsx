@@ -12,20 +12,29 @@ import { MembersTab } from "./members-tab";
 import { RepositoriesTab } from "./repositories-tab";
 import { LabsTab } from "./labs-tab";
 import { NotificationsTab } from "./notifications-tab";
+import { useT } from "../../i18n";
 
-const accountTabs = [
-  { value: "profile", label: "Profile", icon: User },
-  { value: "appearance", label: "Appearance", icon: Palette },
-  { value: "notifications", label: "Notifications", icon: Bell },
-  { value: "tokens", label: "API Tokens", icon: Key },
-];
+const ACCOUNT_TAB_KEYS = ["profile", "appearance", "notifications", "tokens"] as const;
+const ACCOUNT_TAB_ICONS = {
+  profile: User,
+  appearance: Palette,
+  notifications: Bell,
+  tokens: Key,
+} as const;
 
-const workspaceTabs = [
-  { value: "workspace", label: "General", icon: Settings },
-  { value: "repositories", label: "Repositories", icon: FolderGit2 },
-  { value: "labs", label: "Labs", icon: FlaskConical },
-  { value: "members", label: "Members", icon: Users },
-];
+const WORKSPACE_TAB_KEYS = ["general", "repositories", "labs", "members"] as const;
+const WORKSPACE_TAB_VALUES = {
+  general: "workspace",
+  repositories: "repositories",
+  labs: "labs",
+  members: "members",
+} as const;
+const WORKSPACE_TAB_ICONS = {
+  general: Settings,
+  repositories: FolderGit2,
+  labs: FlaskConical,
+  members: Users,
+} as const;
 
 export interface ExtraSettingsTab {
   value: string;
@@ -40,6 +49,7 @@ interface SettingsPageProps {
 }
 
 export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
+  const { t } = useT("settings");
   const workspaceName = useCurrentWorkspace()?.name;
 
   return (
@@ -50,18 +60,21 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
     >
       {/* Left nav (stacks on top on mobile, sidebar on md+) */}
       <div className="shrink-0 md:w-52 border-b md:border-b-0 md:border-r md:overflow-y-auto p-3 md:p-4">
-        <h1 className="text-sm font-semibold mb-4 px-2">Settings</h1>
+        <h1 className="text-sm font-semibold mb-4 px-2">{t(($) => $.page.title)}</h1>
         <TabsList variant="line" className="flex-col items-stretch w-full">
           {/* My Account group */}
           <span className="px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">
-            My Account
+            {t(($) => $.page.my_account)}
           </span>
-          {accountTabs.map((tab) => (
-            <TabsTrigger key={tab.value} value={tab.value}>
-              <tab.icon className="h-4 w-4" />
-              {tab.label}
-            </TabsTrigger>
-          ))}
+          {ACCOUNT_TAB_KEYS.map((key) => {
+            const Icon = ACCOUNT_TAB_ICONS[key];
+            return (
+              <TabsTrigger key={key} value={key}>
+                <Icon className="h-4 w-4" />
+                {t(($) => $.page.tabs[key])}
+              </TabsTrigger>
+            );
+          })}
           {extraAccountTabs?.map((tab) => (
             <TabsTrigger key={tab.value} value={tab.value}>
               <tab.icon className="h-4 w-4" />
@@ -71,14 +84,17 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
 
           {/* Workspace group */}
           <span className="px-2 pb-1 pt-4 text-xs font-medium text-muted-foreground truncate">
-            {workspaceName ?? "Workspace"}
+            {workspaceName ?? t(($) => $.page.workspace_fallback)}
           </span>
-          {workspaceTabs.map((tab) => (
-            <TabsTrigger key={tab.value} value={tab.value}>
-              <tab.icon className="h-4 w-4" />
-              {tab.label}
-            </TabsTrigger>
-          ))}
+          {WORKSPACE_TAB_KEYS.map((key) => {
+            const Icon = WORKSPACE_TAB_ICONS[key];
+            return (
+              <TabsTrigger key={key} value={WORKSPACE_TAB_VALUES[key]}>
+                <Icon className="h-4 w-4" />
+                {t(($) => $.page.tabs[key])}
+              </TabsTrigger>
+            );
+          })}
         </TabsList>
       </div>
 

@@ -19,6 +19,7 @@ import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { LogOut, Mail, Users } from "lucide-react";
+import { useT } from "../i18n";
 
 /**
  * Batch invitation handling page for first-contact users who land here
@@ -39,6 +40,7 @@ import { LogOut, Mail, Users } from "lucide-react";
  *    action.
  */
 export function InvitationsPage() {
+  const { t } = useT("invite");
   const { push } = useNavigation();
   const qc = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -112,7 +114,7 @@ export function InvitationsPage() {
       setError(
         e instanceof Error
           ? e.message
-          : "Failed to process invitations. Please try again.",
+          : t(($) => $.batch.process_failed),
       );
       // Partial success: any accepts that landed before the failure ALREADY
       // set onboarded_at on the backend (the AcceptInvitation transaction
@@ -157,12 +159,14 @@ export function InvitationsPage() {
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
               <Mail className="h-6 w-6 text-muted-foreground" />
             </div>
-            <h2 className="text-lg font-semibold">No pending invitations</h2>
+            <h2 className="text-lg font-semibold">
+              {t(($) => $.batch.empty_title)}
+            </h2>
             <p className="text-sm text-muted-foreground text-center">
-              Continue to set up your own workspace.
+              {t(($) => $.batch.empty_description)}
             </p>
             <Button onClick={() => push(paths.onboarding())}>
-              Continue to setup
+              {t(($) => $.batch.empty_action)}
             </Button>
           </CardContent>
         </Card>
@@ -172,10 +176,8 @@ export function InvitationsPage() {
 
   const submitLabel =
     selected.size === 0
-      ? "Skip and set up my own workspace"
-      : selected.size === 1
-        ? "Join 1 workspace"
-        : `Join ${selected.size} workspaces`;
+      ? t(($) => $.batch.submit_skip)
+      : t(($) => $.batch.submit, { count: selected.size });
 
   return (
     <InvitationsShell>
@@ -187,11 +189,10 @@ export function InvitationsPage() {
             </div>
             <div className="space-y-1">
               <h2 className="text-xl font-semibold">
-                You&apos;ve been invited
+                {t(($) => $.batch.title)}
               </h2>
               <p className="text-sm text-muted-foreground">
-                Pick the workspaces you want to join. You can always handle the
-                rest later from the sidebar.
+                {t(($) => $.batch.description)}
               </p>
             </div>
           </div>
@@ -212,7 +213,7 @@ export function InvitationsPage() {
             onClick={handleSubmit}
             disabled={submitting}
           >
-            {submitting ? "Joining..." : submitLabel}
+            {submitting ? t(($) => $.batch.joining) : submitLabel}
           </Button>
 
           {error && (
@@ -233,7 +234,8 @@ function InvitationRow({
   checked: boolean;
   onToggle: () => void;
 }) {
-  const inviter = invitation.inviter_name || invitation.inviter_email || "Someone";
+  const { t } = useT("invite");
+  const inviter = invitation.inviter_name || invitation.inviter_email || t(($) => $.batch.someone);
   return (
     <li>
       <label
@@ -246,11 +248,16 @@ function InvitationRow({
         />
         <div className="flex-1 min-w-0 space-y-1">
           <div className="font-medium truncate">
-            {invitation.workspace_name ?? "Workspace"}
+            {invitation.workspace_name ?? t(($) => $.main.fallback_workspace_name)}
           </div>
           <div className="text-xs text-muted-foreground truncate">
-            {inviter} invited you as{" "}
-            {invitation.role === "admin" ? "an admin" : "a member"}
+            {t(($) => $.batch.invited_as, {
+              inviter,
+              role:
+                invitation.role === "admin"
+                  ? t(($) => $.batch.role_admin)
+                  : t(($) => $.batch.role_member),
+            })}
           </div>
         </div>
       </label>
@@ -259,6 +266,7 @@ function InvitationRow({
 }
 
 function InvitationsShell({ children }: { children: ReactNode }) {
+  const { t } = useT("invite");
   const logout = useLogout();
   return (
     <div className="relative flex min-h-svh flex-col bg-background">
@@ -270,7 +278,7 @@ function InvitationsShell({ children }: { children: ReactNode }) {
         onClick={logout}
       >
         <LogOut />
-        Log out
+        {t(($) => $.header.log_out)}
       </Button>
       <div className="flex flex-1 flex-col items-center justify-center px-6 pb-12">
         {children}

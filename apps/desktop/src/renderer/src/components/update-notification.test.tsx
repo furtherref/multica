@@ -20,6 +20,17 @@ beforeEach(() => {
 
   window.desktopAPI = {
     appInfo: { version: "0.2.24", os: "macos" },
+    systemLocale: "en-US",
+    onSystemLocaleChanged: vi.fn(() => vi.fn()),
+    runtimeConfig: {
+      ok: true,
+      config: {
+        schemaVersion: 1,
+        apiUrl: "http://localhost:8080",
+        wsUrl: "ws://localhost:8080/ws",
+        appUrl: "http://localhost:3000",
+      },
+    },
     onAuthToken: vi.fn(() => vi.fn()),
     onInviteOpen: vi.fn(() => vi.fn()),
     openExternal: vi.fn(() => Promise.resolve()),
