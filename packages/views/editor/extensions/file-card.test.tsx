@@ -7,6 +7,10 @@ import { FileCardView } from "./file-card";
 
 const TEST_RESOURCES = { en: { common: enCommon, editor: enEditor } };
 
+vi.mock("@multica/core/paths", () => ({
+  useWorkspaceSlug: () => "test",
+}));
+
 vi.mock("@tiptap/react", () => ({
   NodeViewWrapper: ({ children, ...props }: { children: React.ReactNode }) => (
     <div {...props}>{children}</div>
@@ -69,7 +73,7 @@ describe("FileCardView", () => {
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
-        "/api/attachments/preview?url=https%3A%2F%2Fcdn.example.com%2Fpermission-config-design.md",
+        "/api/attachments/preview?url=https%3A%2F%2Fcdn.example.com%2Fpermission-config-design.md&workspace_slug=test",
         {
           credentials: "include",
         },

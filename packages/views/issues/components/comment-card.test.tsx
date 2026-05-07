@@ -32,6 +32,10 @@ vi.mock("@multica/core/api", () => ({
   api: {},
 }));
 
+vi.mock("@multica/core/paths", () => ({
+  useWorkspaceSlug: () => "test",
+}));
+
 vi.mock("../../common/actor-avatar", () => ({
   ActorAvatar: () => <span data-testid="actor-avatar" />,
 }));
@@ -158,7 +162,7 @@ describe("CommentCard attachments", () => {
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
-        "/api/attachments/preview?url=https%3A%2F%2Fcdn.example.com%2Fresult.md%3Fdownload%3D1",
+        "/api/attachments/preview?url=https%3A%2F%2Fcdn.example.com%2Fresult.md%3Fdownload%3D1&workspace_slug=test",
         {
           credentials: "include",
         },

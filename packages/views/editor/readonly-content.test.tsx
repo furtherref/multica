@@ -148,7 +148,7 @@ describe("ReadonlyContent file cards", () => {
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
-        "/api/attachments/preview?url=https%3A%2F%2Fcdn.example.com%2Fpermission-config-design.md",
+        "/api/attachments/preview?url=https%3A%2F%2Fcdn.example.com%2Fpermission-config-design.md&workspace_slug=test",
         {
           credentials: "include",
         },
