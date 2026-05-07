@@ -339,8 +339,8 @@ func (h *Handler) PreviewAttachmentMarkdown(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "url is required")
 		return
 	}
-	parsed, err := url.Parse(previewURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	parsedPreviewURL, err := url.Parse(previewURL)
+	if err != nil || !isFetchablePreviewURL(parsedPreviewURL) {
 		writeError(w, http.StatusBadRequest, "invalid url")
 		return
 	}
@@ -363,8 +363,14 @@ func (h *Handler) PreviewAttachmentMarkdown(w http.ResponseWriter, r *http.Reque
 	}
 
 	fetchURL := previewURL
-	if h.CFSigner != nil {
+	if h.CFSigner != nil && parsedPreviewURL.IsAbs() {
 		fetchURL = h.CFSigner.SignedURL(att.Url, time.Now().Add(30*time.Minute))
+	} else if !parsedPreviewURL.IsAbs() {
+		fetchURL, ok = absolutePreviewURL(r, parsedPreviewURL)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid url")
+			return
+		}
 	}
 	resp, err := fetchMarkdownPreview(r.Context(), fetchURL)
 	if err != nil {
@@ -378,10 +384,53 @@ func (h *Handler) PreviewAttachmentMarkdown(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadGateway, "failed to fetch attachment preview")
 		return
 	}
-	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-	if _, err := io.Copy(w, io.LimitReader(resp.Body, maxMarkdownPreviewSize+1)); err != nil {
-		slog.Error("failed to stream markdown attachment preview", "error", err)
+	if resp.ContentLength > maxMarkdownPreviewSize {
+		writeError(w, http.StatusRequestEntityTooLarge, "attachment preview too large")
+		return
 	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMarkdownPreviewSize+1))
+	if err != nil {
+		slog.Error("failed to read markdown attachment preview", "error", err)
+		writeError(w, http.StatusBadGateway, "failed to fetch attachment preview")
+		return
+	}
+	if int64(len(body)) > maxMarkdownPreviewSize {
+		writeError(w, http.StatusRequestEntityTooLarge, "attachment preview too large")
+		return
+	}
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	if _, err := w.Write(body); err != nil {
+		slog.Error("failed to write markdown attachment preview", "error", err)
+	}
+}
+
+func isFetchablePreviewURL(parsed *url.URL) bool {
+	return (parsed.Host != "" && (parsed.Scheme == "http" || parsed.Scheme == "https")) ||
+		(parsed.Scheme == "" && parsed.Host == "" && strings.HasPrefix(parsed.Path, "/"))
+}
+
+func absolutePreviewURL(r *http.Request, parsed *url.URL) (string, bool) {
+	if !isFetchablePreviewURL(parsed) || parsed.IsAbs() {
+		return "", false
+	}
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	if host == "" {
+		return "", false
+	}
+	scheme := r.Header.Get("X-Forwarded-Proto")
+	if scheme == "" {
+		scheme = "http"
+	}
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	absolute := *parsed
+	absolute.Scheme = scheme
+	absolute.Host = host
+	return absolute.String(), true
 }
 
 func isMarkdownAttachment(filename, contentType string) bool {
