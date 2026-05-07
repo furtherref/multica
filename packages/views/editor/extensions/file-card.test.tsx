@@ -68,7 +68,9 @@ describe("FileCardView", () => {
     fireEvent.click(previewButton);
 
     await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith("https://cdn.example.com/permission-config-design.md"),
+      expect(fetch).toHaveBeenCalledWith("https://cdn.example.com/permission-config-design.md", {
+        credentials: "include",
+      }),
     );
     expect(await screen.findByRole("dialog")).toHaveTextContent("Generated markdown body");
     expect(screen.getByTestId("markdown-preview-scroll")).toHaveClass("overflow-y-auto");

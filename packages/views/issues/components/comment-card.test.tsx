@@ -157,7 +157,9 @@ describe("CommentCard attachments", () => {
     await user.click(previewButton);
 
     await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith("https://cdn.example.com/result.md?download=1"),
+      expect(fetch).toHaveBeenCalledWith("https://cdn.example.com/result.md?download=1", {
+        credentials: "include",
+      }),
     );
     expect(await screen.findByRole("dialog")).toHaveTextContent("Generated markdown body");
   });

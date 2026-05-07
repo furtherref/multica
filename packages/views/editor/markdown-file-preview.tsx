@@ -36,7 +36,7 @@ export function MarkdownFilePreviewButton({
     if (previewContent !== null) return;
     setPreviewLoading(true);
     try {
-      const response = await fetch(href);
+      const response = await fetch(href, { credentials: "include" });
       if (!response.ok) {
         throw new Error(`Failed to fetch markdown preview: ${response.status}`);
       }
