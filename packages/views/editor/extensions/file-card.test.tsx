@@ -65,12 +65,36 @@ describe("FileCardView", () => {
     });
     expect(previewButton.compareDocumentPosition(downloadButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-    fireEvent.mouseDown(previewButton);
+    fireEvent.click(previewButton);
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith("https://cdn.example.com/permission-config-design.md"),
     );
     expect(await screen.findByRole("dialog")).toHaveTextContent("Generated markdown body");
     expect(screen.getByTestId("markdown-preview-scroll")).toHaveClass("overflow-y-auto");
+  });
+
+  it("fetches markdown content once for a mouse click", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve("# Preview title"),
+      }),
+    );
+
+    renderFileCard({
+      href: "https://cdn.example.com/permission-config-design.md",
+      filename: "permission-config-design.md",
+      uploading: false,
+    });
+
+    const previewButton = screen.getByRole("button", {
+      name: "Preview permission-config-design.md",
+    });
+    fireEvent.mouseDown(previewButton);
+    fireEvent.click(previewButton);
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
   });
 });

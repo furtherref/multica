@@ -59,7 +59,6 @@ export function MarkdownFilePreviewButton({
         title={t(($) => $.file_card.preview, { filename })}
         onMouseDown={(event) => {
           onPointerDown?.(event);
-          void openPreview();
         }}
         onClick={() => {
           void openPreview();
