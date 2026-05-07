@@ -13,6 +13,11 @@ export function isMarkdownFilename(filename: string): boolean {
   return normalized.endsWith(".md") || normalized.endsWith(".markdown");
 }
 
+export function markdownPreviewHref(href: string): string {
+  const params = new URLSearchParams({ url: href });
+  return `/api/attachments/preview?${params.toString()}`;
+}
+
 export function MarkdownFilePreviewButton({
   href,
   filename,
@@ -36,7 +41,7 @@ export function MarkdownFilePreviewButton({
     if (previewContent !== null) return;
     setPreviewLoading(true);
     try {
-      const response = await fetch(href, { credentials: "include" });
+      const response = await fetch(markdownPreviewHref(href), { credentials: "include" });
       if (!response.ok) {
         throw new Error(`Failed to fetch markdown preview: ${response.status}`);
       }

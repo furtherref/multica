@@ -147,9 +147,12 @@ describe("ReadonlyContent file cards", () => {
     fireEvent.click(previewButton);
 
     await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith("https://cdn.example.com/permission-config-design.md", {
-        credentials: "include",
-      }),
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/attachments/preview?url=https%3A%2F%2Fcdn.example.com%2Fpermission-config-design.md",
+        {
+          credentials: "include",
+        },
+      ),
     );
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent("Generated markdown body");
