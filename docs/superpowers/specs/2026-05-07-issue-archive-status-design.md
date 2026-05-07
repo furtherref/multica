@@ -12,11 +12,13 @@ an issue is complete, while keeping archived issues out of the board view.
 
 ## Product Semantics
 
-`archive` only affects board visibility.
+`archive` is a closed issue status.
 
-Archived issues remain normal issues for backend list, search, progress, inbox,
-and closed/open semantics. In particular, `archive` is not treated as equivalent
-to `done` or `cancelled` in server queries or metrics.
+Archived issues are hidden from active work surfaces, counted as closed in
+progress metrics, included wherever the backend currently treats
+`done`/`cancelled` issues as finished, and excluded from default open issue and
+search results. Moving an issue to `archive` also cancels active agent tasks for
+that issue, matching the user-facing terminal behavior of `cancelled`.
 
 ## User-Facing Behavior
 
@@ -24,9 +26,11 @@ to `done` or `cancelled` in server queries or metrics.
   available.
 - Archived issues are hidden from the kanban board because `archive` is not part
   of the board column status list.
-- Archived issues can still appear in non-board views such as list/search when
-  their data source includes them.
+- Archived issues are excluded from default open issue and search results unless
+  the caller explicitly asks for closed issues or filters for `archive`.
 - The CLI accepts `archive` for issue status updates.
+- Moving an issue to `archive` cancels queued, dispatched, or running agent
+  tasks for that issue.
 
 ## Implementation Scope
 
@@ -38,13 +42,14 @@ Update the shared issue status model and UI configuration:
 - Add `archive` styling to `STATUS_CONFIG`.
 - Add English and Simplified Chinese status labels.
 - Add `archive` to the CLI issue status allowlist.
-
-Leave backend status semantics unchanged:
-
-- Do not add `archive` to `ListOpenIssues` exclusions.
-- Do not add `archive` to child issue progress completed counts.
-- Do not add `archive` to inbox done/cancelled filters.
-- Do not change task cancellation behavior tied to `cancelled`.
+- Add `archive` to backend closed issue sets:
+  - `ListOpenIssues` exclusions.
+  - Search `includeClosed=false` exclusions.
+  - Child issue progress completed counts.
+  - Inbox done/cancelled filters.
+  - Project linked-issue done counts.
+- Cancel active issue tasks when status changes to `archive`, in both single
+  issue update and batch issue update paths.
 
 ## Testing
 
@@ -53,13 +58,14 @@ Add focused tests that prove:
 - The shared status list includes `archive`.
 - The board status list excludes `archive`.
 - CLI issue status validation accepts `archive`.
+- Backend search/open/progress/inbox SQL treats `archive` as closed.
+- Single and batch issue status updates to `archive` cancel active tasks.
 
-Existing tests around done/cancelled behavior should continue to pass without
-semantic changes.
+Existing tests around done/cancelled behavior should continue to pass with
+`archive` added to the same closed-status sets.
 
 ## Out of Scope
 
 - Database migrations, because issue status is currently a string value rather
   than an enum in the application layer inspected for this change.
-- Treating `archive` as a closed status.
 - Adding a separate archive browser, restore flow, or bulk archive action.

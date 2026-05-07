@@ -2,32 +2,39 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add an `archive` issue status that users can select, while keeping archived issues out of the kanban board.
+**Goal:** Add an `archive` issue status that users can select, hide from the board, and treat as a closed terminal status that cancels active issue tasks.
 
-**Architecture:** The shared issue status union and status config are the source of truth for frontend pickers and board columns. The CLI maintains its own issue status allowlist, so it must be updated separately. Backend done/cancelled semantics stay unchanged.
+**Architecture:** Shared TypeScript status config drives frontend pickers and board columns. SQL queries and dynamic search define backend closed/open semantics. Issue update handlers are responsible for terminal task cancellation on status transitions.
 
-**Tech Stack:** TypeScript, React view packages, Vitest, Go Cobra CLI tests.
+**Tech Stack:** TypeScript, React view packages, Vitest, Go, sqlc-generated query code, Cobra CLI tests.
 
 ---
 
 ## File Structure
 
-- Modify `packages/core/types/issue.ts`: add `archive` to the `IssueStatus` union.
-- Modify `packages/core/issues/config/status.ts`: add `archive` to `STATUS_ORDER`, `ALL_STATUSES`, and `STATUS_CONFIG`; keep it out of `BOARD_STATUSES`.
-- Create `packages/core/issues/config/status.test.ts`: assert shared status lists include `archive` and board columns exclude it.
-- Modify `packages/views/locales/en/issues.json`: add the English `archive` status label.
-- Modify `packages/views/locales/zh-Hans/issues.json`: add the Simplified Chinese `archive` status label.
-- Modify `server/cmd/multica/cmd_issue.go`: add `archive` to `validIssueStatuses`.
-- Modify `server/cmd/multica/cmd_issue_test.go`: update the existing status allowlist test to expect `archive`.
+- Modify `packages/core/types/issue.ts`: add `archive` to `IssueStatus`.
+- Modify `packages/core/issues/config/status.ts`: add `archive` to selectable status lists and config; keep it out of `BOARD_STATUSES`.
+- Create `packages/core/issues/config/status.test.ts`: assert `archive` is selectable and absent from board columns.
+- Modify `packages/views/locales/en/issues.json`: add `Archive`.
+- Modify `packages/views/locales/zh-Hans/issues.json`: add `已归档`.
+- Modify `server/cmd/multica/cmd_issue.go`: add `archive` to CLI status allowlist.
+- Modify `server/cmd/multica/cmd_issue_test.go`: expect `archive` in the CLI allowlist.
+- Modify `server/pkg/db/queries/issue.sql`: add `archive` to open issue exclusions and child progress closed counts.
+- Modify `server/pkg/db/queries/inbox.sql`: include `archive` in finished issue notification lookup.
+- Modify `server/pkg/db/queries/project.sql`: count `archive` as done for project linked issue metrics.
+- Modify generated sqlc files under `server/pkg/db/generated/*.sql.go` to match query SQL.
+- Modify `server/internal/handler/issue.go`: add `archive` to dynamic search closed filtering, status rank, backlog trigger exclusions, and task cancellation.
+- Modify `server/internal/handler/search_test.go`: expect `archive` in issue search closed filters.
+- Modify `server/internal/handler/handler_test.go`: add tests that archive status cancels active tasks in single and batch update paths.
 
-### Task 1: Core Status Model
+### Task 1: Shared Status Model
 
 **Files:**
 - Create: `packages/core/issues/config/status.test.ts`
 - Modify: `packages/core/types/issue.ts`
 - Modify: `packages/core/issues/config/status.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write failing test**
 
 Create `packages/core/issues/config/status.test.ts`:
 
@@ -52,29 +59,11 @@ describe("issue status config", () => {
 
 Run: `pnpm --filter @multica/core test -- issues/config/status.test.ts`
 
-Expected: FAIL because `STATUS_CONFIG.archive` is undefined and `archive` is absent from status arrays.
+Expected: FAIL because `archive` is not in the current status config.
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 3: Implement status config**
 
-In `packages/core/types/issue.ts`, change the union to:
-
-```ts
-export type IssueStatus =
-  | "backlog"
-  | "todo"
-  | "in_progress"
-  | "in_review"
-  | "done"
-  | "blocked"
-  | "cancelled"
-  | "archive";
-```
-
-In `packages/core/issues/config/status.ts`, add `archive` to `STATUS_ORDER` and `ALL_STATUSES` after `cancelled`, keep `BOARD_STATUSES` unchanged, and add:
-
-```ts
-archive: { label: "Archive", iconColor: "text-muted-foreground", hoverBg: "hover:bg-accent", dividerColor: "bg-muted-foreground/40", columnBg: "bg-muted/40" },
-```
+Add `| "archive"` to `IssueStatus`. Add `"archive"` to `STATUS_ORDER` and `ALL_STATUSES`, keep it out of `BOARD_STATUSES`, and add muted `STATUS_CONFIG.archive`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -82,89 +71,105 @@ Run: `pnpm --filter @multica/core test -- issues/config/status.test.ts`
 
 Expected: PASS.
 
-### Task 2: Localized Status Labels
+### Task 2: Labels and CLI Allowlist
 
 **Files:**
 - Modify: `packages/views/locales/en/issues.json`
 - Modify: `packages/views/locales/zh-Hans/issues.json`
-
-- [ ] **Step 1: Update labels**
-
-In `packages/views/locales/en/issues.json`, add:
-
-```json
-"archive": "Archive"
-```
-
-inside the top-level `status` object after `cancelled`.
-
-In `packages/views/locales/zh-Hans/issues.json`, add:
-
-```json
-"archive": "已归档"
-```
-
-inside the top-level `status` object after `cancelled`.
-
-- [ ] **Step 2: Verify locale JSON parses**
-
-Run: `node -e "JSON.parse(require('fs').readFileSync('packages/views/locales/en/issues.json','utf8')); JSON.parse(require('fs').readFileSync('packages/views/locales/zh-Hans/issues.json','utf8'))"`
-
-Expected: command exits 0 with no output.
-
-### Task 3: CLI Status Allowlist
-
-**Files:**
 - Modify: `server/cmd/multica/cmd_issue_test.go`
 - Modify: `server/cmd/multica/cmd_issue.go`
 
-- [ ] **Step 1: Write the failing test update**
+- [ ] **Step 1: Update failing CLI test**
 
-In `server/cmd/multica/cmd_issue_test.go`, update `TestValidIssueStatuses` expected map:
+Add `"archive": true` to `TestValidIssueStatuses` expected map in `server/cmd/multica/cmd_issue_test.go`.
 
-```go
-expected := map[string]bool{
-	"backlog":     true,
-	"todo":        true,
-	"in_progress": true,
-	"in_review":   true,
-	"done":        true,
-	"blocked":     true,
-	"cancelled":   true,
-	"archive":     true,
-}
-```
+- [ ] **Step 2: Run CLI test to verify it fails**
 
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `go test ./cmd/multica -run TestValidIssueStatuses -count=1`
-
-from the `server` directory.
+From `server`, run: `go test ./cmd/multica -run TestValidIssueStatuses -count=1`
 
 Expected: FAIL because `validIssueStatuses` has 7 entries instead of 8.
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 3: Implement labels and CLI allowlist**
 
-In `server/cmd/multica/cmd_issue.go`, update:
+Add `"archive": "Archive"` to `packages/views/locales/en/issues.json`.
+Add `"archive": "已归档"` to `packages/views/locales/zh-Hans/issues.json`.
+Add `"archive"` to `validIssueStatuses` in `server/cmd/multica/cmd_issue.go`.
 
-```go
-var validIssueStatuses = []string{
-	"backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled", "archive",
-}
+- [ ] **Step 4: Verify labels and CLI pass**
+
+Run:
+
+```bash
+node -e "JSON.parse(require('fs').readFileSync('packages/views/locales/en/issues.json','utf8')); JSON.parse(require('fs').readFileSync('packages/views/locales/zh-Hans/issues.json','utf8'))"
+go test ./cmd/multica -run TestValidIssueStatuses -count=1
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+Run the Go command from `server`.
 
-Run: `go test ./cmd/multica -run TestValidIssueStatuses -count=1`
+Expected: both pass.
 
-from the `server` directory.
+### Task 3: Backend Closed Status Semantics
+
+**Files:**
+- Modify: `server/pkg/db/queries/issue.sql`
+- Modify: `server/pkg/db/queries/inbox.sql`
+- Modify: `server/pkg/db/queries/project.sql`
+- Modify: `server/pkg/db/generated/issue.sql.go`
+- Modify: `server/pkg/db/generated/inbox.sql.go`
+- Modify: `server/pkg/db/generated/project.sql.go`
+- Modify: `server/internal/handler/issue.go`
+- Modify: `server/internal/handler/search_test.go`
+
+- [ ] **Step 1: Update failing search tests**
+
+In `server/internal/handler/search_test.go`, update issue search expectations so `includeClosed=false` requires `NOT IN ('done', 'cancelled', 'archive')`, and `includeClosed=true` asserts that string is absent.
+
+- [ ] **Step 2: Run search tests to verify they fail**
+
+From `server`, run: `go test ./internal/handler -run TestSearch -count=1`
+
+Expected: FAIL because search still filters only `done` and `cancelled`.
+
+- [ ] **Step 3: Implement closed status SQL and search changes**
+
+Update issue closed status sets from `('done', 'cancelled')` to `('done', 'cancelled', 'archive')` in source SQL, generated SQL, and dynamic search. Add `archive` after `cancelled` in search status rank.
+
+- [ ] **Step 4: Run search tests to verify they pass**
+
+From `server`, run: `go test ./internal/handler -run TestSearch -count=1`
 
 Expected: PASS.
 
-### Task 4: Final Verification and Commit
+### Task 4: Archive Cancels Active Tasks
 
 **Files:**
-- All files changed in Tasks 1-3.
+- Modify: `server/internal/handler/handler_test.go`
+- Modify: `server/internal/handler/issue.go`
+
+- [ ] **Step 1: Add failing handler tests**
+
+Add tests covering single issue update to `archive` and batch issue update to `archive`, each with an active task row that should become `cancelled`.
+
+- [ ] **Step 2: Run handler tests to verify they fail**
+
+From `server`, run: `go test ./internal/handler -run 'Archive.*Cancel|Batch.*Archive' -count=1`
+
+Expected: FAIL because only `cancelled` status currently cancels tasks.
+
+- [ ] **Step 3: Implement archive task cancellation**
+
+In `server/internal/handler/issue.go`, replace status checks equivalent to `issue.Status == "cancelled"` for task cancellation with a helper or direct condition that also includes `archive`. Prevent backlog-to-active enqueue when the new status is `archive`.
+
+- [ ] **Step 4: Run handler tests to verify they pass**
+
+From `server`, run: `go test ./internal/handler -run 'Archive.*Cancel|Batch.*Archive' -count=1`
+
+Expected: PASS.
+
+### Task 5: Final Verification and Commit
+
+**Files:**
+- All files changed in Tasks 1-4.
 
 - [ ] **Step 1: Run focused tests**
 
@@ -172,25 +177,20 @@ Run:
 
 ```bash
 pnpm --filter @multica/core test -- issues/config/status.test.ts
-go test ./cmd/multica -run TestValidIssueStatuses -count=1
-```
-
-Run the Go command from `server`.
-
-Expected: both commands pass.
-
-- [ ] **Step 2: Run type checks for touched frontend packages**
-
-Run:
-
-```bash
 pnpm --filter @multica/core typecheck
 pnpm --filter @multica/views typecheck
 ```
 
-Expected: both commands pass.
+From `server`, run:
 
-- [ ] **Step 3: Review changed files**
+```bash
+go test ./cmd/multica -run TestValidIssueStatuses -count=1
+go test ./internal/handler -run 'TestSearch|Archive.*Cancel|Batch.*Archive' -count=1
+```
+
+Expected: all pass.
+
+- [ ] **Step 2: Review diff**
 
 Run: `git diff --check`
 
@@ -198,14 +198,14 @@ Expected: no whitespace errors.
 
 Run: `git diff --stat`
 
-Expected: only the planned files changed.
+Expected: only planned files changed.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 Run:
 
 ```bash
-git add packages/core/types/issue.ts packages/core/issues/config/status.ts packages/core/issues/config/status.test.ts packages/views/locales/en/issues.json packages/views/locales/zh-Hans/issues.json server/cmd/multica/cmd_issue.go server/cmd/multica/cmd_issue_test.go
+git add docs/superpowers/specs/2026-05-07-issue-archive-status-design.md docs/superpowers/plans/2026-05-07-issue-archive-status.md packages/core/types/issue.ts packages/core/issues/config/status.ts packages/core/issues/config/status.test.ts packages/views/locales/en/issues.json packages/views/locales/zh-Hans/issues.json server/cmd/multica/cmd_issue.go server/cmd/multica/cmd_issue_test.go server/pkg/db/queries/issue.sql server/pkg/db/queries/inbox.sql server/pkg/db/queries/project.sql server/pkg/db/generated/issue.sql.go server/pkg/db/generated/inbox.sql.go server/pkg/db/generated/project.sql.go server/internal/handler/issue.go server/internal/handler/search_test.go server/internal/handler/handler_test.go
 git commit -m "feat: add archive issue status"
 ```
 
