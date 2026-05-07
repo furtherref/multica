@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { Eye } from "lucide-react";
 import { toast } from "sonner";
-import { useWorkspaceSlug } from "@multica/core/paths";
+import { api } from "@multica/core/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../i18n";
@@ -12,12 +12,6 @@ import { useT } from "../i18n";
 export function isMarkdownFilename(filename: string): boolean {
   const normalized = filename.toLowerCase();
   return normalized.endsWith(".md") || normalized.endsWith(".markdown");
-}
-
-export function markdownPreviewHref(href: string, workspaceSlug?: string | null): string {
-  const params = new URLSearchParams({ url: href });
-  if (workspaceSlug) params.set("workspace_slug", workspaceSlug);
-  return `/api/attachments/preview?${params.toString()}`;
 }
 
 export function MarkdownFilePreviewButton({
@@ -34,7 +28,6 @@ export function MarkdownFilePreviewButton({
   renderContent: (content: string) => ReactNode;
 }) {
   const { t } = useT("editor");
-  const workspaceSlug = useWorkspaceSlug();
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -44,11 +37,7 @@ export function MarkdownFilePreviewButton({
     if (previewContent !== null) return;
     setPreviewLoading(true);
     try {
-      const response = await fetch(markdownPreviewHref(href, workspaceSlug), { credentials: "include" });
-      if (!response.ok) {
-        throw new Error(`Failed to fetch markdown preview: ${response.status}`);
-      }
-      setPreviewContent(await response.text());
+      setPreviewContent(await api.previewAttachmentMarkdown(href));
     } catch (error) {
       console.error(error);
       toast.error(t(($) => $.file_card.preview_failed));

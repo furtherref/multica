@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -6,6 +6,13 @@ import enEditor from "../../locales/en/editor.json";
 import { FileCardView } from "./file-card";
 
 const TEST_RESOURCES = { en: { common: enCommon, editor: enEditor } };
+const previewAttachmentMarkdown = vi.hoisted(() => vi.fn());
+
+vi.mock("@multica/core/api", () => ({
+  api: {
+    previewAttachmentMarkdown,
+  },
+}));
 
 vi.mock("@multica/core/paths", () => ({
   useWorkspaceSlug: () => "test",
@@ -46,14 +53,12 @@ function renderFileCard(attrs: Record<string, unknown>) {
 }
 
 describe("FileCardView", () => {
+  beforeEach(() => {
+    previewAttachmentMarkdown.mockReset();
+  });
+
   it("previews markdown cards before the download action", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        text: () => Promise.resolve("# Preview title\n\nGenerated markdown body"),
-      }),
-    );
+    previewAttachmentMarkdown.mockResolvedValue("# Preview title\n\nGenerated markdown body");
 
     renderFileCard({
       href: "https://cdn.example.com/permission-config-design.md",
@@ -72,25 +77,14 @@ describe("FileCardView", () => {
     fireEvent.click(previewButton);
 
     await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith(
-        "/api/attachments/preview?url=https%3A%2F%2Fcdn.example.com%2Fpermission-config-design.md&workspace_slug=test",
-        {
-          credentials: "include",
-        },
-      ),
+      expect(previewAttachmentMarkdown).toHaveBeenCalledWith("https://cdn.example.com/permission-config-design.md"),
     );
     expect(await screen.findByRole("dialog")).toHaveTextContent("Generated markdown body");
     expect(screen.getByTestId("markdown-preview-scroll")).toHaveClass("overflow-y-auto");
   });
 
   it("fetches markdown content once for a mouse click", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        text: () => Promise.resolve("# Preview title"),
-      }),
-    );
+    previewAttachmentMarkdown.mockResolvedValue("# Preview title");
 
     renderFileCard({
       href: "https://cdn.example.com/permission-config-design.md",
@@ -104,6 +98,6 @@ describe("FileCardView", () => {
     fireEvent.mouseDown(previewButton);
     fireEvent.click(previewButton);
 
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(previewAttachmentMarkdown).toHaveBeenCalledTimes(1));
   });
 });

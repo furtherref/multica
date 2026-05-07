@@ -10,6 +10,7 @@ import enIssues from "../../locales/en/issues.json";
 import { CommentCard } from "./comment-card";
 
 const TEST_RESOURCES = { en: { common: enCommon, editor: enEditor, issues: enIssues } };
+const previewAttachmentMarkdown = vi.hoisted(() => vi.fn());
 
 vi.mock("@multica/core/workspace/hooks", () => ({
   useActorName: () => ({
@@ -29,7 +30,9 @@ vi.mock("@multica/core/hooks/use-file-upload", () => ({
 }));
 
 vi.mock("@multica/core/api", () => ({
-  api: {},
+  api: {
+    previewAttachmentMarkdown,
+  },
 }));
 
 vi.mock("@multica/core/paths", () => ({
@@ -116,13 +119,7 @@ function renderComment(entry: TimelineEntry) {
 
 describe("CommentCard attachments", () => {
   beforeEach(() => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        text: () => Promise.resolve("# Preview title\n\nGenerated markdown body"),
-      }),
-    );
+    previewAttachmentMarkdown.mockResolvedValue("# Preview title\n\nGenerated markdown body");
   });
 
   it("previews standalone markdown attachments before the download action", async () => {
@@ -161,12 +158,7 @@ describe("CommentCard attachments", () => {
     await user.click(previewButton);
 
     await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith(
-        "/api/attachments/preview?url=https%3A%2F%2Fcdn.example.com%2Fresult.md%3Fdownload%3D1&workspace_slug=test",
-        {
-          credentials: "include",
-        },
-      ),
+      expect(previewAttachmentMarkdown).toHaveBeenCalledWith("https://cdn.example.com/result.md?download=1"),
     );
     expect(await screen.findByRole("dialog")).toHaveTextContent("Generated markdown body");
   });

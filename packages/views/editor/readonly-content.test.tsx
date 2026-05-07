@@ -57,6 +57,13 @@ import enEditor from "../locales/en/editor.json";
 import { ReadonlyContent } from "./readonly-content";
 
 const TEST_RESOURCES = { en: { common: enCommon, editor: enEditor } };
+const previewAttachmentMarkdown = vi.hoisted(() => vi.fn());
+
+vi.mock("@multica/core/api", () => ({
+  api: {
+    previewAttachmentMarkdown,
+  },
+}));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -122,13 +129,7 @@ describe("ReadonlyContent line breaks", () => {
 
 describe("ReadonlyContent file cards", () => {
   it("previews markdown file cards before the download action", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        text: () => Promise.resolve("# Preview title\n\nGenerated markdown body"),
-      }),
-    );
+    previewAttachmentMarkdown.mockResolvedValue("# Preview title\n\nGenerated markdown body");
 
     render(
       <I18nProvider locale="en" resources={TEST_RESOURCES}>
@@ -147,12 +148,7 @@ describe("ReadonlyContent file cards", () => {
     fireEvent.click(previewButton);
 
     await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith(
-        "/api/attachments/preview?url=https%3A%2F%2Fcdn.example.com%2Fpermission-config-design.md&workspace_slug=test",
-        {
-          credentials: "include",
-        },
-      ),
+      expect(previewAttachmentMarkdown).toHaveBeenCalledWith("https://cdn.example.com/permission-config-design.md"),
     );
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent("Generated markdown body");
