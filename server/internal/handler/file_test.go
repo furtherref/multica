@@ -277,6 +277,56 @@ func TestPreviewAttachmentMarkdownSupportsRelativeAttachmentURL(t *testing.T) {
 	}
 }
 
+func TestPreviewAttachmentMarkdownIgnoresForwardedHostForRelativeAttachmentURL(t *testing.T) {
+	attachmentURL := "/uploads/workspaces/" + testWorkspaceID + "/forwarded-host.md"
+	if _, err := testPool.Exec(
+		context.Background(),
+		`INSERT INTO attachment (workspace_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
+		VALUES ($1, 'member', $2, 'forwarded-host.md', $3, 'text/markdown', 14)`,
+		testWorkspaceID,
+		testUserID,
+		attachmentURL,
+	); err != nil {
+		t.Fatalf("insert attachment: %v", err)
+	}
+	defer func() {
+		if _, err := testPool.Exec(
+			context.Background(),
+			`DELETE FROM attachment WHERE workspace_id = $1 AND url = $2`,
+			testWorkspaceID,
+			attachmentURL,
+		); err != nil {
+			t.Fatalf("cleanup attachment: %v", err)
+		}
+	}()
+
+	origFetch := fetchMarkdownPreview
+	fetchMarkdownPreview = func(_ context.Context, rawURL string) (*http.Response, error) {
+		wantURL := "https://api.example.com" + attachmentURL
+		if rawURL != wantURL {
+			t.Fatalf("preview fetch URL = %q, want %q", rawURL, wantURL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString("# Local Preview\n")),
+		}, nil
+	}
+	defer func() { fetchMarkdownPreview = origFetch }()
+
+	req := httptest.NewRequest("GET", "/api/attachments/preview?url="+url.QueryEscape(attachmentURL), nil)
+	req.Host = "api.example.com"
+	req.Header.Set("X-Forwarded-Host", "attacker.example.com")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-User-ID", testUserID)
+	req.Header.Set("X-Workspace-ID", testWorkspaceID)
+
+	w := httptest.NewRecorder()
+	testHandler.PreviewAttachmentMarkdown(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PreviewAttachmentMarkdown forwarded host: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestPreviewAttachmentMarkdownRejectsOversizedPreview(t *testing.T) {
 	attachmentURL := "https://cdn.example.com/workspaces/" + testWorkspaceID + "/oversized.md"
 	if _, err := testPool.Exec(

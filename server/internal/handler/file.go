@@ -413,14 +413,20 @@ func absolutePreviewURL(r *http.Request, parsed *url.URL) (string, bool) {
 	if !isFetchablePreviewURL(parsed) || parsed.IsAbs() {
 		return "", false
 	}
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
-	}
+	host := r.Host
 	if host == "" {
 		return "", false
 	}
-	scheme := r.Header.Get("X-Forwarded-Proto")
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if r.URL.Scheme == "http" || r.URL.Scheme == "https" {
+		scheme = r.URL.Scheme
+	}
+	if proto := strings.ToLower(r.Header.Get("X-Forwarded-Proto")); proto == "http" || proto == "https" {
+		scheme = proto
+	}
 	if scheme == "" {
 		scheme = "http"
 	}

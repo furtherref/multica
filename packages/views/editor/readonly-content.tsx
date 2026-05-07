@@ -33,6 +33,7 @@ import { createLowlight, common } from "lowlight";
 import { toHtml } from "hast-util-to-html";
 import { Maximize2, Download, Link as LinkIcon, FileText } from "lucide-react";
 import { toast } from "sonner";
+import { isAllowedFileCardHref } from "@multica/ui/markdown";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspacePaths, useWorkspaceSlug } from "@multica/core/paths";
 import { useNavigation } from "../navigation";
@@ -528,8 +529,7 @@ const components: Partial<Components> = {
     const dataType = node?.properties?.dataType as string | undefined;
     if (dataType === "fileCard") {
       const rawHref = (node?.properties?.dataHref as string) || "";
-      // Only allow http(s) URLs to prevent javascript: and other dangerous schemes.
-      const href = /^https?:\/\//i.test(rawHref) ? rawHref : "";
+      const href = isAllowedFileCardHref(rawHref) ? rawHref : "";
       const filename = (node?.properties?.dataFilename as string) || "";
       return <ReadonlyFileCard href={href} filename={filename} />;
     }

@@ -154,6 +154,26 @@ describe("ReadonlyContent file cards", () => {
     expect(dialog).toHaveTextContent("Generated markdown body");
     expect(screen.getByTestId("markdown-preview-scroll")).toHaveClass("overflow-y-auto");
   });
+
+  it("previews relative markdown file cards", async () => {
+    previewAttachmentMarkdown.mockResolvedValue("# Local Preview");
+
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ReadonlyContent content="!file[local-preview.md](/uploads/workspaces/ws-1/local-preview.md)" />
+      </I18nProvider>,
+    );
+
+    const previewButton = screen.getByRole("button", {
+      name: "Preview local-preview.md",
+    });
+    fireEvent.click(previewButton);
+
+    await waitFor(() =>
+      expect(previewAttachmentMarkdown).toHaveBeenCalledWith("/uploads/workspaces/ws-1/local-preview.md"),
+    );
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Local Preview");
+  });
 });
 
 describe("ReadonlyContent Mermaid rendering", () => {
