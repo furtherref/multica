@@ -4,9 +4,9 @@
 
 **Goal:** Add an `archive` issue status that users can select, hide from the board, and treat as a closed terminal status that cancels active issue tasks.
 
-**Architecture:** Shared TypeScript status config drives frontend pickers and board columns. SQL queries and dynamic search define backend closed/open semantics. Issue update handlers are responsible for terminal task cancellation on status transitions.
+**Architecture:** Shared TypeScript status config drives frontend pickers and board columns. The database status check constraint must accept every persisted issue status. SQL queries and dynamic search define backend closed/open semantics. Issue update handlers are responsible for terminal task cancellation on status transitions.
 
-**Tech Stack:** TypeScript, React view packages, Vitest, Go, sqlc-generated query code, Cobra CLI tests.
+**Tech Stack:** TypeScript, React view packages, Vitest, Go, PostgreSQL migrations, sqlc-generated query code, Cobra CLI tests.
 
 ---
 
@@ -19,6 +19,8 @@
 - Modify `packages/views/locales/zh-Hans/issues.json`: add `已归档`.
 - Modify `server/cmd/multica/cmd_issue.go`: add `archive` to CLI status allowlist.
 - Modify `server/cmd/multica/cmd_issue_test.go`: expect `archive` in the CLI allowlist.
+- Create `server/migrations/069_issue_archive_status.up.sql`: update the issue status check constraint to accept `archive`.
+- Create `server/migrations/069_issue_archive_status.down.sql`: map `archive` to `done`, then restore the previous issue status check constraint.
 - Modify `server/pkg/db/queries/issue.sql`: add `archive` to open issue exclusions and child progress closed counts.
 - Modify `server/pkg/db/queries/inbox.sql`: include `archive` in finished issue notification lookup.
 - Modify `server/pkg/db/queries/project.sql`: count `archive` as done for project linked issue metrics.
@@ -108,7 +110,43 @@ Run the Go command from `server`.
 
 Expected: both pass.
 
-### Task 3: Backend Closed Status Semantics
+### Task 3: Database Status Constraint
+
+**Files:**
+- Create: `server/migrations/069_issue_archive_status.up.sql`
+- Create: `server/migrations/069_issue_archive_status.down.sql`
+
+- [ ] **Step 1: Add issue status constraint migration**
+
+Create `server/migrations/069_issue_archive_status.up.sql`:
+
+```sql
+ALTER TABLE issue DROP CONSTRAINT IF EXISTS issue_status_check;
+
+ALTER TABLE issue ADD CONSTRAINT issue_status_check
+    CHECK (status IN ('backlog', 'todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled', 'archive'));
+```
+
+- [ ] **Step 2: Add rollback migration**
+
+Create `server/migrations/069_issue_archive_status.down.sql`:
+
+```sql
+UPDATE issue SET status = 'done' WHERE status = 'archive';
+
+ALTER TABLE issue DROP CONSTRAINT IF EXISTS issue_status_check;
+
+ALTER TABLE issue ADD CONSTRAINT issue_status_check
+    CHECK (status IN ('backlog', 'todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled'));
+```
+
+- [ ] **Step 3: Verify migration files are tracked in the diff**
+
+Run: `git diff --stat -- server/migrations/069_issue_archive_status.up.sql server/migrations/069_issue_archive_status.down.sql`
+
+Expected: both migration files are listed.
+
+### Task 4: Backend Closed Status Semantics
 
 **Files:**
 - Modify: `server/pkg/db/queries/issue.sql`
@@ -140,7 +178,7 @@ From `server`, run: `go test ./internal/handler -run TestSearch -count=1`
 
 Expected: PASS.
 
-### Task 4: Archive Cancels Active Tasks
+### Task 5: Archive Cancels Active Tasks
 
 **Files:**
 - Modify: `server/internal/handler/handler_test.go`
@@ -166,10 +204,10 @@ From `server`, run: `go test ./internal/handler -run 'Archive.*Cancel|Batch.*Arc
 
 Expected: PASS.
 
-### Task 5: Final Verification and Commit
+### Task 6: Final Verification and Commit
 
 **Files:**
-- All files changed in Tasks 1-4.
+- All files changed in Tasks 1-5.
 
 - [ ] **Step 1: Run focused tests**
 
@@ -205,7 +243,7 @@ Expected: only planned files changed.
 Run:
 
 ```bash
-git add docs/superpowers/specs/2026-05-07-issue-archive-status-design.md docs/superpowers/plans/2026-05-07-issue-archive-status.md packages/core/types/issue.ts packages/core/issues/config/status.ts packages/core/issues/config/status.test.ts packages/views/locales/en/issues.json packages/views/locales/zh-Hans/issues.json server/cmd/multica/cmd_issue.go server/cmd/multica/cmd_issue_test.go server/pkg/db/queries/issue.sql server/pkg/db/queries/inbox.sql server/pkg/db/queries/project.sql server/pkg/db/generated/issue.sql.go server/pkg/db/generated/inbox.sql.go server/pkg/db/generated/project.sql.go server/internal/handler/issue.go server/internal/handler/search_test.go server/internal/handler/handler_test.go
+git add docs/superpowers/specs/2026-05-07-issue-archive-status-design.md docs/superpowers/plans/2026-05-07-issue-archive-status.md packages/core/types/issue.ts packages/core/issues/config/status.ts packages/core/issues/config/status.test.ts packages/views/locales/en/issues.json packages/views/locales/zh-Hans/issues.json server/cmd/multica/cmd_issue.go server/cmd/multica/cmd_issue_test.go server/migrations/069_issue_archive_status.up.sql server/migrations/069_issue_archive_status.down.sql server/pkg/db/queries/issue.sql server/pkg/db/queries/inbox.sql server/pkg/db/queries/project.sql server/pkg/db/generated/issue.sql.go server/pkg/db/generated/inbox.sql.go server/pkg/db/generated/project.sql.go server/internal/handler/issue.go server/internal/handler/search_test.go server/internal/handler/handler_test.go
 git commit -m "feat: add archive issue status"
 ```
 

@@ -4,8 +4,9 @@
 
 Issue statuses are stored as strings and are surfaced through shared TypeScript
 types, issue status configuration, frontend status pickers, and the Multica CLI
-status allowlist. The kanban board already uses a dedicated board status list
-instead of rendering every issue status.
+status allowlist. The database also enforces the allowed issue statuses through
+the `issue_status_check` constraint. The kanban board already uses a dedicated
+board status list instead of rendering every issue status.
 
 The requested behavior is to add an `archive` status that users can choose after
 an issue is complete, while keeping archived issues out of the board view.
@@ -42,6 +43,9 @@ Update the shared issue status model and UI configuration:
 - Add `archive` styling to `STATUS_CONFIG`.
 - Add English and Simplified Chinese status labels.
 - Add `archive` to the CLI issue status allowlist.
+- Add a database migration that updates the `issue.status` check constraint to
+  accept `archive`, with a down migration that maps archived issues back to a
+  valid non-archive status before restoring the old constraint.
 - Add `archive` to backend closed issue sets:
   - `ListOpenIssues` exclusions.
   - Search `includeClosed=false` exclusions.
@@ -58,6 +62,7 @@ Add focused tests that prove:
 - The shared status list includes `archive`.
 - The board status list excludes `archive`.
 - CLI issue status validation accepts `archive`.
+- The issue status database constraint accepts `archive` after migrations.
 - Backend search/open/progress/inbox SQL treats `archive` as closed.
 - Single and batch issue status updates to `archive` cancel active tasks.
 
@@ -66,6 +71,4 @@ Existing tests around done/cancelled behavior should continue to pass with
 
 ## Out of Scope
 
-- Database migrations, because issue status is currently a string value rather
-  than an enum in the application layer inspected for this change.
 - Adding a separate archive browser, restore flow, or bulk archive action.
