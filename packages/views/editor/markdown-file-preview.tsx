@@ -85,10 +85,10 @@ function getFullscreenPreviewBounds(fallback: PreviewBounds): PreviewBounds {
   if (typeof window === "undefined") return fallback;
 
   return {
-    x: PREVIEW_VIEWPORT_MARGIN,
-    y: PREVIEW_VIEWPORT_MARGIN,
-    width: Math.max(320, window.innerWidth - PREVIEW_VIEWPORT_MARGIN * 2),
-    height: Math.max(240, window.innerHeight - PREVIEW_VIEWPORT_MARGIN * 2),
+    x: 0,
+    y: 0,
+    width: window.innerWidth,
+    height: window.innerHeight,
   };
 }
 
@@ -125,6 +125,7 @@ function MarkdownPreviewDialogContent({
       className="!fixed !top-0 !left-0 h-screen w-screen max-w-none !translate-x-0 !translate-y-0 border-0 bg-transparent p-0 shadow-none ring-0"
     >
       <Rnd
+        key={fullscreen ? "fullscreen" : "windowed"}
         bounds="window"
         size={{ width: bounds.width, height: bounds.height }}
         position={{ x: bounds.x, y: bounds.y }}
