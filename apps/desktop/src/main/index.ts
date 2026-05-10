@@ -9,6 +9,7 @@ import { openExternalSafely } from "./external-url";
 import { installContextMenu } from "./context-menu";
 import { getAppVersion } from "./app-version";
 import { loadRuntimeConfig } from "./runtime-config-loader";
+import { isLiveWindow, safeSendToWindow } from "./safe-window-ipc";
 import type { RuntimeConfigResult } from "../shared/runtime-config";
 
 // Bundled icon used for dev-mode dock/taskbar branding. In production the
@@ -54,9 +55,7 @@ function handleDeepLink(url: string): void {
     // multica://auth/callback?token=<jwt>
     if (parsed.hostname === "auth" && parsed.pathname === "/callback") {
       const token = parsed.searchParams.get("token");
-      if (token && mainWindow) {
-        mainWindow.webContents.send("auth:token", token);
-      }
+      if (token) safeSendToWindow(mainWindow, "auth:token", token);
       return;
     }
 
@@ -66,9 +65,7 @@ function handleDeepLink(url: string): void {
     // route persistence, so deep-linking the same invite twice stays safe.
     if (parsed.hostname === "invite") {
       const id = parsed.pathname.replace(/^\//, "");
-      if (id && mainWindow) {
-        mainWindow.webContents.send("invite:open", decodeURIComponent(id));
-      }
+      if (id) safeSendToWindow(mainWindow, "invite:open", decodeURIComponent(id));
       return;
     }
   } catch {
@@ -140,7 +137,7 @@ function createWindow(): void {
     const current = getSystemLocale();
     if (current === lastKnownSystemLocale) return;
     lastKnownSystemLocale = current;
-    mainWindow?.webContents.send("locale:system-changed", current);
+    safeSendToWindow(mainWindow, "locale:system-changed", current);
   });
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -319,14 +316,14 @@ if (!gotTheLock) {
         if (!Notification.isSupported()) return;
         const notification = new Notification({ title, body });
         notification.on("click", () => {
-          if (!mainWindow) return;
+          if (!isLiveWindow(mainWindow)) return;
           if (mainWindow.isMinimized()) mainWindow.restore();
           mainWindow.show();
           mainWindow.focus();
           // Ship the full context back — the renderer pins the route to the
           // source workspace (slug), marks the row read (itemId), and uses
           // issueKey as the ?issue=<…> selector.
-          mainWindow.webContents.send("inbox:open", {
+          safeSendToWindow(mainWindow, "inbox:open", {
             slug,
             itemId,
             issueKey,

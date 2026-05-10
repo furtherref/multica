@@ -4,6 +4,7 @@ import {
   customInstallMacApp,
   scheduleMacFallbackInstall,
 } from "./mac-update-installer";
+import { safeSendToWindow } from "./safe-window-ipc";
 
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
@@ -54,8 +55,7 @@ export function setupAutoUpdater(getMainWindow: () => BrowserWindow | null): voi
     logUpdater("update available", {
       version: info.version,
     });
-    const win = getMainWindow();
-    win?.webContents.send("updater:update-available", {
+    safeSendToWindow(getMainWindow(), "updater:update-available", {
       version: info.version,
       releaseNotes: info.releaseNotes,
     });
@@ -65,8 +65,7 @@ export function setupAutoUpdater(getMainWindow: () => BrowserWindow | null): voi
     logUpdater("download progress", {
       percent: Math.round(progress.percent),
     });
-    const win = getMainWindow();
-    win?.webContents.send("updater:download-progress", {
+    safeSendToWindow(getMainWindow(), "updater:download-progress", {
       percent: progress.percent,
     });
   });
@@ -78,8 +77,7 @@ export function setupAutoUpdater(getMainWindow: () => BrowserWindow | null): voi
       version: event?.version,
       downloadedFile: latestDownloadedFile,
     });
-    const win = getMainWindow();
-    win?.webContents.send("updater:update-downloaded");
+    safeSendToWindow(getMainWindow(), "updater:update-downloaded");
   });
 
   autoUpdater.on("error", (err) => {

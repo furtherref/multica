@@ -19,6 +19,7 @@ import { homedir } from "os";
 import type { DaemonStatus, DaemonPrefs } from "../shared/daemon-types";
 import { ensureManagedCli, managedCliPath } from "./cli-bootstrap";
 import { decideVersionAction } from "./version-decision";
+import { isLiveWindow, safeSendToWindow } from "./safe-window-ipc";
 
 const DEFAULT_HEALTH_PORT = 19514;
 const POLL_INTERVAL_MS = 5_000;
@@ -127,8 +128,7 @@ function urlsMatch(a: string, b: string): boolean {
 }
 
 function sendStatus(status: DaemonStatus): void {
-  const win = getMainWindow();
-  win?.webContents.send("daemon:status", status);
+  safeSendToWindow(getMainWindow(), "daemon:status", status);
 }
 
 interface HealthPayload {
@@ -776,7 +776,7 @@ async function readLogRange(
 function sendLines(win: BrowserWindow, text: string): void {
   const lines = text.split("\n").filter((line) => line.length > 0);
   for (const line of lines) {
-    win.webContents.send("daemon:log-line", line);
+    safeSendToWindow(win, "daemon:log-line", line);
   }
 }
 
@@ -811,7 +811,7 @@ function startLogTail(win: BrowserWindow, retryCount = 0): void {
           .filter((line) => line.length > 0)
           .slice(-LOG_TAIL_INITIAL_LINES);
         for (const line of lines) {
-          win.webContents.send("daemon:log-line", line);
+          safeSendToWindow(win, "daemon:log-line", line);
         }
       }
       position = initialStats.size;
@@ -822,7 +822,7 @@ function startLogTail(win: BrowserWindow, retryCount = 0): void {
 
     const listener: StatsListener = (curr) => {
       const target = getMainWindow();
-      if (!target) return;
+      if (!isLiveWindow(target)) return;
       // File rotated/truncated — restart from the new beginning.
       if (curr.size < position) position = 0;
       if (curr.size === position) return;
@@ -905,7 +905,7 @@ export function setupDaemonManager(
   );
   ipcMain.handle("daemon:pick-directory", async () => {
     const win = getMainWindow();
-    if (!win) return { canceled: true as const };
+    if (!isLiveWindow(win)) return { canceled: true as const };
     const result = await dialog.showOpenDialog(win, {
       properties: ["openDirectory", "createDirectory"],
     });
@@ -931,7 +931,7 @@ export function setupDaemonManager(
 
   ipcMain.on("daemon:start-log-stream", () => {
     const win = getMainWindow();
-    if (win) startLogTail(win);
+    if (isLiveWindow(win)) startLogTail(win);
   });
 
   ipcMain.on("daemon:stop-log-stream", () => {
