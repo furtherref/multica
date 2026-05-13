@@ -105,8 +105,12 @@ describe("IssueChip", () => {
       </QueryClientProvider>,
     );
 
+    const titleInTrigger = screen.getByTestId("tooltip-trigger").querySelector(
+      ".text-foreground",
+    ) as HTMLElement | null;
+
     expect(screen.getByTestId("tooltip-trigger")).toContainElement(
-      screen.getAllByText("Tooltip trigger should reuse the title span")[0],
+      titleInTrigger,
     );
   });
 });
