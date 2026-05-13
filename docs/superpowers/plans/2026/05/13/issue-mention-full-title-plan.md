@@ -74,7 +74,7 @@ Model the wrapper and mocks after existing component tests such as `packages/vie
 
 - [ ] **Step 4: Run the focused test file to verify failure**
 
-Run: `pnpm vitest run packages/views/issues/components/issue-chip.test.tsx`
+Run: `pnpm turbo test --filter=@multica/views -- packages/views/issues/components/issue-chip.test.tsx`
 
 Expected: FAIL because the tooltip structure does not exist yet and the test file may need new mocks or providers.
 
@@ -155,7 +155,7 @@ it("keeps the tooltip trigger scoped to the issue title text", async () => {
 
 - [ ] **Step 4: Run the focused mention-suggestion test file to verify failure**
 
-Run: `pnpm vitest run packages/views/editor/extensions/mention-suggestion.test.tsx`
+Run: `pnpm turbo test --filter=@multica/views -- packages/views/editor/extensions/mention-suggestion.test.tsx`
 
 Expected: FAIL because issue rows do not yet render tooltip primitives.
 
@@ -198,7 +198,7 @@ Do not move link ownership into `IssueChip`; `IssueMentionCard` remains the clic
 
 - [ ] **Step 4: Run the focused test file**
 
-Run: `pnpm vitest run packages/views/issues/components/issue-chip.test.tsx`
+Run: `pnpm turbo test --filter=@multica/views -- packages/views/issues/components/issue-chip.test.tsx`
 
 Expected: PASS
 
@@ -239,7 +239,7 @@ Keep the outer element as the existing `<button>` so keyboard navigation and cli
 
 - [ ] **Step 3: Run the focused mention-suggestion test file**
 
-Run: `pnpm vitest run packages/views/editor/extensions/mention-suggestion.test.tsx`
+Run: `pnpm turbo test --filter=@multica/views -- packages/views/editor/extensions/mention-suggestion.test.tsx`
 
 Expected: PASS
 
@@ -255,7 +255,7 @@ Check that `IssueMentionCard` still wraps `IssueChip` in `AppLink` and that `Mar
 
 - [ ] **Step 2: Run a targeted mention-related test pass**
 
-Run: `pnpm vitest run packages/views/issues/components/comment-card.test.tsx packages/views/chat/components/context-anchor.test.ts packages/views/editor/extensions/mention-extension.test.ts packages/views/editor/extensions/mention-suggestion.test.tsx`
+Run: `pnpm turbo test --filter=@multica/views -- packages/views/issues/components/comment-card.test.tsx packages/views/chat/components/context-anchor.test.ts packages/views/editor/extensions/mention-extension.test.ts packages/views/editor/extensions/mention-suggestion.test.tsx`
 
 Expected: PASS
 
@@ -269,7 +269,7 @@ Expected: PASS
 
 - [ ] **Step 1: Run the project checks needed for this change**
 
-Run: `pnpm vitest run packages/views/issues/components/issue-chip.test.tsx packages/views/editor/extensions/mention-suggestion.test.tsx packages/views/issues/components/comment-card.test.tsx packages/views/chat/components/context-anchor.test.ts packages/views/editor/extensions/mention-extension.test.ts`
+Run: `pnpm turbo test --filter=@multica/views -- packages/views/issues/components/issue-chip.test.tsx packages/views/editor/extensions/mention-suggestion.test.tsx packages/views/issues/components/comment-card.test.tsx packages/views/chat/components/context-anchor.test.ts packages/views/editor/extensions/mention-extension.test.ts`
 
 Expected: PASS
 
