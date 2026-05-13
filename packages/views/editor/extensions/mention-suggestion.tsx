@@ -30,6 +30,11 @@ import { ActorAvatar } from "../../common/actor-avatar";
 import { StatusIcon } from "../../issues/components/status-icon";
 import { useT } from "../../i18n";
 import { Badge } from "@multica/ui/components/ui/badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@multica/ui/components/ui/tooltip";
 import type { IssueStatus } from "@multica/core/types";
 import type { SuggestionOptions, SuggestionProps } from "@tiptap/suggestion";
 import {
@@ -313,11 +318,20 @@ function MentionRow({
         )}
         <span className="shrink-0 text-muted-foreground">{item.label}</span>
         {item.description && (
-          <span
-            className={`truncate text-muted-foreground ${isClosed ? "line-through" : ""}`}
-          >
-            {item.description}
-          </span>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  className={`min-w-0 flex-1 truncate text-muted-foreground ${
+                    isClosed ? "line-through" : ""
+                  }`}
+                >
+                  {item.description}
+                </span>
+              }
+            />
+            <TooltipContent>{item.description}</TooltipContent>
+          </Tooltip>
         )}
       </button>
     );

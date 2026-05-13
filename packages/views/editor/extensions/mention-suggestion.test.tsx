@@ -45,6 +45,16 @@ vi.mock("@multica/core/auth", () => ({
   useAuthStore: { getState: () => authState },
 }));
 
+vi.mock("@multica/ui/components/ui/tooltip", () => ({
+  Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
+  TooltipTrigger: ({ children, render }: { children?: ReactNode; render?: ReactNode }) => (
+    <span data-testid="tooltip-trigger">{render ?? children}</span>
+  ),
+  TooltipContent: ({ children }: { children: ReactNode }) => (
+    <div data-testid="tooltip-content">{children}</div>
+  ),
+}));
+
 import {
   createMentionSuggestion,
   MentionList,
@@ -131,7 +141,8 @@ describe("createMentionSuggestion", () => {
     await waitFor(() => {
       expect(screen.getByText("MUL-1007")).toBeInTheDocument();
     });
-    expect(screen.getByText("多 Agent 协作探索")).toBeInTheDocument();
+    expect(screen.getAllByText("多 Agent 协作探索")).toHaveLength(2);
+    expect(screen.getByTestId("tooltip-content")).toHaveTextContent("多 Agent 协作探索");
     expect(searchIssuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
         q: "协作",
@@ -139,6 +150,65 @@ describe("createMentionSuggestion", () => {
         include_closed: true,
       }),
     );
+  });
+
+  it("shows the full issue title in a tooltip for issue suggestion rows", async () => {
+    searchIssuesMock.mockResolvedValue({
+      issues: [
+        {
+          id: "i-1008",
+          identifier: "MUL-1008",
+          title: "A long issue title for the mention suggestion panel",
+          status: "todo",
+        },
+      ],
+      total: 1,
+    });
+
+    render(
+      <I18nWrapper>
+        <MentionList items={[]} query="long" command={vi.fn()} />
+      </I18nWrapper>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("MUL-1008")).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId("tooltip-content")).toHaveTextContent(
+      "A long issue title for the mention suggestion panel",
+    );
+  });
+
+  it("keeps the tooltip trigger scoped to the issue title text", async () => {
+    searchIssuesMock.mockResolvedValue({
+      issues: [
+        {
+          id: "i-1009",
+          identifier: "MUL-1009",
+          title: "Title-only tooltip trigger",
+          status: "done",
+        },
+      ],
+      total: 1,
+    });
+
+    render(
+      <I18nWrapper>
+        <MentionList items={[]} query="trigger" command={vi.fn()} />
+      </I18nWrapper>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("MUL-1009")).toBeInTheDocument();
+    });
+
+    const titleInTrigger = screen.getByTestId("tooltip-trigger").querySelector(
+      ".text-muted-foreground",
+    ) as HTMLElement | null;
+
+    expect(screen.getByTestId("tooltip-trigger")).toContainElement(titleInTrigger);
+    expect(titleInTrigger).toHaveTextContent("Title-only tooltip trigger");
   });
 
   it("does not call searchIssues for an empty query", () => {
