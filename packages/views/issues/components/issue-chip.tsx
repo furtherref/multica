@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { issueListOptions, issueDetailOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
 import { StatusIcon } from "./status-icon";
 
 /**
@@ -28,7 +29,7 @@ export interface IssueChipProps {
 }
 
 const BASE_CLASS =
-  "issue-mention inline-flex items-center gap-1.5 rounded-md border mx-0.5 px-2 py-0.5 text-xs max-w-72";
+  "issue-mention inline-flex items-center gap-1.5 rounded-md border mx-0.5 px-2 py-0.5 text-xs max-w-96";
 
 export function IssueChip({ issueId, fallbackLabel, className }: IssueChipProps) {
   const wsId = useWorkspaceId();
@@ -60,7 +61,12 @@ export function IssueChip({ issueId, fallbackLabel, className }: IssueChipProps)
       <span className="font-medium text-muted-foreground shrink-0">
         {issue.identifier}
       </span>
-      <span className="text-foreground truncate">{issue.title}</span>
+      <Tooltip>
+        <TooltipTrigger>
+          <span className="text-foreground truncate">{issue.title}</span>
+        </TooltipTrigger>
+        <TooltipContent>{issue.title}</TooltipContent>
+      </Tooltip>
     </span>
   );
 }
