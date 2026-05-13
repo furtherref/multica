@@ -1922,7 +1922,7 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 		slog.Error("quick-create completion: inbox write failed", "task_id", util.UUIDToString(task.ID), "error", err)
 		return
 	}
-	s.publishQuickCreateInbox(item, qc.WorkspaceID, util.UUIDToString(task.AgentID), issue.Status)
+	s.publishQuickCreateInbox(ctx, item, qc.WorkspaceID, util.UUIDToString(task.AgentID), issue.Status)
 }
 
 // notifyQuickCreateFailed writes a failure inbox notification carrying the
@@ -1964,16 +1964,25 @@ func (s *TaskService) notifyQuickCreateFailed(ctx context.Context, task db.Agent
 		slog.Error("quick-create failure: inbox write failed", "task_id", util.UUIDToString(task.ID), "error", err)
 		return
 	}
-	s.publishQuickCreateInbox(item, qc.WorkspaceID, util.UUIDToString(task.AgentID), "")
+	s.publishQuickCreateInbox(ctx, item, qc.WorkspaceID, util.UUIDToString(task.AgentID), "")
 }
 
 // publishQuickCreateInbox emits the WS event so the requester's inbox list
 // updates immediately. Mirrors the payload shape used by the other inbox
 // listeners (notification_listeners.go).
-func (s *TaskService) publishQuickCreateInbox(item db.InboxItem, workspaceID, agentID, issueStatus string) {
+func (s *TaskService) publishQuickCreateInbox(ctx context.Context, item db.InboxItem, workspaceID, agentID, issueStatus string) {
+	workspaceSlug := ""
+	if s.Queries != nil {
+		if ws, err := s.Queries.GetWorkspace(ctx, item.WorkspaceID); err == nil {
+			workspaceSlug = ws.Slug
+		} else {
+			slog.Warn("quick-create inbox: workspace slug lookup failed", "workspace_id", workspaceID, "error", err)
+		}
+	}
 	resp := map[string]any{
 		"id":             util.UUIDToString(item.ID),
 		"workspace_id":   util.UUIDToString(item.WorkspaceID),
+		"workspace_slug": workspaceSlug,
 		"recipient_type": item.RecipientType,
 		"recipient_id":   util.UUIDToString(item.RecipientID),
 		"type":           item.Type,

@@ -129,6 +129,25 @@ describe("ApiClient", () => {
     expect(headers["X-Client-OS"]).toBe("macos");
   });
 
+  it("can fetch notification preferences for a workspace other than the current slug", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ workspace_id: "ws-target", preferences: {} }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    setCurrentWorkspace("current", "ws-current");
+
+    await client.getNotificationPreferences("target");
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://api.example.test/api/notification-preferences");
+    expect((init?.headers as Record<string, string>)["X-Workspace-Slug"]).toBe("target");
+  });
+
   it("fetches markdown previews through the configured API base URL", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response("# Preview", {

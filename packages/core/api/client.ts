@@ -879,8 +879,10 @@ export class ApiClient {
   }
 
   // Notification preferences
-  async getNotificationPreferences(): Promise<NotificationPreferenceResponse> {
-    return this.fetch("/api/notification-preferences");
+  async getNotificationPreferences(workspaceSlug?: string): Promise<NotificationPreferenceResponse> {
+    return this.fetch("/api/notification-preferences", workspaceSlug
+      ? { headers: { "X-Workspace-Slug": workspaceSlug } }
+      : undefined);
   }
 
   async updateNotificationPreferences(preferences: NotificationPreferences): Promise<NotificationPreferenceResponse> {

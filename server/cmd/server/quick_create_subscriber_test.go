@@ -9,6 +9,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // TestQuickCreateCompletion_SubscribesRequester locks in the fix for the
@@ -20,6 +21,7 @@ func TestQuickCreateCompletion_SubscribesRequester(t *testing.T) {
 	ctx := context.Background()
 	queries := db.New(testPool)
 	bus := events.New()
+	inboxItems := captureQuickCreateInboxItems(bus)
 	taskSvc := service.NewTaskService(queries, testPool, nil, bus)
 
 	var agentID string
@@ -83,6 +85,7 @@ func TestQuickCreateCompletion_SubscribesRequester(t *testing.T) {
 	if !isSubscribed(t, queries, util.UUIDToString(issue.ID), "member", testUserID) {
 		t.Fatal("expected requester to be subscribed after quick-create completion")
 	}
+	assertQuickCreateInboxWorkspaceSlug(t, inboxItems, integrationTestWorkspaceSlug)
 }
 
 // TestQuickCreateFailure_DoesNotSubscribeRequester confirms the failure path
@@ -92,6 +95,7 @@ func TestQuickCreateFailure_DoesNotSubscribeRequester(t *testing.T) {
 	ctx := context.Background()
 	queries := db.New(testPool)
 	bus := events.New()
+	inboxItems := captureQuickCreateInboxItems(bus)
 	taskSvc := service.NewTaskService(queries, testPool, nil, bus)
 
 	var agentID string
@@ -144,5 +148,32 @@ func TestQuickCreateFailure_DoesNotSubscribeRequester(t *testing.T) {
 	}
 	if leaked != 0 {
 		t.Fatalf("expected no subscriber rows for failed quick-create, got %d", leaked)
+	}
+	assertQuickCreateInboxWorkspaceSlug(t, inboxItems, integrationTestWorkspaceSlug)
+}
+
+func captureQuickCreateInboxItems(bus *events.Bus) *[]map[string]any {
+	items := []map[string]any{}
+	bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
+		payload, ok := e.Payload.(map[string]any)
+		if !ok {
+			return
+		}
+		item, ok := payload["item"].(map[string]any)
+		if !ok {
+			return
+		}
+		items = append(items, item)
+	})
+	return &items
+}
+
+func assertQuickCreateInboxWorkspaceSlug(t *testing.T, items *[]map[string]any, want string) {
+	t.Helper()
+	if len(*items) != 1 {
+		t.Fatalf("expected 1 quick-create inbox event, got %d", len(*items))
+	}
+	if got := (*items)[0]["workspace_slug"]; got != want {
+		t.Fatalf("expected quick-create inbox workspace_slug %q, got %v", want, got)
 	}
 }

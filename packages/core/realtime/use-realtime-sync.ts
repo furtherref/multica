@@ -307,7 +307,7 @@ export function useRealtimeSync(
       // the default ("all") rather than swallow the banner entirely.
       if (wsId) {
         try {
-          const prefData = await qc.ensureQueryData(notificationPreferenceOptions(wsId));
+          const prefData = await qc.ensureQueryData(notificationPreferenceOptions(wsId, target.workspaceSlug));
           if (prefData?.preferences?.system_notifications === "muted") return;
         } catch {
           // Fall through with default behavior.

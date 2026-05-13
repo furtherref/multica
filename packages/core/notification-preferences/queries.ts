@@ -5,9 +5,9 @@ export const notificationPreferenceKeys = {
   all: (wsId: string) => ["notification-preferences", wsId] as const,
 };
 
-export function notificationPreferenceOptions(wsId: string) {
+export function notificationPreferenceOptions(wsId: string, workspaceSlug?: string | null) {
   return queryOptions({
     queryKey: notificationPreferenceKeys.all(wsId),
-    queryFn: () => api.getNotificationPreferences(),
+    queryFn: () => api.getNotificationPreferences(workspaceSlug ?? undefined),
   });
 }
