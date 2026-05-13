@@ -62,9 +62,7 @@ export function IssueChip({ issueId, fallbackLabel, className }: IssueChipProps)
         {issue.identifier}
       </span>
       <Tooltip>
-        <TooltipTrigger>
-          <span className="text-foreground truncate">{issue.title}</span>
-        </TooltipTrigger>
+        <TooltipTrigger render={<span className="text-foreground truncate">{issue.title}</span>} />
         <TooltipContent>{issue.title}</TooltipContent>
       </Tooltip>
     </span>

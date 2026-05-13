@@ -25,7 +25,9 @@ vi.mock("./status-icon", () => ({
 
 vi.mock("@multica/ui/components/ui/tooltip", () => ({
   Tooltip: ({ children }: any) => <>{children}</>,
-  TooltipTrigger: ({ children, render }: any) => <>{render ?? children}</>,
+  TooltipTrigger: ({ children, render }: any) => (
+    <span data-testid="tooltip-trigger">{render ?? children}</span>
+  ),
   TooltipContent: ({ children }: any) => <div data-testid="tooltip-content">{children}</div>,
 }));
 
@@ -77,6 +79,34 @@ describe("IssueChip", () => {
     ).toHaveLength(2);
     expect(screen.getByTestId("tooltip-content")).toHaveTextContent(
       "A very long issue title that should be available in the tooltip",
+    );
+  });
+
+  it("uses the title span as the tooltip trigger content for resolved issues", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    });
+    queryClient.setQueryData(["issues", "ws-test", "list"], [
+      {
+        id: "issue-2",
+        identifier: "MUL-2",
+        title: "Tooltip trigger should reuse the title span",
+        status: "todo",
+      },
+    ]);
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <IssueChip issueId="issue-2" />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId("tooltip-trigger")).toContainElement(
+      screen.getAllByText("Tooltip trigger should reuse the title span")[0],
     );
   });
 });
