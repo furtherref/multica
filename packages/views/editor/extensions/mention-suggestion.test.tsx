@@ -50,8 +50,28 @@ vi.mock("@multica/ui/components/ui/tooltip", () => ({
   TooltipTrigger: ({ children, render }: { children?: ReactNode; render?: ReactNode }) => (
     <span data-testid="tooltip-trigger">{render ?? children}</span>
   ),
-  TooltipContent: ({ children }: { children: ReactNode }) => (
-    <div data-testid="tooltip-content">{children}</div>
+  TooltipContent: ({
+    children,
+    align,
+    side,
+    className,
+    positionerClassName,
+  }: {
+    children: ReactNode;
+    align?: string;
+    side?: string;
+    className?: string;
+    positionerClassName?: string;
+  }) => (
+    <div
+      data-testid="tooltip-content"
+      data-align={align}
+      data-side={side}
+      data-class={className}
+      data-positioner-class={positionerClassName}
+    >
+      {children}
+    </div>
   ),
 }));
 
@@ -177,6 +197,61 @@ describe("createMentionSuggestion", () => {
 
     expect(screen.getByTestId("tooltip-content")).toHaveTextContent(
       "A long issue title for the mention suggestion panel",
+    );
+  });
+
+  it("anchors the issue suggestion tooltip to the start of the title column", async () => {
+    searchIssuesMock.mockResolvedValue({
+      issues: [
+        {
+          id: "i-1010",
+          identifier: "MUL-1010",
+          title: "Tooltip should stay aligned with the issue title",
+          status: "todo",
+        },
+      ],
+      total: 1,
+    });
+
+    render(
+      <I18nWrapper>
+        <MentionList items={[]} query="aligned" command={vi.fn()} />
+      </I18nWrapper>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("MUL-1010")).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId("tooltip-content")).toHaveAttribute("data-align", "start");
+  });
+
+  it("renders the issue suggestion tooltip above the suggestion popup layer", async () => {
+    searchIssuesMock.mockResolvedValue({
+      issues: [
+        {
+          id: "i-1011",
+          identifier: "MUL-1011",
+          title: "Tooltip should sit above the suggestion popup",
+          status: "todo",
+        },
+      ],
+      total: 1,
+    });
+
+    render(
+      <I18nWrapper>
+        <MentionList items={[]} query="above" command={vi.fn()} />
+      </I18nWrapper>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("MUL-1011")).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId("tooltip-content")).toHaveAttribute(
+      "data-positioner-class",
+      expect.stringContaining("z-[70]"),
     );
   });
 

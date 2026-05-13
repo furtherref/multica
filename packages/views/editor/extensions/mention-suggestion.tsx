@@ -260,7 +260,7 @@ export const MentionList = forwardRef<MentionListRef, MentionListProps>(
     let globalIndex = 0;
 
     return (
-      <div className="rounded-md border bg-popover py-1 shadow-md w-72 max-h-[300px] overflow-y-auto">
+      <div className="rounded-md border bg-popover py-1 shadow-md w-96 max-h-[300px] overflow-y-auto">
         {groups.map((group) => (
           <div key={group.label}>
             <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground">
@@ -330,7 +330,13 @@ function MentionRow({
                 </span>
               }
             />
-            <TooltipContent>{item.description}</TooltipContent>
+            <TooltipContent
+              align="start"
+              className="z-[60]"
+              positionerClassName="z-[70]"
+            >
+              {item.description}
+            </TooltipContent>
           </Tooltip>
         )}
       </button>
