@@ -10,6 +10,7 @@ function item(overrides: Partial<InboxItem>): InboxItem {
   return {
     id: "inbox-1",
     workspace_id: "workspace-1",
+    workspace_slug: "workspace",
     recipient_type: "member",
     recipient_id: "member-1",
     actor_type: "agent",

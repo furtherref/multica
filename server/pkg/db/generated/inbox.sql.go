@@ -296,8 +296,10 @@ func (q *Queries) GetInboxItemInWorkspace(ctx context.Context, arg GetInboxItemI
 
 const listInboxItems = `-- name: ListInboxItems :many
 SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details,
+       w.slug as workspace_slug,
        iss.status as issue_status
 FROM inbox_item i
+JOIN workspace w ON w.id = i.workspace_id
 LEFT JOIN issue iss ON iss.id = i.issue_id
 WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
 ORDER BY i.created_at DESC
@@ -325,6 +327,7 @@ type ListInboxItemsRow struct {
 	ActorType     pgtype.Text        `json:"actor_type"`
 	ActorID       pgtype.UUID        `json:"actor_id"`
 	Details       []byte             `json:"details"`
+	WorkspaceSlug string             `json:"workspace_slug"`
 	IssueStatus   pgtype.Text        `json:"issue_status"`
 }
 
@@ -353,6 +356,7 @@ func (q *Queries) ListInboxItems(ctx context.Context, arg ListInboxItemsParams) 
 			&i.ActorType,
 			&i.ActorID,
 			&i.Details,
+			&i.WorkspaceSlug,
 			&i.IssueStatus,
 		); err != nil {
 			return nil, err

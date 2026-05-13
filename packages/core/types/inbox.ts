@@ -23,6 +23,7 @@ export type InboxItemType =
 export interface InboxItem {
   id: string;
   workspace_id: string;
+  workspace_slug: string;
   recipient_type: "member" | "agent";
   recipient_id: string;
   actor_type: "member" | "agent" | "system" | null;

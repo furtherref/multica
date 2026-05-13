@@ -1,7 +1,9 @@
 -- name: ListInboxItems :many
 SELECT i.*,
+       w.slug as workspace_slug,
        iss.status as issue_status
 FROM inbox_item i
+JOIN workspace w ON w.id = i.workspace_id
 LEFT JOIN issue iss ON iss.id = i.issue_id
 WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
 ORDER BY i.created_at DESC;

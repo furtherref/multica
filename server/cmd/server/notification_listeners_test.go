@@ -142,6 +142,10 @@ func TestNotification_IssueCreated_AssigneeNotified(t *testing.T) {
 	if len(inboxEvents) < 1 {
 		t.Fatal("expected at least 1 inbox:new event")
 	}
+	itemPayload := inboxEvents[0].Payload.(map[string]any)["item"].(map[string]any)
+	if got := itemPayload["workspace_slug"]; got != integrationTestWorkspaceSlug {
+		t.Fatalf("expected inbox payload workspace_slug %q, got %v", integrationTestWorkspaceSlug, got)
+	}
 }
 
 // TestNotification_IssueCreated_SelfAssign verifies that when the creator

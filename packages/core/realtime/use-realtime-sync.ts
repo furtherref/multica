@@ -33,6 +33,7 @@ import { notificationPreferenceOptions } from "../notification-preferences/queri
 import { workspaceKeys, workspaceListOptions } from "../workspace/queries";
 import { chatKeys } from "../chat/queries";
 import { useChatStore } from "../chat";
+import { resolveInboxEventTarget } from "./inbox-event";
 import { resolvePostAuthDestination, useHasOnboarded } from "../paths";
 import type {
   MemberAddedPayload,
@@ -285,7 +286,11 @@ export function useRealtimeSync(
     const unsubInboxNew = ws.on("inbox:new", async (p) => {
       const { item } = p as InboxNewPayload;
       if (!item) return;
-      const wsId = getCurrentWsId();
+      const target = resolveInboxEventTarget(item, {
+        currentWorkspaceId: getCurrentWsId(),
+        currentWorkspaceSlug: getCurrentSlug(),
+      });
+      const wsId = target.workspaceId;
       if (wsId) onInboxNew(qc, wsId, item);
       // Fire a native OS notification only when the app isn't focused. When
       // the user is already looking at Multica, the inbox sidebar's unread
@@ -313,7 +318,7 @@ export function useRealtimeSync(
       // holds banners), so routing must not read "current slug" at click
       // time — otherwise notifications from workspace A click through to
       // workspace B's inbox and 404.
-      const slug = getCurrentSlug();
+      const slug = target.workspaceSlug;
       if (!slug) return;
       const desktopAPI = (
         window as unknown as {
