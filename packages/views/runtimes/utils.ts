@@ -190,6 +190,14 @@ const MODEL_PRICING: Record<
   "gemini-2.5-flash-lite":         { input: 0.10, output: 0.40,  cacheRead: 0.025, cacheWrite: 0.10 },
   "gemini-2.5-flash":              { input: 0.30, output: 2.50,  cacheRead: 0.075, cacheWrite: 0.30 },
   "gemini-2.5-pro":                { input: 1.25, output: 10.00, cacheRead: 0.31,  cacheWrite: 1.25 },
+
+  // -- Zhipu GLM: catalog SKUs. --
+  "glm-5.0":  { input: 0.57, output: 1.92, cacheRead: 0.16, cacheWrite: 0.57 },
+  "glm-5.1":  { input: 1.40, output: 4.40, cacheRead: 0.26, cacheWrite: 1.40 },
+
+  // -- Moonshot Kimi: catalog SKUs. --
+  "kimi-k2.5": { input: 0.60, output: 3.00, cacheRead: 0.10, cacheWrite: 0.60 },
+  "kimi-k2.6": { input: 0.95, output: 4.00, cacheRead: 0.16, cacheWrite: 0.95 },
 };
 
 // Resolve a model string to its pricing tier. Exact match, with one
