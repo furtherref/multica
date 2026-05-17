@@ -225,3 +225,35 @@ func TestUpdateSquad_AdminCanUpdateOthersSquad(t *testing.T) {
 		t.Fatalf("UpdateSquad as workspace owner: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestDeleteSquad_CreatorMemberCanDelete(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	squadID, creatorID, _, _ := memberOwnedSquadFixture(t)
+
+	req := newRequestAs(creatorID, http.MethodDelete, "/api/squads/"+squadID, nil)
+	req = withURLParams(req, "workspaceId", testWorkspaceID, "id", squadID)
+
+	w := httptest.NewRecorder()
+	testHandler.DeleteSquad(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("DeleteSquad as creator-member: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteSquad_NonCreatorMemberForbidden(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	squadID, _, otherID, _ := memberOwnedSquadFixture(t)
+
+	req := newRequestAs(otherID, http.MethodDelete, "/api/squads/"+squadID, nil)
+	req = withURLParams(req, "workspaceId", testWorkspaceID, "id", squadID)
+
+	w := httptest.NewRecorder()
+	testHandler.DeleteSquad(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("DeleteSquad as bystander-member: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
