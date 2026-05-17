@@ -257,3 +257,39 @@ func TestDeleteSquad_NonCreatorMemberForbidden(t *testing.T) {
 		t.Fatalf("DeleteSquad as bystander-member: expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestAddSquadMember_CreatorMemberCanAdd(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	squadID, creatorID, otherID, _ := memberOwnedSquadFixture(t)
+
+	body := map[string]any{"member_type": "member", "member_id": otherID}
+	req := newRequestAs(creatorID, http.MethodPost, "/api/squads/"+squadID+"/members", body)
+	req = withURLParams(req, "workspaceId", testWorkspaceID, "id", squadID)
+
+	w := httptest.NewRecorder()
+	testHandler.AddSquadMember(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("AddSquadMember as creator-member: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAddSquadMember_NonCreatorMemberForbidden(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	squadID, _, otherID, _ := memberOwnedSquadFixture(t)
+
+	body := map[string]any{"member_type": "member", "member_id": otherID}
+	// otherID is both the caller AND the proposed new member, but the perm
+	// check runs first so the body never gets exercised.
+	req := newRequestAs(otherID, http.MethodPost, "/api/squads/"+squadID+"/members", body)
+	req = withURLParams(req, "workspaceId", testWorkspaceID, "id", squadID)
+
+	w := httptest.NewRecorder()
+	testHandler.AddSquadMember(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("AddSquadMember as bystander-member: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
