@@ -753,9 +753,9 @@ function SquadDetailInspector({
   leaderName: string;
   creatorName: string;
   uploadingAvatar: boolean;
-  onUploadAvatar: (url: string) => Promise<unknown>;
-  onRename: (next: string) => Promise<void>;
-  onUpdateDescription: (next: string) => Promise<void>;
+  onUploadAvatar?: (url: string) => Promise<unknown>;
+  onRename?: (next: string) => Promise<void>;
+  onUpdateDescription?: (next: string) => Promise<void>;
 }) {
   const { t } = useT("squads");
   const initials = squad.name
@@ -965,15 +965,15 @@ function SquadOverviewPane({
   members: SquadMember[];
   isLeader: (m: SquadMember) => boolean;
   getEntityName: (type: string, id: string) => string;
-  onAddMemberClick: () => void;
+  onAddMemberClick?: () => void;
   // Optional — only passed when the current user can manage the squad
   // (workspace owner/admin). Hidden otherwise so plain members don't
   // see a button they can't action.
   onCreateAgentClick?: () => void;
-  onSetLeader: (agentId: string) => void;
-  onRemoveMember: (m: SquadMember) => void;
-  onUpdateRole: (m: SquadMember, role: string) => Promise<void>;
-  onSaveInstructions: (next: string) => Promise<void>;
+  onSetLeader?: (agentId: string) => void;
+  onRemoveMember?: (m: SquadMember) => void;
+  onUpdateRole?: (m: SquadMember, role: string) => Promise<void>;
+  onSaveInstructions?: (next: string) => Promise<void>;
   setLeaderPending: boolean;
 }) {
   const { t } = useT("squads");
@@ -1079,12 +1079,12 @@ function SquadMembersTab({
   members: SquadMember[];
   isLeader: (m: SquadMember) => boolean;
   getEntityName: (type: string, id: string) => string;
-  onAddMemberClick: () => void;
+  onAddMemberClick?: () => void;
   // Hidden for non-admins — see SquadOverviewPane.
   onCreateAgentClick?: () => void;
-  onSetLeader: (agentId: string) => void;
-  onRemoveMember: (m: SquadMember) => void;
-  onUpdateRole: (m: SquadMember, role: string) => Promise<void>;
+  onSetLeader?: (agentId: string) => void;
+  onRemoveMember?: (m: SquadMember) => void;
+  onUpdateRole?: (m: SquadMember, role: string) => Promise<void>;
   setLeaderPending: boolean;
 }) {
   const { t } = useT("squads");
@@ -1105,10 +1105,12 @@ function SquadMembersTab({
               {t(($) => $.members_tab.create_agent_button)}
             </Button>
           )}
-          <Button size="sm" variant="outline" onClick={onAddMemberClick}>
-            <Plus className="size-3.5 mr-1.5" />
-            {t(($) => $.members_tab.add_member_button)}
-          </Button>
+          {onAddMemberClick && (
+            <Button size="sm" variant="outline" onClick={onAddMemberClick}>
+              <Plus className="size-3.5 mr-1.5" />
+              {t(($) => $.members_tab.add_member_button)}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -1136,7 +1138,11 @@ function SquadMembersTab({
               </div>
               <RoleEditor
                 value={m.role ?? ""}
-                onSave={async (next) => { await onUpdateRole(m, next); }}
+                onSave={
+                  onUpdateRole
+                    ? async (next) => { await onUpdateRole(m, next); }
+                    : undefined
+                }
               />
             </div>
             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
@@ -1158,7 +1164,7 @@ function SquadMembersTab({
                   </TooltipContent>
                 </Tooltip>
               )}
-              {m.member_type === "agent" && !isLeader(m) && (
+              {onSetLeader && m.member_type === "agent" && !isLeader(m) && (
                 <Tooltip>
                   <TooltipTrigger
                     render={
@@ -1179,7 +1185,7 @@ function SquadMembersTab({
                   </TooltipContent>
                 </Tooltip>
               )}
-              {!isLeader(m) && (
+              {onRemoveMember && !isLeader(m) && (
                 <Tooltip>
                   <TooltipTrigger
                     render={
