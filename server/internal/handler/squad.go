@@ -432,11 +432,7 @@ func (h *Handler) AddSquadMember(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) RemoveSquadMember(w http.ResponseWriter, r *http.Request) {
 	workspaceID := workspaceIDFromURL(r, "workspaceId")
-	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
-		return
-	}
-
-	squad, _, ok := h.loadSquadInWorkspace(w, r)
+	squad, _, ok := h.requireSquadManager(w, r)
 	if !ok {
 		return
 	}

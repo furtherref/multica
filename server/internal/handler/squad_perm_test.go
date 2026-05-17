@@ -293,3 +293,53 @@ func TestAddSquadMember_NonCreatorMemberForbidden(t *testing.T) {
 		t.Fatalf("AddSquadMember as bystander-member: expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// addSquadMemberDirect inserts a squad membership row directly via SQL to
+// avoid going through the AddSquadMember endpoint. Used by tests that
+// need a pre-populated member without exercising the endpoint they are
+// about to test.
+func addSquadMemberDirect(t *testing.T, squadID, memberID, memberType, role string) {
+	t.Helper()
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO squad_member (squad_id, member_type, member_id, role)
+		VALUES ($1, $2, $3, $4)
+	`, squadID, memberType, memberID, role); err != nil {
+		t.Fatalf("addSquadMemberDirect: %v", err)
+	}
+}
+
+func TestRemoveSquadMember_CreatorMemberCanRemove(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	squadID, creatorID, otherID, _ := memberOwnedSquadFixture(t)
+	addSquadMemberDirect(t, squadID, otherID, "member", "member")
+
+	body := map[string]any{"member_type": "member", "member_id": otherID}
+	req := newRequestAs(creatorID, http.MethodDelete, "/api/squads/"+squadID+"/members", body)
+	req = withURLParams(req, "workspaceId", testWorkspaceID, "id", squadID)
+
+	w := httptest.NewRecorder()
+	testHandler.RemoveSquadMember(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("RemoveSquadMember as creator-member: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRemoveSquadMember_NonCreatorMemberForbidden(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	squadID, _, otherID, _ := memberOwnedSquadFixture(t)
+	addSquadMemberDirect(t, squadID, otherID, "member", "member")
+
+	body := map[string]any{"member_type": "member", "member_id": otherID}
+	req := newRequestAs(otherID, http.MethodDelete, "/api/squads/"+squadID+"/members", body)
+	req = withURLParams(req, "workspaceId", testWorkspaceID, "id", squadID)
+
+	w := httptest.NewRecorder()
+	testHandler.RemoveSquadMember(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("RemoveSquadMember as bystander-member: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
