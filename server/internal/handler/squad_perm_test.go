@@ -145,3 +145,83 @@ func TestCreateSquad_OwnerCanStillCreate(t *testing.T) {
 		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, resp.ID)
 	})
 }
+
+// memberOwnedSquadFixture creates two plain workspace members and a
+// squad owned by the first. Returns (squadID, creatorID, plainMemberID,
+// leaderAgentID). All four entities are cleaned up on test teardown.
+func memberOwnedSquadFixture(t *testing.T) (string, string, string, string) {
+	t.Helper()
+	ctx := context.Background()
+	creatorID := createPlainMember(t, "squad-owner-member")
+	otherID := createPlainMember(t, "squad-bystander-member")
+	leaderID := createHandlerTestAgent(t, "squad-fixture-leader", []byte(`{}`))
+
+	body := map[string]any{"name": "FixtureSquad", "leader_id": leaderID}
+	req := newRequestAs(creatorID, http.MethodPost, "/api/squads", body)
+	req = withURLParam(req, "workspaceId", testWorkspaceID)
+	w := httptest.NewRecorder()
+	testHandler.CreateSquad(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("fixture CreateSquad: got %d: %s", w.Code, w.Body.String())
+	}
+	var resp SquadResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("fixture decode squad: %v", err)
+	}
+	squadID := resp.ID
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID)
+	})
+	return squadID, creatorID, otherID, leaderID
+}
+
+func TestUpdateSquad_CreatorMemberCanUpdate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	squadID, creatorID, _, _ := memberOwnedSquadFixture(t)
+
+	body := map[string]any{"name": "Renamed"}
+	req := newRequestAs(creatorID, http.MethodPut, "/api/squads/"+squadID, body)
+	req = withURLParams(req, "workspaceId", testWorkspaceID, "id", squadID)
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateSquad(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateSquad as creator-member: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateSquad_NonCreatorMemberForbidden(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	squadID, _, otherID, _ := memberOwnedSquadFixture(t)
+
+	body := map[string]any{"name": "Hijacked"}
+	req := newRequestAs(otherID, http.MethodPut, "/api/squads/"+squadID, body)
+	req = withURLParams(req, "workspaceId", testWorkspaceID, "id", squadID)
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateSquad(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("UpdateSquad as bystander-member: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateSquad_AdminCanUpdateOthersSquad(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	squadID, _, _, _ := memberOwnedSquadFixture(t)
+
+	body := map[string]any{"name": "AdminEdit"}
+	req := newRequest(http.MethodPut, "/api/squads/"+squadID, body) // testUserID is owner
+	req = withURLParams(req, "workspaceId", testWorkspaceID, "id", squadID)
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateSquad(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateSquad as workspace owner: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
