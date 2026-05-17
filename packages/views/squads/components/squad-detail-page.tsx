@@ -302,11 +302,34 @@ function SquadAvatarEditor({
   squad: Squad;
   initials: string;
   uploading: boolean;
-  onUpload: (url: string) => Promise<unknown>;
+  onUpload?: (url: string) => Promise<unknown>;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { upload, uploading: fileUploading } = useFileUpload(api);
   const busy = uploading || fileUploading;
+
+  if (!onUpload) {
+    return (
+      <div
+        className="h-16 w-16 shrink-0 overflow-hidden rounded-lg bg-muted"
+        aria-label="Squad avatar"
+      >
+        {squad.avatar_url ? (
+          <ActorAvatarBase
+            name={squad.name}
+            initials={initials}
+            avatarUrl={squad.avatar_url}
+            size={64}
+            className="rounded-none"
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+            <Users className="h-7 w-7" />
+          </div>
+        )}
+      </div>
+    );
+  }
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -371,8 +394,14 @@ function SquadNameEditor({
   onSave,
 }: {
   value: string;
-  onSave: (next: string) => Promise<void>;
+  onSave?: (next: string) => Promise<void>;
 }) {
+  if (!onSave) {
+    return (
+      <div className="px-1 text-lg font-semibold leading-tight">{value}</div>
+    );
+  }
+
   return (
     <InlineEditPopover
       value={value}
@@ -646,8 +675,14 @@ function AddMemberDialog({
 // click (or click the placeholder when empty) to swap in an input that
 // commits on blur / Enter and cancels on Escape. Avoids opening a modal
 // for what is usually a one-word change.
-function RoleEditor({ value, onSave }: { value: string; onSave: (next: string) => Promise<void> }) {
+function RoleEditor({ value, onSave }: { value: string; onSave?: (next: string) => Promise<void> }) {
   const { t } = useT("squads");
+
+  if (!onSave) {
+    return (
+      <div className="text-xs text-muted-foreground mt-0.5">{value || "—"}</div>
+    );
+  }
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const [saving, setSaving] = useState(false);
@@ -800,10 +835,19 @@ function SquadDescriptionEditor({
   onSave,
 }: {
   value: string;
-  onSave: (next: string) => Promise<void>;
+  onSave?: (next: string) => Promise<void>;
 }) {
   const { t } = useT("squads");
   const [open, setOpen] = useState(false);
+
+  if (!onSave) {
+    return (
+      <div className="px-1 text-xs leading-relaxed text-muted-foreground">
+        {value || ""}
+      </div>
+    );
+  }
+
   return (
     <>
       <button
@@ -1172,7 +1216,7 @@ function SquadInstructionsTab({
   onDirtyChange,
 }: {
   squad: Squad;
-  onSave: (instructions: string) => Promise<void>;
+  onSave?: (instructions: string) => Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { t } = useT("squads");
@@ -1189,6 +1233,7 @@ function SquadInstructionsTab({
   }, [isDirty, onDirtyChange]);
 
   const handleSave = async () => {
+    if (!onSave) return;
     setSaving(true);
     try {
       await onSave(value);
@@ -1198,6 +1243,14 @@ function SquadInstructionsTab({
       setSaving(false);
     }
   };
+
+  if (!onSave) {
+    return (
+      <div className="flex h-full flex-col p-4 md:p-6">
+        <div className="text-sm whitespace-pre-wrap">{squad.instructions ?? ""}</div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col gap-4">
