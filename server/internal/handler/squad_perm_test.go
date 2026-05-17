@@ -343,3 +343,39 @@ func TestRemoveSquadMember_NonCreatorMemberForbidden(t *testing.T) {
 		t.Fatalf("RemoveSquadMember as bystander-member: expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestUpdateSquadMemberRole_CreatorMemberCanUpdate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	squadID, creatorID, otherID, _ := memberOwnedSquadFixture(t)
+	addSquadMemberDirect(t, squadID, otherID, "member", "member")
+
+	body := map[string]any{"member_type": "member", "member_id": otherID, "role": "contributor"}
+	req := newRequestAs(creatorID, http.MethodPatch, "/api/squads/"+squadID+"/members/role", body)
+	req = withURLParams(req, "workspaceId", testWorkspaceID, "id", squadID)
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateSquadMemberRole(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateSquadMemberRole as creator-member: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateSquadMemberRole_NonCreatorMemberForbidden(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	squadID, _, otherID, _ := memberOwnedSquadFixture(t)
+	addSquadMemberDirect(t, squadID, otherID, "member", "member")
+
+	body := map[string]any{"member_type": "member", "member_id": otherID, "role": "contributor"}
+	req := newRequestAs(otherID, http.MethodPatch, "/api/squads/"+squadID+"/members/role", body)
+	req = withURLParams(req, "workspaceId", testWorkspaceID, "id", squadID)
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateSquadMemberRole(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("UpdateSquadMemberRole as bystander-member: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
