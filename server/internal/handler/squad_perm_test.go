@@ -138,7 +138,9 @@ func TestCreateSquad_OwnerCanStillCreate(t *testing.T) {
 		t.Fatalf("CreateSquad as owner: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 	var resp SquadResponse
-	json.NewDecoder(w.Body).Decode(&resp)
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode squad response: %v", err)
+	}
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, resp.ID)
 	})
