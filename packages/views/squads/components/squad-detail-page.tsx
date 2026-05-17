@@ -94,6 +94,8 @@ export function SquadDetailPage() {
     return wsMembers.find((m) => m.user_id === currentUser.id)?.role ?? null;
   }, [wsMembers, currentUser]);
   const isWorkspaceAdmin = myRole === "owner" || myRole === "admin";
+  const canManageSquad =
+    isWorkspaceAdmin || squad?.creator_id === currentUser?.id;
 
   const { data: runtimes = [], isLoading: runtimesLoading } = useQuery({
     ...runtimeListOptions(wsId),
@@ -206,10 +208,12 @@ export function SquadDetailPage() {
           <SquadHeaderAvatar squad={squad} initials={initials} />
           <h1 className="text-sm font-medium">{squad.name}</h1>
         </div>
-        <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => { if (confirm("Archive this squad? Issues will be transferred to the leader.")) deleteMut.mutate(); }}>
-          <Trash2 className="size-3.5 mr-1" />
-          {t(($) => $.inspector.archive_button)}
-        </Button>
+        {canManageSquad && (
+          <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => { if (confirm("Archive this squad? Issues will be transferred to the leader.")) deleteMut.mutate(); }}>
+            <Trash2 className="size-3.5 mr-1" />
+            {t(($) => $.inspector.archive_button)}
+          </Button>
+        )}
       </PageHeader>
 
       {/* Two-column grid mirrors agent-detail-page: left inspector (identity +
@@ -222,9 +226,9 @@ export function SquadDetailPage() {
           leaderName={getEntityName("agent", squad.leader_id)}
           creatorName={getEntityName("member", squad.creator_id)}
           uploadingAvatar={updateSquadMut.isPending}
-          onUploadAvatar={(url) => updateSquadMut.mutateAsync({ avatar_url: url })}
-          onRename={async (next) => { await updateSquadMut.mutateAsync({ name: next.trim() }); }}
-          onUpdateDescription={async (next) => { await updateSquadMut.mutateAsync({ description: next }); }}
+          onUploadAvatar={canManageSquad ? (url) => updateSquadMut.mutateAsync({ avatar_url: url }) : undefined}
+          onRename={canManageSquad ? async (next) => { await updateSquadMut.mutateAsync({ name: next.trim() }); } : undefined}
+          onUpdateDescription={canManageSquad ? async (next) => { await updateSquadMut.mutateAsync({ description: next }); } : undefined}
         />
 
         <SquadOverviewPane
@@ -232,12 +236,12 @@ export function SquadDetailPage() {
           members={members}
           isLeader={isLeader}
           getEntityName={getEntityName}
-          onAddMemberClick={() => setShowAddMember(true)}
+          onAddMemberClick={canManageSquad ? () => setShowAddMember(true) : undefined}
           onCreateAgentClick={isWorkspaceAdmin ? () => setShowCreateAgent(true) : undefined}
-          onSetLeader={(id) => setLeaderMut.mutate(id)}
-          onRemoveMember={(m) => removeMemberMut.mutate(m)}
-          onUpdateRole={async (m, role) => { await updateRoleMut.mutateAsync({ member: m, role }); }}
-          onSaveInstructions={async (next) => { await updateSquadMut.mutateAsync({ instructions: next }); toast.success("Instructions saved"); }}
+          onSetLeader={canManageSquad ? (id) => setLeaderMut.mutate(id) : undefined}
+          onRemoveMember={canManageSquad ? (m) => removeMemberMut.mutate(m) : undefined}
+          onUpdateRole={canManageSquad ? async (m, role) => { await updateRoleMut.mutateAsync({ member: m, role }); } : undefined}
+          onSaveInstructions={canManageSquad ? async (next) => { await updateSquadMut.mutateAsync({ instructions: next }); toast.success("Instructions saved"); } : undefined}
           setLeaderPending={setLeaderMut.isPending}
         />
       </div>
