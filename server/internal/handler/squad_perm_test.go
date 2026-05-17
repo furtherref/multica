@@ -1,6 +1,10 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -59,4 +63,83 @@ func TestCanManageSquad(t *testing.T) {
 			}
 		})
 	}
+}
+
+// createPlainMember inserts a new user and adds them to testWorkspaceID
+// as a workspace `member`. Returns the new user's UUID. Registers
+// cleanup that deletes the user (cascade removes the membership row).
+func createPlainMember(t *testing.T, label string) string {
+	t.Helper()
+	ctx := context.Background()
+	email := label + "@multica.test"
+
+	var userID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO "user" (name, email) VALUES ($1, $2) RETURNING id
+	`, label, email).Scan(&userID); err != nil {
+		t.Fatalf("create user %s: %v", label, err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, userID)
+	})
+
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'member')
+	`, testWorkspaceID, userID); err != nil {
+		t.Fatalf("add %s as member: %v", label, err)
+	}
+	return userID
+}
+
+func TestCreateSquad_MemberCanCreate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	memberID := createPlainMember(t, "squad-creator-member")
+	leaderID := createHandlerTestAgent(t, "squad-create-leader", []byte(`{}`))
+
+	body := map[string]any{"name": "MemberSquad", "leader_id": leaderID}
+	req := newRequestAs(memberID, http.MethodPost, "/api/squads", body)
+	req = withURLParam(req, "workspaceId", testWorkspaceID)
+
+	w := httptest.NewRecorder()
+	testHandler.CreateSquad(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateSquad as plain member: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp SquadResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode squad response: %v", err)
+	}
+	if resp.CreatorID != memberID {
+		t.Fatalf("creator_id: got %s, want %s", resp.CreatorID, memberID)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, resp.ID)
+	})
+}
+
+func TestCreateSquad_OwnerCanStillCreate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	leaderID := createHandlerTestAgent(t, "squad-create-leader-owner", []byte(`{}`))
+
+	body := map[string]any{"name": "OwnerSquad", "leader_id": leaderID}
+	req := newRequest(http.MethodPost, "/api/squads", body) // testUserID is workspace owner
+	req = withURLParam(req, "workspaceId", testWorkspaceID)
+
+	w := httptest.NewRecorder()
+	testHandler.CreateSquad(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateSquad as owner: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp SquadResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, resp.ID)
+	})
 }
