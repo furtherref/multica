@@ -681,17 +681,17 @@ function AddMemberDialog({
 // for what is usually a one-word change.
 function RoleEditor({ value, onSave }: { value: string; onSave?: (next: string) => Promise<void> }) {
   const { t } = useT("squads");
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { if (!editing) setDraft(value); }, [value, editing]);
 
   if (!onSave) {
     return (
       <div className="text-xs text-muted-foreground mt-0.5">{value || "—"}</div>
     );
   }
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => { if (!editing) setDraft(value); }, [value, editing]);
 
   const commit = async () => {
     const next = draft.trim();
