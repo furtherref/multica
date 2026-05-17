@@ -257,10 +257,10 @@ export function SquadDetailPage() {
 
       {/* Squad-scoped create flow: same dialog as the Agents page but
           with squadId set, so the dialog runs api.addSquadMember after
-          api.createAgent and skips the agent-detail navigation. Only
-          mounted for workspace owner/admin since AddSquadMember is
-          owner/admin-gated server-side; for everyone else the trigger
-          never renders. */}
+          api.createAgent and skips the agent-detail navigation. Mounted
+          only for workspace owner/admin because creating a new Agent is
+          a workspace-level governance action — independent of whether
+          the caller can otherwise manage this squad's membership. */}
       {showCreateAgent && isWorkspaceAdmin && (
         <CreateAgentDialog
           runtimes={runtimes}
@@ -1256,7 +1256,7 @@ function SquadInstructionsTab({
 
   if (!onSave) {
     return (
-      <div className="flex h-full flex-col p-4 md:p-6">
+      <div className="flex h-full flex-col gap-4">
         <div className="text-sm whitespace-pre-wrap">{squad.instructions ?? ""}</div>
       </div>
     );
