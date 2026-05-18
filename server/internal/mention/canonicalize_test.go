@@ -115,9 +115,17 @@ func TestCanonicalizeMentions(t *testing.T) {
 			want:  "[@RealAgent](mention://agent/" + agentRealUUID + ")",
 		},
 		{
-			name:  "agent mention with unresolvable uuid is stripped to plain text",
+			// Agent mentions with an unresolvable UUID are LEFT IN PLACE so
+			// downstream signals that depend on author intent — most notably
+			// commentMentionsOthersButNotAssignee, which suppresses the
+			// on_comment trigger when the comment is aimed at someone other
+			// than the assignee — continue to see the mention. The mention
+			// link is harmless: enqueueMentionedAgentTasks separately gates
+			// on GetAgentInWorkspace and skips it, and the readonly renderer
+			// falls back to the markdown label when the UUID isn't cached.
+			name:  "agent mention with unresolvable uuid is left unchanged",
 			input: "hi [@Ghost](mention://agent/" + agentMissingUUID + ") there",
-			want:  "hi @Ghost there",
+			want:  "hi [@Ghost](mention://agent/" + agentMissingUUID + ") there",
 		},
 		{
 			name:  "squad mention is canonicalized",
@@ -172,10 +180,11 @@ func TestCanonicalizeMentions(t *testing.T) {
 			want:  "Just plain text without mentions.",
 		},
 		{
-			name: "mix of valid and stripped mentions",
+			name: "mix of canonicalized and unresolvable mentions",
 			input: "[@FakeReal](mention://agent/" + agentRealUUID + ") and [@FakeGone](mention://agent/" +
 				agentMissingUUID + ")",
-			want: "[@RealAgent](mention://agent/" + agentRealUUID + ") and @FakeGone",
+			want: "[@RealAgent](mention://agent/" + agentRealUUID + ") and [@FakeGone](mention://agent/" +
+				agentMissingUUID + ")",
 		},
 	}
 
@@ -229,11 +238,21 @@ func TestCanonicalizeMentions_NonMemberUserStripped(t *testing.T) {
 	}
 }
 
-// TestCanonicalizeMentions_CrossWorkspaceAgentStripped verifies that an agent
-// mention whose UUID resolves only in a DIFFERENT workspace gets stripped, so
-// the rendered comment does not falsely advertise an unrelated workspace's
-// agent as part of this workspace's conversation.
-func TestCanonicalizeMentions_CrossWorkspaceAgentStripped(t *testing.T) {
+// TestCanonicalizeMentions_CrossWorkspaceAgentLeftAsIs pins that an agent
+// mention whose UUID does not resolve in this workspace is LEFT IN PLACE
+// rather than rewritten or stripped:
+//   - There is no name-leak risk for agents the way there is for members:
+//     the label here was authored by whoever wrote the comment (commonly an
+//     LLM), not derived from a cross-workspace agent.name lookup. The
+//     workspace-scoped GetAgentInWorkspace already prevents any DB-sourced
+//     rewrite for an outsider agent.
+//   - Stripping the link would erase author intent and break
+//     commentMentionsOthersButNotAssignee — a fake-UUID mention that the
+//     author wrote to direct the comment elsewhere would silently stop
+//     suppressing the assignee's on_comment trigger.
+//   - enqueueMentionedAgentTasks separately gates on GetAgentInWorkspace
+//     and refuses to dispatch, so the link does not actually route anywhere.
+func TestCanonicalizeMentions_CrossWorkspaceAgentLeftAsIs(t *testing.T) {
 	ctx := context.Background()
 	wsA := makeUUID("ws-A-------")
 	wsB := makeUUID("ws-B-------")
@@ -248,10 +267,10 @@ func TestCanonicalizeMentions_CrossWorkspaceAgentStripped(t *testing.T) {
 	}
 
 	input := "ping [@AgentInB](mention://agent/" + agentBUUID + ")"
-	want := "ping @AgentInB"
+	want := "ping [@AgentInB](mention://agent/" + agentBUUID + ")"
 
 	got := CanonicalizeMentions(ctx, resolver, wsA, input)
 	if got != want {
-		t.Errorf("cross-workspace agent should be stripped:\n got:  %q\n want: %q", got, want)
+		t.Errorf("cross-workspace agent should be left unchanged:\n got:  %q\n want: %q", got, want)
 	}
 }
