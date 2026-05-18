@@ -3,6 +3,7 @@ package mention
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -15,7 +16,13 @@ type nameResolverMock struct {
 	workspaceID pgtype.UUID
 	agents      map[string]string // uuid string → agent.Name
 	squads      map[string]string // uuid string → squad.Name
-	users       map[string]string // uuid string → user.Name
+	users       map[string]string // uuid string → user.Name (global, like the SQL)
+	// memberUserIDs is the set of user UUIDs that are members of
+	// workspaceID. Member canonicalization must be gated by this — a
+	// globally-valid user who is not a workspace member must NOT leak
+	// their name into a comment, and must not survive as a routable
+	// member mention.
+	memberUserIDs map[string]struct{}
 }
 
 func (m *nameResolverMock) GetAgentInWorkspace(_ context.Context, arg db.GetAgentInWorkspaceParams) (db.Agent, error) {
@@ -48,6 +55,16 @@ func (m *nameResolverMock) GetUser(_ context.Context, id pgtype.UUID) (db.User, 
 	return db.User{ID: id, Name: name}, nil
 }
 
+func (m *nameResolverMock) GetMemberByUserAndWorkspace(_ context.Context, arg db.GetMemberByUserAndWorkspaceParams) (db.Member, error) {
+	if uuidToString(arg.WorkspaceID) != uuidToString(m.workspaceID) {
+		return db.Member{}, fmt.Errorf("wrong workspace")
+	}
+	if _, ok := m.memberUserIDs[uuidToString(arg.UserID)]; !ok {
+		return db.Member{}, fmt.Errorf("not a member")
+	}
+	return db.Member{UserID: arg.UserID, WorkspaceID: arg.WorkspaceID}, nil
+}
+
 func TestCanonicalizeMentions(t *testing.T) {
 	ctx := context.Background()
 	ws := makeUUID("ws1")
@@ -76,6 +93,9 @@ func TestCanonicalizeMentions(t *testing.T) {
 		},
 		users: map[string]string{
 			userUUID: "Alice",
+		},
+		memberUserIDs: map[string]struct{}{
+			userUUID: {},
 		},
 	}
 
@@ -166,6 +186,46 @@ func TestCanonicalizeMentions(t *testing.T) {
 				t.Errorf("CanonicalizeMentions() =\n  %q\nwant:\n  %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestCanonicalizeMentions_NonMemberUserStripped pins the membership gate
+// for member mentions. A `mention://member/<user-id>` whose UUID belongs to
+// a globally-valid user who is NOT a member of this workspace must be
+// stripped to plain text — never canonicalized — so non-members' display
+// names cannot leak into a workspace's comments and the mention cannot
+// continue to act as a routing target for downstream gates that compare
+// mention IDs to participants.
+func TestCanonicalizeMentions_NonMemberUserStripped(t *testing.T) {
+	ctx := context.Background()
+	ws := makeUUID("ws-A-------")
+
+	memberID := makeUUID("user-in-A--")
+	memberUUID := uuidToString(memberID)
+
+	outsiderID := makeUUID("user-other-")
+	outsiderUUID := uuidToString(outsiderID)
+
+	resolver := &nameResolverMock{
+		workspaceID: ws,
+		users: map[string]string{
+			memberUUID:   "AliceInside",
+			outsiderUUID: "EveOutside", // globally valid, but not a workspace member
+		},
+		memberUserIDs: map[string]struct{}{
+			memberUUID: {}, // only AliceInside is a member
+		},
+	}
+
+	in := "hi [@Anything](mention://member/" + outsiderUUID + ") and [@Stale](mention://member/" + memberUUID + ")"
+	want := "hi @Anything and [@AliceInside](mention://member/" + memberUUID + ")"
+
+	got := CanonicalizeMentions(ctx, resolver, ws, in)
+	if got != want {
+		t.Errorf("non-member mention must strip while member mention canonicalizes:\n got:  %q\n want: %q", got, want)
+	}
+	if strings.Contains(got, "EveOutside") {
+		t.Errorf("non-member display name leaked into output: %q", got)
 	}
 }
 

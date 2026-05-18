@@ -12,9 +12,17 @@ import (
 
 // NameResolver looks up the canonical display name for an entity referenced
 // by a mention link. Implemented by *db.Queries in production.
+//
+// Note on member lookups: GetUser is workspace-unscoped (the user table has
+// no workspace_id). For member mentions, callers must gate the user lookup
+// behind GetMemberByUserAndWorkspace — otherwise a `mention://member/<id>`
+// for a globally-valid user who is not a workspace member would canonicalize
+// to that outsider's name, leaking the name and leaving the link in place
+// for downstream routing-style checks.
 type NameResolver interface {
 	GetAgentInWorkspace(ctx context.Context, arg db.GetAgentInWorkspaceParams) (db.Agent, error)
 	GetSquadInWorkspace(ctx context.Context, arg db.GetSquadInWorkspaceParams) (db.Squad, error)
+	GetMemberByUserAndWorkspace(ctx context.Context, arg db.GetMemberByUserAndWorkspaceParams) (db.Member, error)
 	GetUser(ctx context.Context, id pgtype.UUID) (db.User, error)
 }
 
@@ -117,6 +125,16 @@ func lookupCanonicalName(ctx context.Context, r NameResolver, workspaceID pgtype
 		}
 		return sq.Name, true
 	case "member":
+		// Gate on workspace membership first — GetUser is global. Without
+		// this gate a `mention://member/<user-id>` for any valid user
+		// would canonicalize to that user's name regardless of which
+		// workspace the comment lives in.
+		if _, err := r.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+			UserID:      id,
+			WorkspaceID: workspaceID,
+		}); err != nil {
+			return "", false
+		}
 		u, err := r.GetUser(ctx, id)
 		if err != nil {
 			return "", false
