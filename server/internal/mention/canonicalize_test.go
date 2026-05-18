@@ -141,6 +141,11 @@ func TestCanonicalizeMentions(t *testing.T) {
 			want:  "[@Alice](mention://member/" + userUUID + ")",
 		},
 		{
+			name:  "member mention with malformed uuid is stripped",
+			input: "[@BadMember](mention://member/aaaaaaaa)",
+			want:  "@BadMember",
+		},
+		{
 			name:  "all mention is untouched",
 			input: "[@all](mention://all/all)",
 			want:  "[@all](mention://all/all)",

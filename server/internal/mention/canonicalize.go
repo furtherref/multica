@@ -145,9 +145,13 @@ func CanonicalizeMentions(ctx context.Context, resolver NameResolver, workspaceI
 func lookupCanonicalName(ctx context.Context, r NameResolver, workspaceID pgtype.UUID, mentionType, idStr string) (string, lookupOutcome) {
 	id, err := util.ParseUUID(idStr)
 	if err != nil {
-		// Malformed UUID — treat as agent/squad-style keep-as-is. We never
-		// reach the DB for this row, so there is no name to leak; leaving
-		// the literal markdown lets the renderer fall back to the label.
+		if mentionType == "member" {
+			return "", lookupStrip
+		}
+		// Malformed agent/squad UUID — keep the authored link in place. We
+		// never reach the DB for this row, so there is no name to leak;
+		// leaving the literal markdown lets downstream gates preserve the
+		// author's routing intent.
 		return "", lookupKeepAsIs
 	}
 	switch mentionType {
