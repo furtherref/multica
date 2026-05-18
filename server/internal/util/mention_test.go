@@ -101,6 +101,11 @@ func TestParseMentions_PopulatesLabel(t *testing.T) {
 			wantLabel: "Alice",
 		},
 		{
+			name:      "ordinary markdown link before mention on same line is not part of label",
+			content:   "See [docs](https://x) and [@Bot](mention://agent/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa)",
+			wantLabel: "Bot",
+		},
+		{
 			name:      "issue mention",
 			content:   "[MUL-7](mention://issue/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa)",
 			wantLabel: "MUL-7",

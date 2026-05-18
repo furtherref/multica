@@ -1640,10 +1640,10 @@ func resolveAssignee(ctx context.Context, client *cli.APIClient, name string, ki
 
 func normalizeAssigneeLookupInput(raw string) string {
 	input := strings.TrimSpace(raw)
-	if m := util.MentionRe.FindStringSubmatch(input); len(m) == 4 && m[0] == input {
-		switch m[2] {
+	if matches := util.FindMentionMatches(input); len(matches) == 1 && matches[0].Start == 0 && matches[0].End == len(input) {
+		switch matches[0].Type {
 		case "member", "agent", "squad":
-			return m[3]
+			return matches[0].ID
 		}
 	}
 	input = strings.TrimLeftFunc(input, func(r rune) bool {

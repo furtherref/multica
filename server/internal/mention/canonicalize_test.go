@@ -118,6 +118,11 @@ func TestCanonicalizeMentions(t *testing.T) {
 			want:  "[@RealAgent](mention://agent/" + agentRealUUID + ")",
 		},
 		{
+			name:  "ordinary markdown link before agent mention is preserved",
+			input: "See [docs](https://x) and [@FakeName](mention://agent/" + agentRealUUID + ")",
+			want:  "See [docs](https://x) and [@RealAgent](mention://agent/" + agentRealUUID + ")",
+		},
+		{
 			// Agent mentions with an unresolvable UUID are LEFT IN PLACE so
 			// downstream signals that depend on author intent — most notably
 			// commentMentionsOthersButNotAssignee, which suppresses the

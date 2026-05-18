@@ -81,7 +81,7 @@ func CanonicalizeMentions(ctx context.Context, resolver NameResolver, workspaceI
 	if content == "" {
 		return content
 	}
-	matches := util.MentionRe.FindAllStringSubmatchIndex(content, -1)
+	matches := util.FindMentionMatches(content)
 	if len(matches) == 0 {
 		return content
 	}
@@ -94,15 +94,13 @@ func CanonicalizeMentions(ctx context.Context, resolver NameResolver, workspaceI
 	var replacements []replacement
 
 	for _, m := range matches {
-		fullStart, fullEnd := m[0], m[1]
+		fullStart, fullEnd := m.Start, m.End
 		if inSkipRegion(fullStart, skipRegions) {
 			continue
 		}
-		// util.MentionRe submatch layout: 1=label (without leading @),
-		// 2=type, 3=id. Index pairs land at m[2:4], m[4:6], m[6:8].
-		label := content[m[2]:m[3]]
-		mentionType := content[m[4]:m[5]]
-		idStr := content[m[6]:m[7]]
+		label := m.Label
+		mentionType := m.Type
+		idStr := m.ID
 
 		if mentionType != "agent" && mentionType != "member" && mentionType != "squad" {
 			continue
