@@ -111,13 +111,14 @@ func CanonicalizeMentions(ctx context.Context, resolver NameResolver, workspaceI
 		canonical, outcome := lookupCanonicalName(ctx, resolver, workspaceID, mentionType, idStr)
 		switch outcome {
 		case lookupResolved:
-			if canonical == label {
+			escapedCanonical := escapeMentionLabel(canonical)
+			if escapedCanonical == label {
 				continue
 			}
 			replacements = append(replacements, replacement{
 				start: fullStart,
 				end:   fullEnd,
-				text:  fmt.Sprintf("[@%s](mention://%s/%s)", escapeMentionLabel(canonical), mentionType, idStr),
+				text:  fmt.Sprintf("[@%s](mention://%s/%s)", escapedCanonical, mentionType, idStr),
 			})
 		case lookupStrip:
 			replacements = append(replacements, replacement{

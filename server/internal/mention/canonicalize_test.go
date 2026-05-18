@@ -73,6 +73,8 @@ func TestCanonicalizeMentions(t *testing.T) {
 	agentRealUUID := uuidToString(agentRealID)
 	agentBracketID := makeUUID("agent-brkts")
 	agentBracketUUID := uuidToString(agentBracketID)
+	agentIssueBracketID := makeUUID("agent-issue")
+	agentIssueBracketUUID := uuidToString(agentIssueBracketID)
 	agentMissingID := makeUUID("agent-gone-")
 	agentMissingUUID := uuidToString(agentMissingID)
 
@@ -85,8 +87,9 @@ func TestCanonicalizeMentions(t *testing.T) {
 	resolver := &nameResolverMock{
 		workspaceID: ws,
 		agents: map[string]string{
-			agentRealUUID:    "RealAgent",
-			agentBracketUUID: "David[TF]",
+			agentRealUUID:         "RealAgent",
+			agentBracketUUID:      "David[TF]",
+			agentIssueBracketUUID: "MUL-117[TF]",
 		},
 		squads: map[string]string{
 			squadUUID: "RealSquad",
@@ -168,6 +171,16 @@ func TestCanonicalizeMentions(t *testing.T) {
 			name:  "name containing brackets is escaped on rewrite",
 			input: "[@WrongLabel](mention://agent/" + agentBracketUUID + ")",
 			want:  "[@David\\[TF\\]](mention://agent/" + agentBracketUUID + ")",
+		},
+		{
+			name:  "matching label containing raw brackets is escaped",
+			input: "[@David[TF]](mention://agent/" + agentBracketUUID + ")",
+			want:  "[@David\\[TF\\]](mention://agent/" + agentBracketUUID + ")",
+		},
+		{
+			name:  "matching label containing issue key and raw brackets is escaped",
+			input: "[@MUL-117[TF]](mention://agent/" + agentIssueBracketUUID + ")",
+			want:  "[@MUL-117\\[TF\\]](mention://agent/" + agentIssueBracketUUID + ")",
 		},
 		{
 			name:  "empty content is empty",
