@@ -26,6 +26,20 @@ describe("stripMentionMarkdown", () => {
     ).toBe("@David[TF]");
   });
 
+  it("handles escaped backslash in names", () => {
+    expect(
+      stripMentionMarkdown("[@Ops\\\\Bot](mention://agent/id-1)"),
+    ).toBe("@Ops\\Bot");
+  });
+
+  it("handles backslash adjacent to bracket in names", () => {
+    // Name "foo\[bar" → producer emits `[@foo\\\[bar](...)`. Strip
+    // unescapes brackets first, then the remaining `\\` becomes `\`.
+    expect(
+      stripMentionMarkdown("[@foo\\\\\\[bar](mention://agent/id-2)"),
+    ).toBe("@foo\\[bar");
+  });
+
   it("handles multiple mentions in one string", () => {
     expect(
       stripMentionMarkdown(

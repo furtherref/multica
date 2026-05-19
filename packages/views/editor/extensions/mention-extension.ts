@@ -52,8 +52,22 @@ export const BaseMentionExtension = Mention.extend({
         /^\[@?((?:\\.|[^\]])+)\]\(mention:\/\/(\w+)\/([^)]+)\)/,
       );
       if (!match) return undefined;
-      // Unescape backslash-escaped brackets that renderMarkdown may produce.
-      const rawLabel = match[1]?.replace(/\\\[/g, "[").replace(/\\\]/g, "]");
+      // Unescape backslash sequences produced by renderMarkdown / the Go
+      // backend's util.EscapeMentionLabel. `\\` must be unescaped LAST so
+      // it doesn't eat a backslash that's part of a `\[` / `\]` pair.
+      const rawLabel = match[1]
+        ?.replace(/\\\[/g, "[")
+        .replace(/\\\]/g, "]")
+        .replace(/\\\\/g, "\\");
+      // Mirror util.parseMentionAt's empty-label guard: a `[@](...)` payload
+      // backtracks into the label group (regex `@?` matches empty, `@`
+      // becomes the single captured char). Without this check tokenize would
+      // accept it, renderMarkdown would emit `[@@](...)`, and the backend's
+      // non-empty check would no longer reject it — a back door to @all.
+      const labelAfterAt = rawLabel?.startsWith("@")
+        ? rawLabel.slice(1)
+        : rawLabel;
+      if (!labelAfterAt) return undefined;
       return {
         type: "mention",
         raw: match[0],
@@ -67,9 +81,15 @@ export const BaseMentionExtension = Mention.extend({
   renderMarkdown: (node: any) => {
     const { id, label, type = "member" } = node.attrs || {};
     const prefix = type === "issue" ? "" : "@";
-    // Escape square brackets in the label so the markdown link syntax
-    // is not broken when the name contains [ or ] (e.g. "David[TF]").
-    const safeLabel = (label ?? id).replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+    // Escape `\`, `[`, `]` in the label so the markdown link syntax is not
+    // broken when the name contains them (e.g. "David[TF]" or "Ops\Bot").
+    // Mirrors the backend's util.EscapeMentionLabel — `\` must be escaped
+    // FIRST so a name like `foo\[bar` produces `foo\\\[bar`, not `foo\\[bar`
+    // (which the scanner would consume as `\\` + raw `[`).
+    const safeLabel = (label ?? id)
+      .replace(/\\/g, "\\\\")
+      .replace(/\[/g, "\\[")
+      .replace(/\]/g, "\\]");
     return `[${prefix}${safeLabel}](mention://${type}/${id})`;
   },
 });

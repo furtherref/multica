@@ -81,4 +81,45 @@ describe("mention tokenizer", () => {
     expect(token!.attributes.label).toBe("MUL-123");
     expect(token!.attributes.type).toBe("issue");
   });
+
+  it("round-trips a label containing a literal backslash", () => {
+    // renderMarkdown must escape the literal backslash so the scanner
+    // doesn't eat the next char; tokenizer unescapes after brackets.
+    const md = renderMarkdown({
+      attrs: { id: "ops-1", label: "Ops\\Bot", type: "agent" },
+    });
+    expect(md).toBe("[@Ops\\\\Bot](mention://agent/ops-1)");
+
+    const token = tokenize(md);
+    expect(token).toBeDefined();
+    expect(token!.attributes.label).toBe("Ops\\Bot");
+  });
+
+  it("rejects an empty mention label", () => {
+    // `[](mention://all/all)` is invisible markdown — the regex's `+`
+    // already requires one char, so the start search returns -1.
+    expect(startFn("[](mention://all/all)")).toBe(-1);
+  });
+
+  it("rejects a bare-@ mention label", () => {
+    // `[@](mention://all/all)` matches via regex backtracking (`@?` → empty,
+    // label captures `@`). Tokenize must reject it so a re-render doesn't
+    // emit `[@@](...)` and slip past the backend's non-empty guard.
+    const token = tokenize("[@](mention://all/all)");
+    expect(token).toBeUndefined();
+  });
+
+  it("round-trips a label with a backslash adjacent to a bracket", () => {
+    // `\[` in the name means literal `\` then literal `[` — order of
+    // escapes matters (backslash first) so the producer emits
+    // `\\\[`, which the consumer unescapes back to `\[`.
+    const md = renderMarkdown({
+      attrs: { id: "x", label: "foo\\[bar", type: "agent" },
+    });
+    expect(md).toBe("[@foo\\\\\\[bar](mention://agent/x)");
+
+    const token = tokenize(md);
+    expect(token).toBeDefined();
+    expect(token!.attributes.label).toBe("foo\\[bar");
+  });
 });
