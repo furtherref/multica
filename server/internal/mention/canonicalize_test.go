@@ -75,6 +75,8 @@ func TestCanonicalizeMentions(t *testing.T) {
 	agentBracketUUID := uuidToString(agentBracketID)
 	agentIssueBracketID := makeUUID("agent-issue")
 	agentIssueBracketUUID := uuidToString(agentIssueBracketID)
+	agentUnpairedID := makeUUID("agent-unpar")
+	agentUnpairedUUID := uuidToString(agentUnpairedID)
 	agentMissingID := makeUUID("agent-gone-")
 	agentMissingUUID := uuidToString(agentMissingID)
 
@@ -90,6 +92,7 @@ func TestCanonicalizeMentions(t *testing.T) {
 			agentRealUUID:         "RealAgent",
 			agentBracketUUID:      "David[TF]",
 			agentIssueBracketUUID: "MUL-117[TF]",
+			agentUnpairedUUID:     "Alice [QA",
 		},
 		squads: map[string]string{
 			squadUUID: "RealSquad",
@@ -131,6 +134,50 @@ func TestCanonicalizeMentions(t *testing.T) {
 			name:  "plain bracketed text before agent mention is preserved",
 			input: "check [this] out [@FakeName](mention://agent/" + agentRealUUID + ") please",
 			want:  "check [this] out [@RealAgent](mention://agent/" + agentRealUUID + ") please",
+		},
+		{
+			// Producer-side escape contract: every backend producer of mention
+			// markdown (squad_briefing.formatMention, this canonicalize on
+			// rewrite) routes the name through util.EscapeMentionLabel. For
+			// an agent named "Alice [QA" the well-formed input from those
+			// producers is `[@Alice \[QA](mention://...)`; canonicalize
+			// compares the captured label against the escaped canonical and
+			// leaves it untouched.
+			name:  "agent name with escaped unpaired bracket round-trips canonical",
+			input: "hi [@Alice \\[QA](mention://agent/" + agentUnpairedUUID + ") there",
+			want:  "hi [@Alice \\[QA](mention://agent/" + agentUnpairedUUID + ") there",
+		},
+		{
+			// If an LLM bypasses the producer escape contract and writes a
+			// raw `[` inside a mention label, the markdown is ambiguous —
+			// the strict scanner finds the inner `[QA](mention://...)` as a
+			// valid link (markdown semantics: the outer `[@Alice ` is a
+			// dangling unclosed bracket = literal text). Canonicalize then
+			// rewrites the inner label to the escaped canonical, leaving
+			// the outer `[@Alice ` as visible text. Not pretty, but
+			// deterministic and no characters are deleted.
+			name:  "unescaped unpaired bracket inside label canonicalizes the inner link",
+			input: "hi [@Alice [QA](mention://agent/" + agentUnpairedUUID + ") there",
+			want:  "hi [@Alice [@Alice \\[QA](mention://agent/" + agentUnpairedUUID + ") there",
+		},
+		{
+			// Regression for the scanner anchor heuristic: a non-@ bracketed
+			// prefix before a real mention must not be swallowed by the
+			// span. Without the heuristic, canonicalize would replace the
+			// `[draft ` prefix along with the mention and emit
+			// `note [@RealAgent](...)`, deleting user text.
+			name:  "non-@ bracketed prefix before mention is preserved by canonicalize",
+			input: "note [draft [@FakeBob](mention://agent/" + agentRealUUID + ") tail",
+			want:  "note [draft [@RealAgent](mention://agent/" + agentRealUUID + ") tail",
+		},
+		{
+			// `[](mention://all/all)` is invisible markdown that the old
+			// regex rejected (label was `.+?`). After the scanner rewrite
+			// it slipped through and routed as @all. Now stripped — the
+			// invisible link is left as plain text.
+			name:  "empty-label all mention is stripped",
+			input: "hi [](mention://all/all) there",
+			want:  "hi [](mention://all/all) there",
 		},
 		{
 			// Agent mentions with an unresolvable UUID are LEFT IN PLACE so

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -834,10 +833,10 @@ func logMentionLabelMismatch(m util.Mention, canonicalName, kind string, issueID
 	if m.Label == "" || canonicalName == "" {
 		return
 	}
-	// Editor escapes `[` and `]` in labels for grammar; undo that for the
-	// equality check so a legitimately-bracketed name doesn't false-positive.
-	unescaped := strings.ReplaceAll(strings.ReplaceAll(m.Label, `\[`, `[`), `\]`, `]`)
-	if unescaped == canonicalName {
+	// Producers escape `\`, `[`, `]` in labels for grammar; undo that for the
+	// equality check so a legitimately bracketed or backslash-bearing name
+	// doesn't false-positive.
+	if util.UnescapeMentionLabel(m.Label) == canonicalName {
 		return
 	}
 	slog.Warn("mention label / UUID mismatch",

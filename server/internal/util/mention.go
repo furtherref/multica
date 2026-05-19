@@ -61,16 +61,20 @@ func FindMentionMatches(content string) []MentionMatch {
 }
 
 func scanMentionAt(content string, start int) (MentionMatch, bool) {
-	// depth tracks unescaped `[` opened AFTER the leading `[` at start, so that
-	// labels containing balanced inner brackets (e.g. "David[TF]") still parse.
-	// A `]` at depth > 0 is treated as closing an inner `[` and the scan
-	// continues. A `]` at depth 0 that is not immediately followed by `(`
-	// means this `[` opened plain bracketed text (e.g. "[note]"), NOT a
-	// mention label — bail out so the outer loop can advance and look for
-	// the next candidate. Without this guard the scanner would walk across
-	// whitespace and a subsequent real mention's `[`, fabricating a match
-	// whose span includes the unrelated bracketed text and causing
-	// CanonicalizeMentions to delete that text on replacement.
+	// depth tracks unescaped `[` opened AFTER the leading `[` at start, so
+	// labels with balanced inner brackets like "David[TF]" or non-mention
+	// links inside a label still parse. A `]` at depth > 0 is treated as
+	// closing an inner `[` and the scan continues. A `]` at depth 0 that is
+	// not the mention terminator means this `[` opened plain bracketed text
+	// (e.g. "[note]") or a non-mention link, NOT a mention label — bail so
+	// the outer loop can advance and look for the next candidate.
+	//
+	// Names that contain a raw, unpaired `[` or `]` must be escaped by the
+	// producer (squad_briefing.formatMention, the frontend mention-extension,
+	// canonicalize) so the resulting markdown round-trips through this
+	// scanner. Trying to recognise unescaped unpaired brackets in the parser
+	// is ambiguous with bracketed text preceding a real mention and leads to
+	// data loss in CanonicalizeMentions — keep the parser strict.
 	depth := 0
 	for close := start + 1; close < len(content); close++ {
 		switch content[close] {
@@ -117,6 +121,12 @@ func parseMentionAt(content string, start, close int) (MentionMatch, bool) {
 	labelStart := start + 1
 	if labelStart < close && content[labelStart] == '@' {
 		labelStart++
+	}
+	// Reject empty labels (`[](...)` or `[@](...)`). The previous regex
+	// required `.+?`; without this guard an invisible markdown link would
+	// route as e.g. `@all` and silently broadcast.
+	if labelStart >= close {
+		return MentionMatch{}, false
 	}
 	return MentionMatch{
 		Start:      start,
@@ -179,4 +189,37 @@ func HasMentionAll(mentions []Mention) bool {
 		}
 	}
 	return false
+}
+
+// EscapeMentionLabel escapes `\`, `[` and `]` in a name so the resulting
+// `[@<name>](mention://...)` markdown round-trips through FindMentionMatches
+// and CanonicalizeMentions. Every backend producer of mention markdown
+// (squad_briefing.formatMention, mention.CanonicalizeMentions on rewrite)
+// must funnel labels through this before splicing into a markdown link.
+//
+// `\` is escaped FIRST because the subsequent `[`/`]` replacements introduce
+// new backslashes. Without the leading step, a name like `foo\[bar` would
+// emit `foo\\[bar` — the scanner would consume the first `\` as escaping the
+// second `\`, then see `[` as raw structure and fail to round-trip. Order
+// matters here.
+func EscapeMentionLabel(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "[", "\\[")
+	s = strings.ReplaceAll(s, "]", "\\]")
+	return s
+}
+
+// UnescapeMentionLabel reverses EscapeMentionLabel: turns `\[`, `\]` and `\\`
+// back into the literal `[`, `]`, `\`. Apply this when comparing a parsed
+// MentionMatch.Label (which still carries the producer's escapes) against an
+// in-memory canonical name, or when stripping mention markdown to plain text.
+//
+// Brackets are unescaped BEFORE the `\\` step — reversing the producer in
+// reverse order. If `\\` ran first, it would consume the leading backslash
+// of a legitimate `\[` pair, leaving a raw `[` in the output.
+func UnescapeMentionLabel(s string) string {
+	s = strings.ReplaceAll(s, "\\[", "[")
+	s = strings.ReplaceAll(s, "\\]", "]")
+	s = strings.ReplaceAll(s, "\\\\", "\\")
+	return s
 }

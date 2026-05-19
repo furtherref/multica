@@ -213,8 +213,10 @@ func formatRosterRow(name, kind, role, mention string) string {
 }
 
 // formatMention emits a mention markdown string that round-trips through
-// util.ParseMentions. The label is the human display name; the link target
-// uses the mention:// scheme with the entity type and UUID.
+// util.ParseMentions. The label is the human display name (with `[`/`]`
+// escaped so names containing brackets — e.g. "David[TF]" or "Alice [QA"
+// — don't make the resulting markdown ambiguous to the scanner); the link
+// target uses the mention:// scheme with the entity type and UUID.
 func formatMention(name, mentionType, id string) string {
-	return "[@" + name + "](mention://" + mentionType + "/" + id + ")"
+	return "[@" + util.EscapeMentionLabel(name) + "](mention://" + mentionType + "/" + id + ")"
 }

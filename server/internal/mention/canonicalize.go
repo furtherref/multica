@@ -3,7 +3,6 @@ package mention
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -109,7 +108,7 @@ func CanonicalizeMentions(ctx context.Context, resolver NameResolver, workspaceI
 		canonical, outcome := lookupCanonicalName(ctx, resolver, workspaceID, mentionType, idStr)
 		switch outcome {
 		case lookupResolved:
-			escapedCanonical := escapeMentionLabel(canonical)
+			escapedCanonical := util.EscapeMentionLabel(canonical)
 			if escapedCanonical == label {
 				continue
 			}
@@ -187,12 +186,3 @@ func lookupCanonicalName(ctx context.Context, r NameResolver, workspaceID pgtype
 	return "", lookupKeepAsIs
 }
 
-// escapeMentionLabel mirrors the editor's mention-extension escaping
-// (packages/views/editor/extensions/mention-extension.ts): only `[` and `]`
-// are escaped so the bracket structure of the resulting markdown link
-// survives names that contain them (e.g. "David[TF]").
-func escapeMentionLabel(s string) string {
-	s = strings.ReplaceAll(s, "[", "\\[")
-	s = strings.ReplaceAll(s, "]", "\\]")
-	return s
-}
