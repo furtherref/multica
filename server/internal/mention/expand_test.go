@@ -106,6 +106,35 @@ func TestExpandIssueIdentifiers(t *testing.T) {
 			input: "(MUL-117)",
 			want:  "([MUL-117](mention://issue/" + uuidToString(issueID) + "))",
 		},
+		{
+			// An agent / member / squad named with the workspace's issue
+			// prefix embedded in the middle (e.g. "MUL-117 reviewer") would
+			// otherwise get a nested issue link wrapped around the label
+			// after CanonicalizeMentions, breaking the outer mention link.
+			// The link-aware skip region must cover the label, not just the
+			// chars immediately adjacent to `[` and `](`.
+			name:  "issue key inside mention link label is not expanded",
+			input: "ping [@MUL-117 reviewer](mention://agent/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa)",
+			want:  "ping [@MUL-117 reviewer](mention://agent/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa)",
+		},
+		{
+			// Same guarantee when the same identifier ALSO appears in body
+			// text: the body occurrence still expands, only the label
+			// occurrence is preserved.
+			name: "issue key inside mention label is preserved while body identifier expands",
+			input: "ping [@MUL-117 reviewer](mention://agent/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa) " +
+				"about MUL-117",
+			want: "ping [@MUL-117 reviewer](mention://agent/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa) " +
+				"about [MUL-117](mention://issue/" + uuidToString(issueID) + ")",
+		},
+		{
+			// Labels can contain escaped square brackets (the editor emits
+			// `\[` / `\]` for names like "David[TF]"). The skip region must
+			// extend to the real closing `]`, not the escaped one inside.
+			name:  "issue key inside mention label with escaped brackets is not expanded",
+			input: `[@David\[MUL-117\]](mention://agent/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa)`,
+			want:  `[@David\[MUL-117\]](mention://agent/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa)`,
+		},
 	}
 
 	for _, tt := range tests {

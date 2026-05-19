@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -506,6 +507,15 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Canonicalize agent/member/squad mention labels so the visible label
+	// always matches the entity the UUID actually resolves to. Without this,
+	// an author (typically an LLM) can post a comment whose mention link
+	// says "[@A](mention://agent/<B-uuid>)" — the UI renders @A but the
+	// routing layer triggers B, so the wrong agent picks up the task while
+	// humans see the right name. Done before ExpandIssueIdentifiers so the
+	// issue-identifier pass operates on already-cleaned content.
+	req.Content = mention.CanonicalizeMentions(r.Context(), h.Queries, issue.WorkspaceID, req.Content)
+
 	// Expand bare issue identifiers (e.g. MUL-117) into mention links.
 	req.Content = mention.ExpandIssueIdentifiers(r.Context(), h.Queries, issue.WorkspaceID, req.Content)
 
@@ -735,6 +745,7 @@ func (h *Handler) enqueueMentionedAgentTasks(ctx context.Context, issue db.Issue
 			if err != nil {
 				continue
 			}
+			logMentionLabelMismatch(m, squad.Name, "squad", issue.ID, comment.ID)
 			leaderID := squad.LeaderID
 			// Prevent self-trigger only when the agent's last activity on this
 			// issue was itself a leader task. An agent that holds both the
@@ -790,6 +801,7 @@ func (h *Handler) enqueueMentionedAgentTasks(ctx context.Context, issue db.Issue
 		if err != nil || !agent.RuntimeID.Valid || agent.ArchivedAt.Valid {
 			continue
 		}
+		logMentionLabelMismatch(m, agent.Name, "agent", issue.ID, comment.ID)
 		// Private-agent gate (member→private requires allowed_principals;
 		// agent→agent always passes).
 		if !h.canAccessPrivateAgent(ctx, agent, authorType, authorID, wsID) {
@@ -809,6 +821,33 @@ func (h *Handler) enqueueMentionedAgentTasks(ctx context.Context, issue db.Issue
 			slog.Warn("enqueue mention agent task failed", "issue_id", uuidToString(issue.ID), "agent_id", m.ID, "error", err)
 		}
 	}
+}
+
+// logMentionLabelMismatch emits a warning when the visible mention label
+// disagrees with the resolved entity's canonical name. Observability for
+// the canonicalization defense in mention.CanonicalizeMentions — after that
+// pass ran on write, this warn should be effectively silent in steady state.
+// A non-zero rate means: historical rows that predate canonicalization, or
+// some write path that bypasses it (e.g. a future endpoint that forgets to
+// call CanonicalizeMentions).
+func logMentionLabelMismatch(m util.Mention, canonicalName, kind string, issueID, commentID pgtype.UUID) {
+	if m.Label == "" || canonicalName == "" {
+		return
+	}
+	// Editor escapes `[` and `]` in labels for grammar; undo that for the
+	// equality check so a legitimately-bracketed name doesn't false-positive.
+	unescaped := strings.ReplaceAll(strings.ReplaceAll(m.Label, `\[`, `[`), `\]`, `]`)
+	if unescaped == canonicalName {
+		return
+	}
+	slog.Warn("mention label / UUID mismatch",
+		"kind", kind,
+		"id", m.ID,
+		"label", m.Label,
+		"resolved_name", canonicalName,
+		"issue_id", uuidToString(issueID),
+		"comment_id", uuidToString(commentID),
+	)
 }
 
 func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
@@ -870,6 +909,11 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// NOTE: See CreateComment — Markdown is sanitized at render/edit time, not here.
+
+	// Canonicalize mention labels on edit too: an author editing their own
+	// comment can introduce the same label/UUID mismatch addressed in
+	// CreateComment, so we run the same defense before persisting.
+	req.Content = mention.CanonicalizeMentions(r.Context(), h.Queries, wsUUID, req.Content)
 
 	comment, err := h.Queries.UpdateComment(r.Context(), db.UpdateCommentParams{
 		ID:      commentUUID,

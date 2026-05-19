@@ -51,8 +51,13 @@ func ExpandIssueIdentifiers(ctx context.Context, resolver Resolver, workspaceID 
 	// The prefix is escaped in case it contains regex-special characters.
 	pattern := regexp.MustCompile(`(?:^|(?:\W))` + `(` + regexp.QuoteMeta(prefix) + `-(\d+))` + `(?:\W|$)`)
 
-	// First, identify regions to skip: fenced code blocks and inline code.
-	skipRegions := findSkipRegions(content)
+	// First, identify regions to skip: code blocks plus existing markdown
+	// link spans. The link-span coverage matters when an entity name
+	// (canonicalized into a mention label) contains the workspace issue
+	// prefix — without it, an agent named "MUL-117 reviewer" would get a
+	// nested issue link wrapped around its label and the outer mention
+	// would no longer parse.
+	skipRegions := expandSkipRegions(content)
 
 	// Find all matches and process from right to left (to preserve offsets).
 	allMatches := pattern.FindAllStringSubmatchIndex(content, -1)
@@ -128,8 +133,10 @@ type skipRegion struct {
 	start, end int
 }
 
-// findSkipRegions identifies fenced code blocks (```) and inline code (`)
-// regions in the content.
+// findSkipRegions identifies code regions in the content that should not be
+// touched: fenced code blocks and inline code. Shared with
+// CanonicalizeMentions, which must operate on every mention link outside of
+// code — so the link-span guard belongs to expandSkipRegions, not here.
 func findSkipRegions(content string) []skipRegion {
 	var regions []skipRegion
 
@@ -145,6 +152,28 @@ func findSkipRegions(content string) []skipRegion {
 		regions = append(regions, skipRegion{loc[0], loc[1]})
 	}
 
+	return regions
+}
+
+// linkSpanRe matches an entire `[label](url)` markdown link so
+// ExpandIssueIdentifiers can skip identifiers anywhere inside the label or
+// URL — not just immediately adjacent to `[` or `](`. The label pattern
+// allows the editor's `\[` / `\]` escaping for names like "David[TF]" and
+// stops at the first unescaped `]`. The URL pattern stops at the first `)`,
+// matching the mention URLs we generate (UUIDs never contain `)`) without
+// greedily swallowing body text.
+var linkSpanRe = regexp.MustCompile(`\[(?:[^\[\]\n\\]|\\.)*\]\([^)\n]*\)`)
+
+// expandSkipRegions returns the union of code regions plus `[...](...)`
+// link spans. ExpandIssueIdentifiers uses this so that an identifier
+// embedded inside a mention link's label (e.g. an agent name like
+// "MUL-117 reviewer") does not get nested into a second mention link,
+// which would break the outer link's parse and silently drop routing.
+func expandSkipRegions(content string) []skipRegion {
+	regions := findSkipRegions(content)
+	for _, loc := range linkSpanRe.FindAllStringIndex(content, -1) {
+		regions = append(regions, skipRegion{loc[0], loc[1]})
+	}
 	return regions
 }
 
