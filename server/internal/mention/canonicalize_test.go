@@ -123,6 +123,16 @@ func TestCanonicalizeMentions(t *testing.T) {
 			want:  "See [docs](https://x) and [@RealAgent](mention://agent/" + agentRealUUID + ")",
 		},
 		{
+			// Regression: a bare bracketed phrase like "[this]" before a real
+			// mention used to make the scanner merge both into one fake match
+			// (label "this] out [@FakeName"), so canonicalize replaced the
+			// whole span and "[this] out " was silently deleted from the
+			// persisted comment.
+			name:  "plain bracketed text before agent mention is preserved",
+			input: "check [this] out [@FakeName](mention://agent/" + agentRealUUID + ") please",
+			want:  "check [this] out [@RealAgent](mention://agent/" + agentRealUUID + ") please",
+		},
+		{
 			// Agent mentions with an unresolvable UUID are LEFT IN PLACE so
 			// downstream signals that depend on author intent — most notably
 			// commentMentionsOthersButNotAssignee, which suppresses the
@@ -297,3 +307,4 @@ func TestCanonicalizeMentions_CrossWorkspaceAgentLeftAsIs(t *testing.T) {
 		t.Errorf("cross-workspace agent should be left unchanged:\n got:  %q\n want: %q", got, want)
 	}
 }
+

@@ -61,6 +61,17 @@ func FindMentionMatches(content string) []MentionMatch {
 }
 
 func scanMentionAt(content string, start int) (MentionMatch, bool) {
+	// depth tracks unescaped `[` opened AFTER the leading `[` at start, so that
+	// labels containing balanced inner brackets (e.g. "David[TF]") still parse.
+	// A `]` at depth > 0 is treated as closing an inner `[` and the scan
+	// continues. A `]` at depth 0 that is not immediately followed by `(`
+	// means this `[` opened plain bracketed text (e.g. "[note]"), NOT a
+	// mention label — bail out so the outer loop can advance and look for
+	// the next candidate. Without this guard the scanner would walk across
+	// whitespace and a subsequent real mention's `[`, fabricating a match
+	// whose span includes the unrelated bracketed text and causing
+	// CanonicalizeMentions to delete that text on replacement.
+	depth := 0
 	for close := start + 1; close < len(content); close++ {
 		switch content[close] {
 		case '\n':
@@ -69,9 +80,15 @@ func scanMentionAt(content string, start int) (MentionMatch, bool) {
 			if close+1 < len(content) {
 				close++
 			}
+		case '[':
+			depth++
 		case ']':
-			if close+1 >= len(content) || content[close+1] != '(' {
+			if depth > 0 {
+				depth--
 				continue
+			}
+			if close+1 >= len(content) || content[close+1] != '(' {
+				return MentionMatch{}, false
 			}
 			if !strings.HasPrefix(content[close+2:], "mention://") {
 				return MentionMatch{}, false

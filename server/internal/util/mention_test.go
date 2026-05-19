@@ -63,6 +63,17 @@ func TestParseMentions(t *testing.T) {
 			content: `[@David\[TF\]](mention://agent/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa) hi`,
 			want:    []Mention{{Type: "agent", ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}},
 		},
+		{
+			// Regression: a bare bracketed phrase like "[this]" used to make the
+			// scanner walk past whitespace and the next `[` and merge the two
+			// into one fake match (label "this] out [@Bot"), with End pointing
+			// past the real mention. In CanonicalizeMentions that span gets
+			// replaced wholesale, silently deleting "[this] out " from the
+			// persisted comment.
+			name:    "plain bracketed text before mention on same line",
+			content: "check [this] out [@Bot](mention://agent/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa) please",
+			want:    []Mention{{Type: "agent", ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}},
+		},
 	}
 
 	for _, tt := range tests {
