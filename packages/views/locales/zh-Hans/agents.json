@@ -337,6 +337,8 @@
     "events_filtered": "{{shown}} / {{total}} 个事件",
     "copy_all": "全部复制",
     "copy_filtered": "复制筛选结果",
+    "copy_diff": "复制差异",
+    "copy_failed": "复制失败",
     "copied": "已复制",
     "file_changes": "文件变更",
     "file_content": "文件内容",

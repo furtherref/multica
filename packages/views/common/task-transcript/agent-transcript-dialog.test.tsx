@@ -64,6 +64,38 @@ function baseTask(): AgentTask {
 }
 
 describe("AgentTranscriptDialog tool_use diff rendering", () => {
+  it("redacts secrets before rendering inline edit diffs", () => {
+    const rawSecret = "sk-proj-oldsecret1234567890abcdef";
+    const items: TimelineItem[] = [
+      {
+        seq: 1,
+        type: "tool_use",
+        tool: "edit_file",
+        input: {
+          file_path: "E:/workspace/tests/.env",
+          old_string: `OPENAI_API_KEY=${rawSecret}`,
+          new_string: "OPENAI_API_KEY=sk-proj-newsecret1234567890abcdef",
+        },
+      },
+    ];
+
+    render(
+      <AgentTranscriptDialog
+        open={true}
+        onOpenChange={() => {}}
+        task={baseTask()}
+        items={items}
+        agentName="Claude"
+      />,
+      { wrapper: I18nWrapper },
+    );
+
+    fireEvent.click(screen.getByText(".../tests/.env"));
+
+    expect(screen.queryByText(rawSecret, { exact: false })).not.toBeInTheDocument();
+    expect(screen.getAllByText((content) => content.includes("[REDACTED")).length).toBeGreaterThan(0);
+  });
+
   it("renders diff for create-file tool_use with content + file_path", () => {
     const items: TimelineItem[] = [
       {
@@ -130,6 +162,33 @@ describe("AgentTranscriptDialog tool_use diff rendering", () => {
     expect(screen.getByText("File changes")).toBeInTheDocument();
     expect(screen.getByText("-before")).toBeInTheDocument();
     expect(screen.getByText("+after")).toBeInTheDocument();
+    expect(screen.queryByText("No visual diff available for this file change.")).not.toBeInTheDocument();
+  });
+
+  it("renders non-diff edit tool results as text", () => {
+    const items: TimelineItem[] = [
+      {
+        seq: 1,
+        type: "tool_result",
+        tool: "patch_apply",
+        output: "patched: src/app.ts",
+      },
+    ];
+
+    render(
+      <AgentTranscriptDialog
+        open={true}
+        onOpenChange={() => {}}
+        task={baseTask()}
+        items={items}
+        agentName="Codex"
+      />,
+      { wrapper: I18nWrapper },
+    );
+
+    fireEvent.click(screen.getByText("patched: src/app.ts"));
+
+    expect(screen.getAllByText("patched: src/app.ts").length).toBeGreaterThan(1);
     expect(screen.queryByText("No visual diff available for this file change.")).not.toBeInTheDocument();
   });
 });

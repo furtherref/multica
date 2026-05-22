@@ -458,6 +458,7 @@ type codexClient struct {
 
 	fileChangeDeltaMu sync.Mutex
 	fileChangeDeltas  map[string]string
+	lastTurnDiffs     map[string]string
 }
 
 func (c *codexClient) setTurnError(msg string) {
@@ -684,8 +685,10 @@ func (c *codexClient) handleNotification(raw map[string]json.RawMessage) {
 	// Raw v2 notifications
 	if c.notificationProtocol != "legacy" {
 		if c.notificationProtocol == "unknown" &&
-			(method == "turn/started" || method == "turn/completed" ||
-				method == "thread/started" || strings.HasPrefix(method, "item/")) {
+			(strings.HasPrefix(method, "turn/") ||
+				strings.HasPrefix(method, "thread/") ||
+				strings.HasPrefix(method, "item/") ||
+				method == "error") {
 			c.notificationProtocol = "raw"
 		}
 
@@ -787,6 +790,17 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 		if c.onMessage != nil {
 			c.onMessage(Message{Type: MessageStatus, Status: "running", SessionID: c.threadID})
 		}
+
+	case "turn/diff/updated":
+		if c.onSemanticActivity != nil {
+			c.onSemanticActivity("turn/diff/updated")
+		}
+		turnID, _ := params["turnId"].(string)
+		if turnID == "" {
+			turnID = c.turnID
+		}
+		diff, _ := params["diff"].(string)
+		c.emitTurnDiffUpdated(turnID, diff)
 
 	case "turn/completed":
 		turnID := extractNestedString(params, "turn", "id")
@@ -995,6 +1009,43 @@ func (c *codexClient) popFileChangeDelta(itemID string) string {
 	output := c.fileChangeDeltas[itemID]
 	delete(c.fileChangeDeltas, itemID)
 	return output
+}
+
+func (c *codexClient) emitTurnDiffUpdated(turnID, diff string) {
+	if diff == "" {
+		return
+	}
+	key := turnID
+	if key == "" {
+		key = "_unknown"
+	}
+
+	c.fileChangeDeltaMu.Lock()
+	if c.lastTurnDiffs == nil {
+		c.lastTurnDiffs = make(map[string]string)
+	}
+	if c.lastTurnDiffs[key] == diff {
+		c.fileChangeDeltaMu.Unlock()
+		return
+	}
+	c.lastTurnDiffs[key] = diff
+	c.fileChangeDeltaMu.Unlock()
+
+	if c.onMessage != nil {
+		c.onMessage(Message{
+			Type:   MessageToolResult,
+			Tool:   "patch_apply",
+			CallID: codexTurnDiffCallID(turnID),
+			Output: diff,
+		})
+	}
+}
+
+func codexTurnDiffCallID(turnID string) string {
+	if turnID == "" {
+		return "turn-diff"
+	}
+	return turnID + ":diff"
 }
 
 // extractUsageFromMap extracts token usage from a map that may contain

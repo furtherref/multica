@@ -545,6 +545,34 @@ func TestCodexRawItemFileChangeAggregatesOutputDelta(t *testing.T) {
 	}
 }
 
+func TestCodexRawTurnDiffUpdatedEmitsPatchResult(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	c.threadID = "thr-main"
+	c.turnID = "turn-1"
+
+	var messages []Message
+	c.onMessage = func(msg Message) {
+		messages = append(messages, msg)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-other","turnId":"turn-2","diff":"--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-old\n+new\n"}}`)
+
+	if len(messages) != 1 {
+		t.Fatalf("expected one deduplicated patch diff message, got %d: %+v", len(messages), messages)
+	}
+	if messages[0].Type != MessageToolResult || messages[0].Tool != "patch_apply" || messages[0].CallID != "turn-1:diff" {
+		t.Fatalf("unexpected diff message: %+v", messages[0])
+	}
+	if messages[0].Output != "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n" {
+		t.Fatalf("unexpected diff output: %q", messages[0].Output)
+	}
+}
+
 func TestCodexRawItemFileChangeUsesAggregatedOutputFallback(t *testing.T) {
 	t.Parallel()
 
@@ -1213,7 +1241,7 @@ func TestCodexExecuteSemanticInactivityAllowsContinuousDeltaProgress(t *testing.
 		`sleep 0.05`+"\n"+
 		`echo '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thr-delta","item":{"type":"agentMessage","id":"msg-1"},"delta":"thinking"}}'`+"\n"+
 		`sleep 0.05`+"\n"+
-		`echo '{"jsonrpc":"2.0","method":"item/fileChange/outputDelta","params":{"threadId":"thr-delta","item":{"type":"fileChange","id":"patch-1"},"delta":"patched"}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-delta","turnId":"turn-delta","diff":"--- a/a.txt\n+++ b/a.txt\n"}}'`+"\n"+
 		`sleep 0.05`+"\n"+
 		`echo '{"jsonrpc":"2.0","method":"item/mcpToolCall/progress","params":{"threadId":"thr-delta","item":{"type":"mcpToolCall","id":"mcp-1"},"progress":{"message":"still running"}}}'`+"\n"+
 		`sleep 0.05`+"\n"+

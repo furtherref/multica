@@ -345,6 +345,8 @@
     "events_filtered": "{{shown}} of {{total}} events",
     "copy_all": "Copy all",
     "copy_filtered": "Copy filtered",
+    "copy_diff": "Copy diff",
+    "copy_failed": "Copy failed",
     "copied": "Copied",
     "file_changes": "File changes",
     "file_content": "File content",

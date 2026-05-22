@@ -114,32 +114,57 @@ function buildSplitRows(lines: DiffLine[]): SplitRow[] {
     }
 
     if (current.type === "del") {
-      const next = lines[i + 1];
-      if (next?.type === "add") {
-        rows.push({
-          type: "pair",
-          left: stripDiffPrefix(current.text, "del"),
-          right: stripDiffPrefix(next.text, "add"),
-        });
-        i += 2;
-        continue;
+      const deletions: DiffLine[] = [];
+      const additions: DiffLine[] = [];
+      while (lines[i]?.type === "del") {
+        deletions.push(lines[i]!);
+        i += 1;
       }
-      rows.push({
-        type: "del",
-        left: stripDiffPrefix(current.text, "del"),
-        right: "",
-      });
-      i += 1;
+      while (lines[i]?.type === "add") {
+        additions.push(lines[i]!);
+        i += 1;
+      }
+
+      const rowCount = Math.max(deletions.length, additions.length);
+      for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+        const deletion = deletions[rowIndex];
+        const addition = additions[rowIndex];
+        if (deletion && addition) {
+          rows.push({
+            type: "pair",
+            left: stripDiffPrefix(deletion.text, "del"),
+            right: stripDiffPrefix(addition.text, "add"),
+          });
+        } else if (deletion) {
+          rows.push({
+            type: "del",
+            left: stripDiffPrefix(deletion.text, "del"),
+            right: "",
+          });
+        } else if (addition) {
+          rows.push({
+            type: "add",
+            left: "",
+            right: stripDiffPrefix(addition.text, "add"),
+          });
+        }
+      }
       continue;
     }
 
     if (current.type === "add") {
-      rows.push({
-        type: "add",
-        left: "",
-        right: stripDiffPrefix(current.text, "add"),
-      });
-      i += 1;
+      const additions: DiffLine[] = [];
+      while (lines[i]?.type === "add") {
+        additions.push(lines[i]!);
+        i += 1;
+      }
+      for (const addition of additions) {
+        rows.push({
+          type: "add",
+          left: "",
+          right: stripDiffPrefix(addition.text, "add"),
+        });
+      }
       continue;
     }
 
@@ -163,6 +188,7 @@ export function DiffViewer({
   const { t } = useT("agents");
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const [mode, setMode] = useState<DiffViewMode>(defaultMode);
   const nextMode: DiffViewMode = mode === "unified" ? "split" : "unified";
 
@@ -190,11 +216,24 @@ export function DiffViewer({
   const displayLines = expanded || !isLong ? lines : lines.slice(0, 100);
   const splitRows = useMemo(() => buildSplitRows(displayLines), [displayLines]);
   const truncated = !expanded && isLong;
+  let copyLabel = t(($) => $.transcript.copy_diff);
+  if (copyFailed) {
+    copyLabel = t(($) => $.transcript.copy_failed);
+  } else if (copied) {
+    copyLabel = t(($) => $.transcript.copied);
+  }
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(diffText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(diffText);
+      setCopyFailed(false);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+      setCopyFailed(true);
+      setTimeout(() => setCopyFailed(false), 2000);
+    }
   };
 
   return (
@@ -219,13 +258,21 @@ export function DiffViewer({
             </TooltipTrigger>
             <TooltipContent>{toggleDiffLabel}</TooltipContent>
           </Tooltip>
-          <button
-            type="button"
-            className="text-muted-foreground transition-colors hover:text-foreground"
-            onClick={handleCopy}
-          >
-            {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-          </button>
+          <Tooltip>
+            <TooltipTrigger
+              render={<button type="button" />}
+              aria-label={copyLabel}
+              className={
+                copyFailed
+                  ? "text-destructive transition-colors hover:text-destructive"
+                  : "text-muted-foreground transition-colors hover:text-foreground"
+              }
+              onClick={handleCopy}
+            >
+              {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+            </TooltipTrigger>
+            <TooltipContent>{copyLabel}</TooltipContent>
+          </Tooltip>
         </div>
       </div>
 

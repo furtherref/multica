@@ -610,6 +610,24 @@ function toolUseDiffPayload(input: Record<string, unknown> | undefined): ToolUse
   return { filePath, oldText, newText };
 }
 
+function redactedToolUseDiffPayload(input: Record<string, unknown> | undefined): ToolUseDiffPayload | null {
+  const parsed = toolUseDiffPayload(input);
+  if (!parsed) return null;
+  return {
+    filePath: parsed.filePath ? redactSecrets(parsed.filePath) : parsed.filePath,
+    oldText: parsed.oldText == null ? parsed.oldText : redactSecrets(parsed.oldText),
+    newText: parsed.newText == null ? parsed.newText : redactSecrets(parsed.newText),
+  };
+}
+
+function redactAndTruncate(text: string): string {
+  const redacted = redactSecrets(text);
+  if (redacted.length > 4000) {
+    return redacted.slice(0, 4000) + "\n... (truncated)";
+  }
+  return redacted;
+}
+
 const TranscriptEventRow = ({
   ref,
   item,
@@ -707,7 +725,7 @@ function EventDetailContent({ item }: { item: TimelineItem }) {
   switch (item.type) {
     case "tool_use": {
       if (isEditTool(item.tool) && item.input) {
-        const parsed = toolUseDiffPayload(item.input);
+        const parsed = redactedToolUseDiffPayload(item.input);
         if (parsed) {
           return <DiffViewer oldText={parsed.oldText} newText={parsed.newText} filePath={parsed.filePath} />;
         }
@@ -719,16 +737,12 @@ function EventDetailContent({ item }: { item: TimelineItem }) {
       );
     }
     case "tool_result":
-      if (isEditTool(item.tool) || looksLikeUnifiedDiff(item.output)) {
-        return <DiffViewer output={item.output} />;
+      if (item.output && looksLikeUnifiedDiff(item.output)) {
+        return <DiffViewer output={redactSecrets(item.output)} />;
       }
       return (
         <pre className="max-h-60 overflow-auto p-3 text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
-          {item.output
-            ? item.output.length > 4000
-              ? redactSecrets(item.output.slice(0, 4000)) + "\n... (truncated)"
-              : redactSecrets(item.output)
-            : ""}
+          {item.output ? redactAndTruncate(item.output) : ""}
         </pre>
       );
     case "thinking":

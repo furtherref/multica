@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
 import enAgents from "../../locales/en/agents.json";
@@ -98,6 +98,42 @@ describe("DiffViewer", () => {
     ).toBeInTheDocument();
   });
 
+  it("handles clipboard failures in the copy action", async () => {
+    const originalClipboard = navigator.clipboard;
+    const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    try {
+      render(
+        <DiffViewer
+          output={[
+            "--- a/file.txt",
+            "+++ b/file.txt",
+            "@@ -1 +1 @@",
+            "-old line",
+            "+new line",
+          ].join("\n")}
+        />,
+        { wrapper: I18nWrapper },
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy diff" }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Copy failed" })).toBeInTheDocument();
+      });
+      expect(writeText).toHaveBeenCalledOnce();
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
+  });
+
   it("renders simplified diff card for new-file headers without +/- hunks", () => {
     render(
       <DiffViewer
@@ -138,5 +174,33 @@ describe("DiffViewer", () => {
     expect(screen.getByText("-world")).toBeInTheDocument();
     expect(screen.queryByText("+")).not.toBeInTheDocument();
     expect(screen.getByText("@@ -1,2 +0,0 @@")).toBeInTheDocument();
+  });
+
+  it("keeps grouped deletion and addition blocks aligned in split view", () => {
+    render(
+      <DiffViewer
+        output={[
+          "--- a/file.txt",
+          "+++ b/file.txt",
+          "@@ -1,2 +1,2 @@",
+          "-old one",
+          "-old two",
+          "+new one",
+          "+new two",
+        ].join("\n")}
+        defaultMode="split"
+      />,
+      { wrapper: I18nWrapper },
+    );
+
+    const rows = screen
+      .getAllByRole("row")
+      .map((row) => within(row).queryAllByRole("cell"))
+      .filter((cells) => cells.length === 2);
+
+    expect(rows[0]![0]).toHaveTextContent("old one");
+    expect(rows[0]![1]).toHaveTextContent("new one");
+    expect(rows[1]![0]).toHaveTextContent("old two");
+    expect(rows[1]![1]).toHaveTextContent("new two");
   });
 });
