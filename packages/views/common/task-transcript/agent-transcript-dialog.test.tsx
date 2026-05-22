@@ -92,7 +92,10 @@ describe("AgentTranscriptDialog tool_use diff rendering", () => {
 
     expect(screen.getByText("File changes")).toBeInTheDocument();
     expect(screen.getByText("--- E:/workspace/tests/readme.txt")).toBeInTheDocument();
+    expect(screen.getByText("@@ -0,0 +1,2 @@")).toBeInTheDocument();
     expect(screen.getByText("+hello")).toBeInTheDocument();
+    expect(screen.getByText("+world")).toBeInTheDocument();
+    expect(screen.queryByText("+")).not.toBeInTheDocument();
     expect(screen.queryByText("No visual diff available for this file change.")).not.toBeInTheDocument();
   });
 

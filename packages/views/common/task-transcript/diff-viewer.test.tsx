@@ -118,7 +118,7 @@ describe("DiffViewer", () => {
 
   it("does not emit a phantom deletion line for new-file writes", () => {
     render(
-      <DiffViewer newText={"hello\nworld"} filePath="src/greeting.ts" />,
+      <DiffViewer newText={"hello\nworld\n"} filePath="src/greeting.ts" />,
       { wrapper: I18nWrapper },
     );
 
@@ -130,7 +130,7 @@ describe("DiffViewer", () => {
 
   it("does not emit a phantom addition line for full-file deletions", () => {
     render(
-      <DiffViewer oldText={"hello\nworld"} filePath="src/greeting.ts" />,
+      <DiffViewer oldText={"hello\nworld\n"} filePath="src/greeting.ts" />,
       { wrapper: I18nWrapper },
     );
 

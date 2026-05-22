@@ -61,11 +61,19 @@ function parseUnifiedDiff(text: string): DiffLine[] {
   return lines;
 }
 
+function splitTextForDiff(text: string): string[] {
+  if (text.length === 0) return [];
+
+  const lines = text.split("\n");
+  if (lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return lines;
+}
+
 function buildDiffFromOldNew(oldText: string, newText: string, filePath?: string): string {
-  const hasOld = oldText.length > 0;
-  const hasNew = newText.length > 0;
-  const oldLines = hasOld ? oldText.split("\n") : [];
-  const newLines = hasNew ? newText.split("\n") : [];
+  const oldLines = splitTextForDiff(oldText);
+  const newLines = splitTextForDiff(newText);
   const oldStart = oldLines.length > 0 ? 1 : 0;
   const newStart = newLines.length > 0 ? 1 : 0;
   const path = filePath ?? "file";
