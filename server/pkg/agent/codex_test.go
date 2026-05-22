@@ -573,6 +573,38 @@ func TestCodexRawTurnDiffUpdatedEmitsPatchResult(t *testing.T) {
 	}
 }
 
+func TestCodexRawTurnDiffUpdatedEmitsEmptySnapshotAfterNonEmpty(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	c.threadID = "thr-main"
+	c.turnID = "turn-1"
+
+	var messages []Message
+	c.onMessage = func(msg Message) {
+		messages = append(messages, msg)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":""}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":""}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":""}}`)
+
+	if len(messages) != 2 {
+		t.Fatalf("expected non-empty diff and one empty clearing snapshot, got %d: %+v", len(messages), messages)
+	}
+	if messages[0].Output == "" {
+		t.Fatalf("expected first emitted diff to be non-empty: %+v", messages[0])
+	}
+	if messages[1].Type != MessageToolResult || messages[1].Tool != "patch_apply" || messages[1].CallID != "turn-1:diff" {
+		t.Fatalf("unexpected empty diff message: %+v", messages[1])
+	}
+	if messages[1].Output != "" {
+		t.Fatalf("expected empty diff output, got %q", messages[1].Output)
+	}
+}
+
 func TestCodexRawItemFileChangeUsesAggregatedOutputFallback(t *testing.T) {
 	t.Parallel()
 

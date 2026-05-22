@@ -203,4 +203,30 @@ describe("DiffViewer", () => {
     expect(rows[1]![0]).toHaveTextContent("old two");
     expect(rows[1]![1]).toHaveTextContent("new two");
   });
+
+  it("preserves indentation in split diff cells", () => {
+    render(
+      <DiffViewer
+        output={[
+          "--- a/file.yaml",
+          "+++ b/file.yaml",
+          "@@ -1 +1 @@",
+          "-  old: value",
+          "+    new: value",
+        ].join("\n")}
+        defaultMode="split"
+      />,
+      { wrapper: I18nWrapper },
+    );
+
+    const row = screen
+      .getAllByRole("row")
+      .map((tableRow) => within(tableRow).queryAllByRole("cell"))
+      .find((cells) => cells.length === 2 && cells[0]?.textContent?.startsWith("  old"));
+
+    expect(row?.[0]).toHaveTextContent("  old: value", { normalizeWhitespace: false });
+    expect(row?.[1]).toHaveTextContent("    new: value", { normalizeWhitespace: false });
+    expect(row?.[0]).toHaveClass("whitespace-pre-wrap", "break-all");
+    expect(row?.[1]).toHaveClass("whitespace-pre-wrap", "break-all");
+  });
 });

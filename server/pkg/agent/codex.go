@@ -1012,9 +1012,6 @@ func (c *codexClient) popFileChangeDelta(itemID string) string {
 }
 
 func (c *codexClient) emitTurnDiffUpdated(turnID, diff string) {
-	if diff == "" {
-		return
-	}
 	key := turnID
 	if key == "" {
 		key = "_unknown"

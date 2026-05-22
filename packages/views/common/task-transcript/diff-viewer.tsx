@@ -37,6 +37,8 @@ interface SplitRow {
   right: string;
 }
 
+const splitCellBaseClass = "w-1/2 whitespace-pre-wrap break-all px-1 py-0.5";
+
 function parseUnifiedDiff(text: string): DiffLine[] {
   const lines: DiffLine[] = [];
   for (const line of text.split("\n")) {
@@ -308,7 +310,7 @@ export function DiffViewer({
                   if (row.type === "file" || row.type === "hunk") {
                     return (
                       <tr key={i}>
-                        <td colSpan={2} className="px-1 py-0.5 text-info">
+                        <td colSpan={2} className="whitespace-pre-wrap break-all px-1 py-0.5 text-info">
                           {row.left}
                         </td>
                       </tr>
@@ -320,8 +322,8 @@ export function DiffViewer({
                       <td
                         className={
                           row.type === "del" || row.type === "pair"
-                            ? "w-1/2 bg-destructive/10 px-1 py-0.5 text-destructive"
-                            : "w-1/2 px-1 py-0.5 text-muted-foreground"
+                            ? `${splitCellBaseClass} bg-destructive/10 text-destructive`
+                            : `${splitCellBaseClass} text-muted-foreground`
                         }
                       >
                         {row.left}
@@ -329,8 +331,8 @@ export function DiffViewer({
                       <td
                         className={
                           row.type === "add" || row.type === "pair"
-                            ? "w-1/2 bg-success/10 px-1 py-0.5 text-success"
-                            : "w-1/2 px-1 py-0.5 text-muted-foreground"
+                            ? `${splitCellBaseClass} bg-success/10 text-success`
+                            : `${splitCellBaseClass} text-muted-foreground`
                         }
                       >
                         {row.right}
