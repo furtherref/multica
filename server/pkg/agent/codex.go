@@ -288,6 +288,14 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		// Wait for the reader goroutine to finish so all output is accumulated.
 		<-readerDone
 
+		// Flush any buffered turn-level diff so abnormal exit paths (timeout,
+		// cancellation, abort) still record the latest snapshot. Run AFTER
+		// readerDone so any turn/diff/updated still in the stdout pipe at the
+		// moment the wait loop exited is buffered first. Normal turn endings
+		// already flushed during turn/completed, thread/status idle, or
+		// final_answer; a second call here is a safe no-op for them.
+		c.flushTurnDiff(c.turnID)
+
 		outputMu.Lock()
 		finalOutput := output.String()
 		outputMu.Unlock()
@@ -835,6 +843,10 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 			c.extractUsageFromMap(turn)
 		}
 
+		// Flush any buffered turn-level diff before signaling done so the
+		// final aggregate diff lands on the timeline as a single entry.
+		c.flushTurnDiff(turnID)
+
 		if c.onTurnDone != nil {
 			c.onTurnDone(aborted)
 		}
@@ -858,6 +870,7 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 	case "thread/status/changed":
 		statusType := extractNestedString(params, "status", "type")
 		if statusType == "idle" && c.turnStarted {
+			c.flushTurnDiff(c.turnID)
 			if c.onTurnDone != nil {
 				c.onTurnDone(false)
 			}
@@ -938,14 +951,19 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 
 	case method == "item/completed" && itemType == "agentMessage":
 		text, _ := item["text"].(string)
+		phase, _ := item["phase"].(string)
+		isFinalAnswer := phase == "final_answer" && c.turnStarted
+		if isFinalAnswer {
+			// Flush the buffered diff before emitting the final-answer text:
+			// turn/diff/updated arrived earlier, so the transcript must show
+			// the patch_apply row above the final-answer message.
+			c.flushTurnDiff(c.turnID)
+		}
 		if text != "" && c.onMessage != nil {
 			c.onMessage(Message{Type: MessageText, Content: text})
 		}
-		phase, _ := item["phase"].(string)
-		if phase == "final_answer" && c.turnStarted {
-			if c.onTurnDone != nil {
-				c.onTurnDone(false)
-			}
+		if isFinalAnswer && c.onTurnDone != nil {
+			c.onTurnDone(false)
 		}
 	}
 }
@@ -1011,6 +1029,13 @@ func (c *codexClient) popFileChangeDelta(itemID string) string {
 	return output
 }
 
+// emitTurnDiffUpdated buffers the latest aggregate diff for a turn. The diff
+// is held until the turn finishes (via turn/completed, thread/status idle,
+// final_answer agentMessage, or an abnormal exit such as timeout/cancel) and
+// is emitted by flushTurnDiff. Codex can send several turn/diff/updated
+// notifications per turn as the agent edits and revises files; appending
+// each snapshot to the append-only task timeline would leave stale rows for
+// edit-then-revert sequences. Buffering emits only the final state.
 func (c *codexClient) emitTurnDiffUpdated(turnID, diff string) {
 	key := turnID
 	if key == "" {
@@ -1021,12 +1046,29 @@ func (c *codexClient) emitTurnDiffUpdated(turnID, diff string) {
 	if c.lastTurnDiffs == nil {
 		c.lastTurnDiffs = make(map[string]string)
 	}
-	if c.lastTurnDiffs[key] == diff {
-		c.fileChangeDeltaMu.Unlock()
-		return
-	}
 	c.lastTurnDiffs[key] = diff
 	c.fileChangeDeltaMu.Unlock()
+}
+
+// flushTurnDiff emits the buffered diff for a completed turn, if any. Empty
+// diffs (turns that end with no net file changes) are dropped so no stale
+// patch_apply row appears on the timeline.
+func (c *codexClient) flushTurnDiff(turnID string) {
+	key := turnID
+	if key == "" {
+		key = "_unknown"
+	}
+
+	c.fileChangeDeltaMu.Lock()
+	diff, ok := c.lastTurnDiffs[key]
+	if ok {
+		delete(c.lastTurnDiffs, key)
+	}
+	c.fileChangeDeltaMu.Unlock()
+
+	if !ok || diff == "" {
+		return
+	}
 
 	if c.onMessage != nil {
 		c.onMessage(Message{
