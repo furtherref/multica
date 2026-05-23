@@ -173,6 +173,110 @@ describe("ApiClient", () => {
     expect(headers["X-Client-OS"]).toBeUndefined();
   });
 
+  it("imports local skills through the dedicated endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          created: [
+            {
+              skill: {
+                id: "skill-1",
+                workspace_id: "ws-1",
+                name: "Review Helper",
+                description: "Reviews PRs",
+                content: "# Review Helper",
+                config: {},
+                created_by: "user-1",
+                created_at: "2026-05-12T00:00:00Z",
+                updated_at: "2026-05-12T00:00:00Z",
+                files: [],
+              },
+              source_label: "team.zip/review-helper",
+            },
+          ],
+          skipped: [],
+          failed: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    const result = await client.importLocalSkills({
+      skills: [
+        {
+          name: "Review Helper",
+          description: "Reviews PRs",
+          content: "# Review Helper",
+          files: [{ path: "templates/review.md", content: "body" }],
+          source: { type: "uploaded_bundle", label: "team.zip/review-helper" },
+        },
+      ],
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/skills/import-local",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          skills: [
+            {
+              name: "Review Helper",
+              description: "Reviews PRs",
+              content: "# Review Helper",
+              files: [{ path: "templates/review.md", content: "body" }],
+              source: { type: "uploaded_bundle", label: "team.zip/review-helper" },
+            },
+          ],
+        }),
+      }),
+    );
+    expect(result.created[0]?.skill.name).toBe("Review Helper");
+  });
+
+  it("falls back for malformed local skill import responses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ created: null, skipped: "bad", failed: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const client = new ApiClient("https://api.example.test");
+    const result = await client.importLocalSkills({
+      skills: [{ name: "Review Helper", content: "# Review Helper", source: { type: "uploaded_bundle", label: "review" } }],
+    });
+
+    expect(result).toEqual({ created: [], skipped: [], failed: [] });
+  });
+
+  it("falls back when imported local skill entries are missing required skill fields", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            created: [{ skill: { id: "skill-1" }, source_label: "team.zip/review-helper" }],
+            skipped: [],
+            failed: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    const client = new ApiClient("https://api.example.test");
+    const result = await client.importLocalSkills({
+      skills: [{ name: "Review Helper", content: "# Review Helper", source: { type: "uploaded_bundle", label: "review" } }],
+    });
+
+    expect(result).toEqual({ created: [], skipped: [], failed: [] });
+  });
+
   it("uses the Cloud Runtime node API contract and forwards bootstrap PAT on create", async () => {
     const node = {
       id: "node-1",

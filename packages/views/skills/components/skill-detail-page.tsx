@@ -201,7 +201,9 @@ function OriginSidebarCard({
         ? t(($) => $.detail.origin_card.imported_clawhub)
         : origin.type === "github"
           ? t(($) => $.detail.origin_card.imported_github)
-          : t(($) => $.detail.origin_card.imported_skills_sh);
+          : origin.type === "uploaded_bundle"
+            ? t(($) => $.detail.origin_card.imported_uploaded_bundle)
+            : t(($) => $.detail.origin_card.imported_skills_sh);
 
   return (
     <div className="rounded-md border bg-muted/30 p-3">
@@ -226,6 +228,11 @@ function OriginSidebarCard({
       {origin.source_url && (
         <div className="mt-1 break-all font-mono text-xs text-foreground">
           {origin.source_url}
+        </div>
+      )}
+      {origin.label && (
+        <div className="mt-1 break-all font-mono text-xs text-foreground">
+          {origin.label}
         </div>
       )}
       {origin.provider && (
@@ -547,6 +554,11 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
     if (origin.type === "clawhub") return t(($) => $.detail.subline.origin_clawhub);
     if (origin.type === "skills_sh") return t(($) => $.detail.subline.origin_skills_sh);
     if (origin.type === "github") return t(($) => $.detail.subline.origin_github);
+    if (origin.type === "uploaded_bundle") {
+      return origin.label
+        ? t(($) => $.detail.subline.origin_uploaded_bundle_named, { label: origin.label })
+        : t(($) => $.detail.subline.origin_uploaded_bundle);
+    }
     return t(($) => $.detail.subline.origin_workspace);
   })();
 

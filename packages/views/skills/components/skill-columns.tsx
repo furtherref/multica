@@ -209,6 +209,11 @@ function SourceCell({
   } else if (origin.type === "github") {
     icon = <Download className="h-3 w-3 shrink-0" />;
     label = t(($) => $.table.source_github);
+  } else if (origin.type === "uploaded_bundle") {
+    icon = <Download className="h-3 w-3 shrink-0" />;
+    label = origin.label
+      ? t(($) => $.table.source_uploaded_bundle_named, { label: origin.label })
+      : t(($) => $.table.source_uploaded_bundle);
   }
 
   return (

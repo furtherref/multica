@@ -34,6 +34,8 @@ import type {
   Skill,
   SkillSummary,
   CreateSkillRequest,
+  ImportLocalSkillsRequest,
+  ImportLocalSkillsResponse,
   UpdateSkillRequest,
   SetAgentSkillsRequest,
   PersonalAccessToken,
@@ -130,6 +132,7 @@ import {
   EMPTY_CLOUD_RUNTIME_NODE_LIST,
   EMPTY_CREATE_AGENT_FROM_TEMPLATE_RESPONSE,
   EMPTY_GROUPED_ISSUES_RESPONSE,
+  EMPTY_IMPORT_LOCAL_SKILLS_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
   EMPTY_SQUAD_MEMBER_STATUS_LIST,
   EMPTY_TIMELINE_ENTRIES,
@@ -137,6 +140,7 @@ import {
   EMPTY_LIST_WEBHOOK_DELIVERIES_RESPONSE,
   EMPTY_WEBHOOK_DELIVERY,
   GroupedIssuesResponseSchema,
+  ImportLocalSkillsResponseSchema,
   ListIssuesResponseSchema,
   ListWebhookDeliveriesResponseSchema,
   RuntimeHourlyActivityListSchema,
@@ -1272,6 +1276,16 @@ export class ApiClient {
     return this.fetch("/api/skills/import", {
       method: "POST",
       body: JSON.stringify(data),
+    });
+  }
+
+  async importLocalSkills(data: ImportLocalSkillsRequest): Promise<ImportLocalSkillsResponse> {
+    const raw = await this.fetch<unknown>("/api/skills/import-local", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ImportLocalSkillsResponseSchema, EMPTY_IMPORT_LOCAL_SKILLS_RESPONSE, {
+      endpoint: "POST /api/skills/import-local",
     });
   }
 

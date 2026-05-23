@@ -49,7 +49,9 @@
     "source_runtime_unknown": "From a runtime",
     "source_clawhub": "From ClawHub",
     "source_skills_sh": "From Skills.sh",
-    "source_github": "From GitHub"
+    "source_github": "From GitHub",
+    "source_uploaded_bundle": "From uploaded bundle",
+    "source_uploaded_bundle_named": "From {{label}}"
   },
   "detail": {
     "all_skills": "All skills",
@@ -72,6 +74,8 @@
       "origin_clawhub": "Imported · ClawHub",
       "origin_skills_sh": "Imported · Skills.sh",
       "origin_github": "Imported · GitHub",
+      "origin_uploaded_bundle": "Uploaded bundle",
+      "origin_uploaded_bundle_named": "Uploaded · {{label}}",
       "origin_workspace": "Workspace",
       "updated_label": "Updated {{when}}",
       "by_creator": "by {{name}}"
@@ -107,6 +111,7 @@
       "imported_clawhub": "Imported from ClawHub",
       "imported_skills_sh": "Imported from Skills.sh",
       "imported_github": "Imported from GitHub",
+      "imported_uploaded_bundle": "Imported from uploaded bundle",
       "provider": "provider · {{provider}}"
     },
     "not_found": {
@@ -162,6 +167,10 @@
       "runtime": {
         "title": "Copy from runtime",
         "desc": "Scan a local runtime and promote one of its on-disk skills into this workspace."
+      },
+      "upload": {
+        "title": "Upload folder or zip",
+        "desc": "Import a local skill folder or zipped skill bundle."
       }
     },
     "method_card": {
@@ -170,7 +179,9 @@
       "url_title": "Import from URL",
       "url_desc": "Pull a published skill from ClawHub or Skills.sh.",
       "runtime_title": "Copy from runtime",
-      "runtime_desc": "Promote a skill already installed on your local runtime."
+      "runtime_desc": "Promote a skill already installed on your local runtime.",
+      "upload_title": "Upload folder or zip",
+      "upload_desc": "Import a local skill folder or zipped skill bundle."
     },
     "manual": {
       "name_label": "Name",
@@ -197,6 +208,50 @@
       "fallback_error": "Import failed",
       "cancel": "Cancel",
       "toast_imported": "Skill imported"
+    }
+  },
+  "upload_import": {
+    "drop_title": "Drop a skill folder or .zip here",
+    "drop_label": "Dropped files",
+    "hint": "A valid skill must contain SKILL.md.",
+    "choose_folder": "Choose Folder",
+    "choose_zip": "Choose Zip",
+    "name_label": "Skill name",
+    "description_label": "Description",
+    "source_label": "Source",
+    "primary_file_badge": "SKILL.md",
+    "files_count_one": "{{count}} file",
+    "files_count_other": "{{count}} files",
+    "skipped_count_one": "{{count}} skipped",
+    "skipped_count_other": "{{count}} skipped",
+    "ready_single": "Ready to import \"{{name}}\" into workspace",
+    "ready_multiple": "Ready to import {{count}} skills into workspace",
+    "select_skill": "Select a valid skill to import.",
+    "import": "Import",
+    "import_many": "Import {{count}} skills",
+    "importing": "Importing {{done}} / {{total}}",
+    "toast_imported": "Skill imported",
+    "result_reasons": {
+      "already_exists": "already exists",
+      "missing_skill_md": "missing SKILL.md",
+      "invalid_file_path": "invalid file path",
+      "hidden_file": "hidden file skipped",
+      "metadata_file": "metadata file skipped",
+      "absolute_path": "absolute path skipped",
+      "path_traversal": "path traversal skipped",
+      "file_too_large": "file too large",
+      "binary_file": "binary file skipped",
+      "too_many_files": "too many files",
+      "bundle_too_large": "bundle is too large",
+      "imported": "imported"
+    },
+    "errors": {
+      "empty_selection": "Select a folder or zip to continue.",
+      "no_skill_md": "No SKILL.md found",
+      "unreadable_skill_md": "SKILL.md is unreadable (binary or too large)",
+      "unreadable_zip": "Unable to read zip file.",
+      "import_failed": "Import failed",
+      "too_many_skills": "Select up to {{count}} skills. Import them, then repeat for the rest."
     }
   },
   "runtime_import": {

@@ -319,6 +319,37 @@ export interface CreateSkillRequest {
   files?: { path: string; content: string }[];
 }
 
+export interface ImportLocalSkillRequest {
+  name: string;
+  description?: string;
+  content: string;
+  files?: { path: string; content: string }[];
+  source: {
+    type: "uploaded_bundle";
+    label: string;
+  };
+}
+
+export interface ImportLocalSkillsRequest {
+  skills: ImportLocalSkillRequest[];
+}
+
+export interface ImportLocalSkillCreated {
+  skill: Skill;
+  source_label: string;
+}
+
+export interface ImportLocalSkillResult {
+  name: string;
+  reason: string;
+}
+
+export interface ImportLocalSkillsResponse {
+  created: ImportLocalSkillCreated[];
+  skipped: ImportLocalSkillResult[];
+  failed: ImportLocalSkillResult[];
+}
+
 export interface UpdateSkillRequest {
   name?: string;
   description?: string;

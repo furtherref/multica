@@ -6,6 +6,7 @@ import type {
   Attachment,
   CreateAgentFromTemplateResponse,
   GroupedIssuesResponse,
+  ImportLocalSkillsResponse,
   ListIssuesResponse,
   ListWebhookDeliveriesResponse,
   TimelineEntry,
@@ -206,6 +207,20 @@ export const ChildIssuesResponseSchema = z.object({
   issues: z.array(IssueSchema).default([]),
 }).loose();
 
+const ImportLocalSkillResultSchema = z.object({
+  name: z.string(),
+  reason: z.string(),
+}).loose();
+
+const SkillFileSchema = z.object({
+  id: z.string(),
+  skill_id: z.string(),
+  path: z.string(),
+  content: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
 export const CloudRuntimeNodeSchema = z.object({
   id: z.string(),
   owner_id: z.string(),
@@ -221,6 +236,36 @@ export const CloudRuntimeNodeSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
 }).loose();
+
+const SkillSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  config: z.record(z.string(), z.unknown()),
+  created_by: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  content: z.string(),
+  files: z.array(SkillFileSchema),
+}).loose();
+
+const ImportLocalSkillCreatedSchema = z.object({
+  skill: SkillSchema,
+  source_label: z.string(),
+}).loose();
+
+export const ImportLocalSkillsResponseSchema = z.object({
+  created: z.array(ImportLocalSkillCreatedSchema).default([]),
+  skipped: z.array(ImportLocalSkillResultSchema).default([]),
+  failed: z.array(ImportLocalSkillResultSchema).default([]),
+}).loose();
+
+export const EMPTY_IMPORT_LOCAL_SKILLS_RESPONSE: ImportLocalSkillsResponse = {
+  created: [],
+  skipped: [],
+  failed: [],
+};
 
 export const CloudRuntimeNodeListSchema = z.array(CloudRuntimeNodeSchema);
 

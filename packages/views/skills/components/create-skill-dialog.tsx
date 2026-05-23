@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   ChevronRight,
   Download,
+  FolderUp,
   HardDrive,
   Loader2,
   Pencil,
@@ -39,11 +40,12 @@ import { Textarea } from "@multica/ui/components/ui/textarea";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { cn } from "@multica/ui/lib/utils";
 import { openExternal } from "../../platform";
+import { LocalSkillUploadPanel } from "./local-skill-upload-panel";
 import { RuntimeLocalSkillImportPanel } from "./runtime-local-skill-import-panel";
 import { useT } from "../../i18n";
 import { isNameConflictError } from "../lib/utils";
 
-type Method = "chooser" | "manual" | "url" | "runtime";
+type Method = "chooser" | "manual" | "url" | "runtime" | "upload";
 
 function seedAfterCreate(
   qc: ReturnType<typeof useQueryClient>,
@@ -64,10 +66,11 @@ function MethodChooser({ onChoose }: { onChoose: (m: Method) => void }) {
   const methods: {
     key: Method;
     icon: typeof Plus;
-    titleKey: "manual" | "url" | "runtime";
+    titleKey: "manual" | "url" | "runtime" | "upload";
   }[] = [
     { key: "manual", icon: Plus, titleKey: "manual" },
     { key: "url", icon: Download, titleKey: "url" },
+    { key: "upload", icon: FolderUp, titleKey: "upload" },
     { key: "runtime", icon: HardDrive, titleKey: "runtime" },
   ];
   return (
@@ -439,7 +442,7 @@ export function CreateSkillDialog({
     onClose();
   };
 
-  const wide = method === "runtime";
+  const wide = method === "runtime" || method === "upload";
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
@@ -518,6 +521,9 @@ export function CreateSkillDialog({
             onImported={handleCreated}
             onBulkDone={onClose}
           />
+        )}
+        {method === "upload" && (
+          <LocalSkillUploadPanel onImported={handleCreated} />
         )}
       </DialogContent>
     </Dialog>

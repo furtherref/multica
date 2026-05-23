@@ -61,7 +61,9 @@
     "source_runtime_unknown": "来自某个运行时",
     "source_clawhub": "来自 ClawHub",
     "source_skills_sh": "来自 Skills.sh",
-    "source_github": "来自 GitHub"
+    "source_github": "来自 GitHub",
+    "source_uploaded_bundle": "来自上传包",
+    "source_uploaded_bundle_named": "来自 {{label}}"
   },
   "detail": {
     "all_skills": "全部 skill",
@@ -84,6 +86,8 @@
       "origin_clawhub": "导入自 · ClawHub",
       "origin_skills_sh": "导入自 · Skills.sh",
       "origin_github": "导入自 · GitHub",
+      "origin_uploaded_bundle": "上传包",
+      "origin_uploaded_bundle_named": "上传自 · {{label}}",
       "origin_workspace": "工作区",
       "updated_label": "{{when}}更新",
       "by_creator": "由 {{name}}"
@@ -119,6 +123,7 @@
       "imported_clawhub": "从 ClawHub 导入",
       "imported_skills_sh": "从 Skills.sh 导入",
       "imported_github": "从 GitHub 导入",
+      "imported_uploaded_bundle": "从上传包导入",
       "provider": "provider · {{provider}}"
     },
     "not_found": {
@@ -174,6 +179,10 @@
       "runtime": {
         "title": "从运行时复制",
         "desc": "扫描本地运行时，把它磁盘上的 skill 提升到工作区。"
+      },
+      "upload": {
+        "title": "上传 文件夹 或 zip压缩包",
+        "desc": "导入本地 skill 文件夹或打包后的 skill。"
       }
     },
     "method_card": {
@@ -182,7 +191,9 @@
       "url_title": "从 URL 导入",
       "url_desc": "从 ClawHub 或 Skills.sh 拉取已发布的 skill。",
       "runtime_title": "从运行时复制",
-      "runtime_desc": "把本地运行时里已经装好的 skill 提升过来。"
+      "runtime_desc": "把本地运行时里已经装好的 skill 提升过来。",
+      "upload_title": "上传 文件夹 或 zip压缩包",
+      "upload_desc": "导入本地 skill 文件夹或打包后的 skill。"
     },
     "manual": {
       "name_label": "名称",
@@ -209,6 +220,50 @@
       "fallback_error": "导入失败",
       "cancel": "取消",
       "toast_imported": "已导入 skill"
+    }
+  },
+  "upload_import": {
+    "drop_title": "将 skill 文件夹或 .zip 拖到这里",
+    "drop_label": "拖入的文件",
+    "hint": "有效 skill 必须包含 SKILL.md。",
+    "choose_folder": "选择文件夹",
+    "choose_zip": "选择 Zip",
+    "name_label": "Skill 名称",
+    "description_label": "描述",
+    "source_label": "来源",
+    "primary_file_badge": "SKILL.md",
+    "files_count_one": "{{count}} 个文件",
+    "files_count_other": "{{count}} 个文件",
+    "skipped_count_one": "{{count}} 个已跳过",
+    "skipped_count_other": "{{count}} 个已跳过",
+    "ready_single": "准备将\"{{name}}\"导入工作区",
+    "ready_multiple": "准备将 {{count}} 个 skill 导入工作区",
+    "select_skill": "请选择一个有效 skill 导入。",
+    "import": "导入",
+    "import_many": "导入 {{count}} 个 skill",
+    "importing": "导入中 {{done}} / {{total}}",
+    "toast_imported": "已导入 skill",
+    "result_reasons": {
+      "already_exists": "已存在",
+      "missing_skill_md": "缺少 SKILL.md",
+      "invalid_file_path": "文件路径无效",
+      "hidden_file": "已跳过隐藏文件",
+      "metadata_file": "已跳过元数据文件",
+      "absolute_path": "已跳过绝对路径",
+      "path_traversal": "已跳过路径穿越文件",
+      "file_too_large": "文件过大",
+      "binary_file": "已跳过二进制文件",
+      "too_many_files": "文件数量过多",
+      "bundle_too_large": "文件包过大",
+      "imported": "已导入"
+    },
+    "errors": {
+      "empty_selection": "请选择文件夹或 zip 后继续。",
+      "no_skill_md": "未找到 SKILL.md",
+      "unreadable_skill_md": "SKILL.md 无法读取（二进制文件或文件过大）",
+      "unreadable_zip": "无法读取 zip 文件。",
+      "import_failed": "导入失败",
+      "too_many_skills": "最多选择 {{count}} 个 skill。先导入它们，再导入剩余 skill。"
     }
   },
   "runtime_import": {
