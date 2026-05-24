@@ -7,6 +7,7 @@ import {
   HardDrive,
   Lock,
   Pencil,
+  Upload,
 } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import type {
@@ -209,6 +210,9 @@ function SourceCell({
   } else if (origin.type === "github") {
     icon = <Download className="h-3 w-3 shrink-0" />;
     label = t(($) => $.table.source_github);
+  } else if (origin.type === "upload") {
+    icon = <Upload className="h-3 w-3 shrink-0" />;
+    label = t(($) => $.table.source_upload);
   }
 
   return (

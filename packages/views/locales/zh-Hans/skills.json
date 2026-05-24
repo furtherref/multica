@@ -61,11 +61,16 @@
     "source_runtime_unknown": "来自某个运行时",
     "source_clawhub": "来自 ClawHub",
     "source_skills_sh": "来自 Skills.sh",
-    "source_github": "来自 GitHub"
+    "source_github": "来自 GitHub",
+    "source_upload": "本地上传"
   },
   "detail": {
     "all_skills": "全部 skill",
     "read_only": "只读",
+    "download_aria": "下载 skill 为 zip",
+    "download_tooltip": "下载为 .zip",
+    "download_tooltip_dirty": "请先保存修改再下载",
+    "download_collision_error": "下载已阻止：部分附属文件路径冲突，请先修正文件路径再导出。",
     "delete_aria": "删除 skill",
     "delete_tooltip": "删除 skill",
     "supporting_data_warning": "部分工作区数据加载失败。创建者归属、运行时名称、编辑权限可能要等下次刷新才完整。",
@@ -119,6 +124,7 @@
       "imported_clawhub": "从 ClawHub 导入",
       "imported_skills_sh": "从 Skills.sh 导入",
       "imported_github": "从 GitHub 导入",
+      "imported_upload": "从本地文件上传",
       "provider": "provider · {{provider}}"
     },
     "not_found": {
@@ -174,6 +180,10 @@
       "runtime": {
         "title": "从运行时复制",
         "desc": "扫描本地运行时，把它磁盘上的 skill 提升到工作区。"
+      },
+      "upload": {
+        "title": "上传文件",
+        "desc": "从本地文件夹或 zip 压缩包导入包含 SKILL.md 的 skill。"
       }
     },
     "method_card": {
@@ -182,7 +192,9 @@
       "url_title": "从 URL 导入",
       "url_desc": "从 ClawHub 或 Skills.sh 拉取已发布的 skill。",
       "runtime_title": "从运行时复制",
-      "runtime_desc": "把本地运行时里已经装好的 skill 提升过来。"
+      "runtime_desc": "把本地运行时里已经装好的 skill 提升过来。",
+      "upload_title": "上传文件",
+      "upload_desc": "导入本地 skill 文件夹或 zip 压缩包。"
     },
     "manual": {
       "name_label": "名称",
@@ -209,6 +221,42 @@
       "fallback_error": "导入失败",
       "cancel": "取消",
       "toast_imported": "已导入 skill"
+    },
+    "upload": {
+      "drop_zone": "拖放 .zip 文件到这里",
+      "drop_zone_active": "松手放置",
+      "or": "或",
+      "browse_zip": "选择 .zip 文件",
+      "browse_folder": "选择文件夹",
+      "parsing": "解析中…",
+      "parsed_name": "名称",
+      "parsed_description": "描述",
+      "parsed_files": "{{count}} 个附属文件",
+      "no_description": "无描述",
+      "change_file": "更换文件",
+      "error_skill_md_not_found_zip": "压缩包中未找到 SKILL.md。",
+      "error_skill_md_not_found_folder": "所选文件夹中未找到 SKILL.md。",
+      "error_skill_md_too_large": "SKILL.md 超过 1 MiB 大小限制。",
+      "error_skill_md_ambiguous_folder": "在同一层级发现多个 SKILL.md 文件，请选择只包含一个 skill 的文件夹。",
+      "error_drop_zip_only": "请拖放 .zip 文件，或使用下方按钮选择文件夹。",
+      "truncated_warning": "部分文件因超出大小或数量限制而被跳过，无法导入不完整的技能包。",
+      "binary_skipped_warning": "已跳过 {{count}} 个二进制文件（图片、PDF 等），仅导入文本文件。",
+      "error_name_conflict": "同名 skill 已存在，请换一个名字再提交。",
+      "fallback_error": "创建 skill 失败。",
+      "cancel": "取消",
+      "submit": "创建 skill",
+      "submitting": "创建中…",
+      "toast_created": "已上传 skill",
+      "select_all": "全选 ({{count}})",
+      "bulk_import_button": "导入 {{count}} 个 skill",
+      "bulk_progress": "正在导入 {{completed}} / {{total}}…",
+      "bulk_cancel": "取消",
+      "bulk_complete_hint": "导入完成。",
+      "bulk_cancelled_hint": "导入已取消。",
+      "bulk_done": "完成",
+      "bulk_summary_imported": "已导入",
+      "bulk_summary_skipped": "已跳过",
+      "bulk_summary_failed": "失败"
     }
   },
   "runtime_import": {

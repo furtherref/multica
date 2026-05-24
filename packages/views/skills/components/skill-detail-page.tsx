@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   ChevronRight,
+  Download,
   HardDrive,
   Loader2,
   Lock,
@@ -57,6 +58,8 @@ import {
   TooltipTrigger,
 } from "@multica/ui/components/ui/tooltip";
 import { AppLink, useNavigation } from "../../navigation";
+import { zipSync, strToU8 } from "fflate";
+import { sanitizeExportName, collectExportFiles, updateFrontmatter } from "../lib/parse-skill-bundle";
 import { useCanEditSkill } from "../hooks/use-can-edit-skill";
 import { useSkillPermissions } from "@multica/core/permissions";
 import { CapabilityBanner } from "@multica/ui/components/common/capability-banner";
@@ -201,7 +204,9 @@ function OriginSidebarCard({
         ? t(($) => $.detail.origin_card.imported_clawhub)
         : origin.type === "github"
           ? t(($) => $.detail.origin_card.imported_github)
-          : t(($) => $.detail.origin_card.imported_skills_sh);
+          : origin.type === "upload"
+            ? t(($) => $.detail.origin_card.imported_upload)
+            : t(($) => $.detail.origin_card.imported_skills_sh);
 
   return (
     <div className="rounded-md border bg-muted/30 p-3">
@@ -568,13 +573,56 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
         <span className="truncate font-mono text-xs text-foreground">
           {skill.name}
         </span>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-1">
           {!canEdit && (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               <Lock className="h-3 w-3" />
               {t(($) => $.detail.read_only)}
             </span>
           )}
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={isDirty}
+                  onClick={() => {
+                    const safeName = sanitizeExportName(skill.name);
+                    const folder = safeName + "/";
+                    const data: Record<string, Uint8Array> = {
+                      [folder + "SKILL.md"]: strToU8(updateFrontmatter(skill.content, skill.name, skill.description)),
+                    };
+                    const exported = collectExportFiles(skill.files ?? []);
+                    if (exported.hasCollisions) {
+                      toast.error(t(($) => $.detail.download_collision_error));
+                      return;
+                    }
+                    for (const f of exported.files) {
+                      data[folder + f.path] = strToU8(f.content);
+                    }
+                    const zipped = zipSync(data);
+                    const blob = new Blob([zipped], { type: "application/zip" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `${safeName}.zip`;
+                    a.click();
+                    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                  }}
+                  className="text-muted-foreground"
+                  aria-label={t(($) => $.detail.download_aria)}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                </Button>
+              }
+            />
+            <TooltipContent>
+              {isDirty
+                ? t(($) => $.detail.download_tooltip_dirty)
+                : t(($) => $.detail.download_tooltip)}
+            </TooltipContent>
+          </Tooltip>
           {canEdit && (
             <Tooltip>
               <TooltipTrigger
