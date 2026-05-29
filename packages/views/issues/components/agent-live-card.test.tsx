@@ -166,7 +166,7 @@ describe("AgentLiveCard reconcile race", () => {
     await act(async () => {
       mountFetch.resolve({ tasks: [] });
     });
-    expect(screen.queryByText(/is working/)).toBeNull();
+    expect(screen.queryByTestId("transcript-button")).toBeNull();
 
     // task:queued fires; reconcile A is now in flight (queuedFetch).
     act(() => {
@@ -184,7 +184,7 @@ describe("AgentLiveCard reconcile race", () => {
     await act(async () => {
       completedFetch.resolve({ tasks: [] });
     });
-    expect(screen.queryByText(/is working/)).toBeNull();
+    expect(screen.queryByTestId("transcript-button")).toBeNull();
 
     // Reconcile A (older, slow) resolves last with a stale snapshot that
     // still includes the task. With the generation guard, this response
@@ -194,7 +194,7 @@ describe("AgentLiveCard reconcile race", () => {
     });
 
     // The banner must NOT come back.
-    expect(screen.queryByText(/is working/)).toBeNull();
+    expect(screen.queryByTestId("transcript-button")).toBeNull();
     expect(mockApi.getActiveTasksForIssue).toHaveBeenCalledTimes(3);
   });
 
@@ -213,7 +213,7 @@ describe("AgentLiveCard reconcile race", () => {
       mountFetch.resolve({ tasks: [makeTask("task-1")] });
     });
     await waitFor(() => {
-      expect(screen.getByText(/is working/)).toBeTruthy();
+      expect(screen.getByTestId("transcript-button")).toBeTruthy();
     });
 
     // Simulate the WS dropping task:completed and then reconnecting.
@@ -230,7 +230,7 @@ describe("AgentLiveCard reconcile race", () => {
 
     // The banner self-heals.
     await waitFor(() => {
-      expect(screen.queryByText(/is working/)).toBeNull();
+      expect(screen.queryByTestId("transcript-button")).toBeNull();
     });
   });
 });
@@ -318,11 +318,11 @@ describe("AgentLiveCard queued rendering", () => {
     renderCard();
 
     await waitFor(() => {
-      expect(screen.getByText(/is working/)).toBeTruthy();
+      expect(screen.getByTestId("transcript-button")).toBeTruthy();
       expect(screen.getByText(/is queued/)).toBeTruthy();
     });
 
-    const working = screen.getByText(/is working/);
+    const working = screen.getByTestId("transcript-button");
     const queued = screen.getByText(/is queued/);
     // Running banner appears earlier in the document order.
     expect(working.compareDocumentPosition(queued) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
