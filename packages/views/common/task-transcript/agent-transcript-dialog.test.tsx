@@ -1,5 +1,5 @@
 import { type ReactNode } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -22,6 +22,17 @@ vi.mock("@multica/core/hooks", () => ({
 
 vi.mock("../actor-avatar", () => ({
   ActorAvatar: () => <span data-testid="actor-avatar" />,
+}));
+
+// The dialog's live-activity fallback (useLiveTaskActivity) subscribes via
+// useWSEvent. Capture the handlers so tests can fire task:activity / task:message.
+const { wsHandlers } = vi.hoisted(() => ({
+  wsHandlers: new Map<string, (payload: unknown) => void>(),
+}));
+vi.mock("@multica/core/realtime", () => ({
+  useWSEvent: (event: string, handler: (payload: unknown) => void) => {
+    wsHandlers.set(event, handler);
+  },
 }));
 
 const TEST_RESOURCES = {
@@ -190,5 +201,65 @@ describe("AgentTranscriptDialog tool_use diff rendering", () => {
 
     expect(screen.getAllByText("patched: src/app.ts").length).toBeGreaterThan(1);
     expect(screen.queryByText("No visual diff available for this file change.")).not.toBeInTheDocument();
+  });
+});
+
+describe("AgentTranscriptDialog live activity", () => {
+  function renderLive(activity?: string) {
+    return render(
+      <AgentTranscriptDialog
+        open={true}
+        onOpenChange={() => {}}
+        task={{ ...baseTask(), status: "running" as const }}
+        items={[]}
+        agentName="Codex"
+        isLive
+        activity={activity}
+      />,
+      { wrapper: I18nWrapper },
+    );
+  }
+  const fireActivity = (value: string, afterSeq = 0) =>
+    act(() => {
+      wsHandlers
+        .get("task:activity")
+        ?.({ task_id: "task-1", activity: value, after_seq: afterSeq });
+    });
+  const fireMessage = (seq: number) =>
+    act(() => {
+      wsHandlers.get("task:message")?.({ task_id: "task-1", seq, type: "tool_use" });
+    });
+
+  it("shows the live stage, not a static 'waiting for events', in the empty live state", () => {
+    renderLive();
+    expect(screen.getByText("Thinking")).toBeInTheDocument();
+  });
+
+  it("reflects the parent's reconnect hint so it matches the live card on (re)open", () => {
+    renderLive("reconnecting");
+    expect(screen.getByText("Reconnecting")).toBeInTheDocument();
+  });
+
+  it("with no prop, a task:activity reconnect hint shows Reconnecting (lazy fallback)", () => {
+    renderLive();
+    expect(screen.getByText("Thinking")).toBeInTheDocument();
+    fireActivity("reconnecting", 0);
+    expect(screen.getByText("Reconnecting")).toBeInTheDocument();
+  });
+
+  it("a task:message with a higher seq clears the stale fallback hint", () => {
+    renderLive();
+    fireActivity("reconnecting", 0);
+    expect(screen.getByText("Reconnecting")).toBeInTheDocument();
+    fireMessage(1); // seq 1 > after_seq 0 → supersedes
+    expect(screen.queryByText("Reconnecting")).not.toBeInTheDocument();
+    expect(screen.getByText("Thinking")).toBeInTheDocument();
+  });
+
+  it("the activity prop takes priority over the fallback subscription", () => {
+    renderLive("reconnecting"); // prop set
+    fireActivity("reconnecting", 0); // fallback also set
+    fireMessage(5); // clears the fallback (5 > 0) — but the prop drives the display
+    expect(screen.getByText("Reconnecting")).toBeInTheDocument();
   });
 });

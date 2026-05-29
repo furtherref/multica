@@ -24,6 +24,9 @@ interface TranscriptButtonProps {
    */
   items?: TimelineItem[];
   isLive?: boolean;
+  /** Transient activity hint (e.g. "reconnecting") forwarded to the dialog's
+   *  empty-state live label. Supply from the same source as `items`. */
+  activity?: string;
   className?: string;
   title?: string;
   /**
@@ -44,6 +47,7 @@ export function TranscriptButton({
   agentName,
   items: providedItems,
   isLive = false,
+  activity,
   className,
   title = "View transcript",
   headerSlot,
@@ -124,6 +128,7 @@ export function TranscriptButton({
           items={items}
           agentName={agentName}
           isLive={isLive}
+          activity={activity}
           headerSlot={headerSlot}
         />
       )}

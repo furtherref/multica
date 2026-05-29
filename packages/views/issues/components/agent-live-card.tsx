@@ -421,6 +421,7 @@ function SingleAgentLiveCard({ task, items, messages, activity, issueId, agentNa
               agentName={agentName}
               items={items}
               isLive
+              activity={activity}
               title={t(($) => $.agent_live.transcript_button)}
             />
           )}

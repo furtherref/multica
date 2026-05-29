@@ -40,6 +40,7 @@ import { redactSecrets } from "./redact";
 import { isEditTool, looksLikeUnifiedDiff, type TimelineItem } from "./build-timeline";
 import { DiffViewer } from "./diff-viewer";
 import { useT } from "../../i18n";
+import { AgentActivityLabel, useLiveTaskActivity } from "../agent-activity";
 
 interface AgentTranscriptDialogProps {
   open: boolean;
@@ -48,6 +49,14 @@ interface AgentTranscriptDialogProps {
   items: TimelineItem[];
   agentName: string;
   isLive?: boolean;
+  /**
+   * Current transient activity hint (e.g. "reconnecting") supplied by the
+   * parent (the live card). Passing it in — rather than the dialog running its
+   * own task:activity subscription — keeps the dialog's empty-state label
+   * consistent with the card even when reopened mid-run. Only meaningful while
+   * isLive.
+   */
+  activity?: string;
   /**
    * Optional content rendered between the header chips and the event list.
    * Used by autopilot run rows to surface the inbound webhook trigger
@@ -174,6 +183,7 @@ export function AgentTranscriptDialog({
   items,
   agentName,
   isLive = false,
+  activity,
   headerSlot,
 }: AgentTranscriptDialogProps) {
   const { t } = useT("agents");
@@ -184,6 +194,12 @@ export function AgentTranscriptDialog({
   const [agentInfo, setAgentInfo] = useState<Agent | null>(null);
   const [runtimeInfo, setRuntimeInfo] = useState<AgentRuntime | null>(null);
   const [selectedTools, setSelectedTools] = useState<Set<string>>(new Set());
+  // Activity hint: prefer the prop fed by a persistent parent (the live card —
+  // reopen-consistent). When opened without one (e.g. lazily from the execution
+  // log or activity tab), fall back to a component-local subscription so the
+  // empty state still shows "Reconnecting" while open.
+  const fallbackActivity = useLiveTaskActivity(isLive ? task.id : undefined);
+  const effectiveActivity = activity ?? fallbackActivity;
   const sortDirection = useTranscriptViewStore((s) => s.sortDirection);
   const setSortDirection = useTranscriptViewStore((s) => s.setSortDirection);
   const eventRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -549,10 +565,12 @@ export function AgentTranscriptDialog({
           {displayItems.length === 0 ? (
             <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
               {isLive ? (
-                <div className="flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  {t(($) => $.transcript.waiting_events)}
-                </div>
+                <AgentActivityLabel
+                  status={task.status}
+                  taskMessages={[]}
+                  activity={effectiveActivity}
+                  className="text-sm"
+                />
               ) : (
                 t(($) => $.transcript.no_data)
               )}
