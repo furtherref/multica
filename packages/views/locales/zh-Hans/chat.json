@@ -92,24 +92,5 @@
     "fallback_name": "智能体",
     "unstable": "{{name}} 的连接不稳定——回复可能延迟。",
     "offline": "{{name}} 离线——你的消息将在它上线后发送。"
-  },
-  "status_pill": {
-    "stages": {
-      "offline": "离线",
-      "reconnecting": "重连中",
-      "queued": "排队中",
-      "waiting_local_directory": "等待本地目录释放",
-      "starting_up": "启动中",
-      "thinking": "思考中",
-      "typing": "输入中"
-    },
-    "tools": {
-      "running_command": "执行命令",
-      "reading_files": "读取文件",
-      "searching_code": "搜索代码",
-      "making_edits": "修改文件",
-      "searching_web": "搜索网页",
-      "fallback": "处理中"
-    }
   }
 }

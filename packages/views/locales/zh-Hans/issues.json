@@ -300,7 +300,6 @@
     "filter_active_label": "正在查看工作中的智能体"
   },
   "agent_live": {
-    "is_working": "{{name}} 正在处理",
     "is_queued": "{{name}} 排队中",
     "is_waiting_local_directory": "{{name}} 正在等待本地目录",
     "queued_elapsed_prefix": "已排队 {{elapsed}}",

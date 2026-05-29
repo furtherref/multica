@@ -14,6 +14,7 @@ import {
   buildTimeline,
   type TimelineItem,
 } from "../../common/task-transcript";
+import { AgentActivityLabel } from "../../common/agent-activity";
 import { useT } from "../../i18n";
 import { TerminateTaskConfirmDialog } from "./terminate-task-confirm-dialog";
 
@@ -239,6 +240,7 @@ export function AgentLiveCard({ issueId }: AgentLiveCardProps) {
         <SingleAgentLiveCard
           task={firstEntry.task}
           items={buildTimeline(firstEntry.messages)}
+          messages={firstEntry.messages}
           issueId={issueId}
           agentName={firstEntry.task.agent_id ? getActorName("agent", firstEntry.task.agent_id) : t(($) => $.agent_live.fallback_name)}
         />
@@ -251,6 +253,7 @@ export function AgentLiveCard({ issueId }: AgentLiveCardProps) {
               key={task.id}
               task={task}
               items={buildTimeline(messages)}
+              messages={messages}
               issueId={issueId}
               agentName={task.agent_id ? getActorName("agent", task.agent_id) : t(($) => $.agent_live.fallback_name)}
             />
@@ -266,11 +269,13 @@ export function AgentLiveCard({ issueId }: AgentLiveCardProps) {
 interface SingleAgentLiveCardProps {
   task: AgentTask;
   items: TimelineItem[];
+  /** Raw task messages — feeds the live activity label (running stage). */
+  messages: TaskMessagePayload[];
   issueId: string;
   agentName: string;
 }
 
-function SingleAgentLiveCard({ task, items, issueId, agentName }: SingleAgentLiveCardProps) {
+function SingleAgentLiveCard({ task, items, messages, issueId, agentName }: SingleAgentLiveCardProps) {
   const { t } = useT("issues");
   const [elapsed, setElapsed] = useState("");
   const [cancelling, setCancelling] = useState(false);
@@ -339,8 +344,20 @@ function SingleAgentLiveCard({ task, items, issueId, agentName }: SingleAgentLiv
               ? t(($) => $.agent_live.is_waiting_local_directory, { name: agentName })
               : isQueued
                 ? t(($) => $.agent_live.is_queued, { name: agentName })
-                : t(($) => $.agent_live.is_working, { name: agentName })}
+                : agentName}
           </span>
+          {/* Running tasks: surface the live stage (running command / reading
+              files / thinking / typing) instead of a generic "is working" so
+              the banner doesn't look frozen between tool calls. The card's own
+              Loader2 is the activity spinner, so hide the label's. */}
+          {!isParked && (
+            <AgentActivityLabel
+              status={task.status}
+              taskMessages={messages}
+              hideSpinner
+              className="text-muted-foreground"
+            />
+          )}
           <span className="text-muted-foreground tabular-nums shrink-0">
             {isParked
               ? t(($) => $.agent_live.queued_elapsed_prefix, { elapsed })

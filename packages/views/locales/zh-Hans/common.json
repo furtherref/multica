@@ -9,5 +9,24 @@
     "minutes_ago": "{{count}} 分钟前",
     "hours_ago": "{{count}} 小时前",
     "days_ago": "{{count}} 天前"
+  },
+  "status_pill": {
+    "stages": {
+      "offline": "离线",
+      "reconnecting": "重连中",
+      "queued": "排队中",
+      "waiting_local_directory": "等待本地目录释放",
+      "starting_up": "启动中",
+      "thinking": "思考中",
+      "typing": "输入中"
+    },
+    "tools": {
+      "running_command": "执行命令",
+      "reading_files": "读取文件",
+      "searching_code": "搜索代码",
+      "making_edits": "修改文件",
+      "searching_web": "搜索网页",
+      "fallback": "处理中"
+    }
   }
 }

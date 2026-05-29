@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pickStageKeys } from "./task-status-pill";
+import { pickStageKeys } from "./pick-stage";
 
 describe("pickStageKeys", () => {
   it("returns queued when status is queued and agent is online", () => {
@@ -36,5 +36,40 @@ describe("pickStageKeys", () => {
 
   it("returns thinking for running with no messages", () => {
     expect(pickStageKeys("running", [], "online")).toEqual({ stageKey: "thinking" });
+  });
+
+  it("returns typing when the latest message is agent text", () => {
+    expect(
+      pickStageKeys(
+        "running",
+        [{ type: "text" } as never],
+        "online",
+      ),
+    ).toEqual({ stageKey: "typing" });
+  });
+
+  it("surfaces the tool label for the latest tool_use, ignoring trailing tool_result", () => {
+    // A tool_result arriving after the tool_use must NOT reset the stage to
+    // generic thinking — the user should still see "Running a command" while
+    // the model digests the result and decides the next step (the 6–12s gap).
+    expect(
+      pickStageKeys(
+        "running",
+        [{ type: "tool_use", tool: "bash" } as never, { type: "tool_result" } as never],
+        "online",
+      ),
+    ).toEqual({ stageKey: "thinking", toolKey: "running_command" });
+  });
+
+  it("maps the real Codex tool names (exec_command, patch_apply), not the fallback", () => {
+    // The Codex backend emits these exact slugs (server/pkg/agent/codex.go) —
+    // the runtime this whole feature targets. They must resolve to specific
+    // labels, never the generic "Working" fallback.
+    expect(
+      pickStageKeys("running", [{ type: "tool_use", tool: "exec_command" } as never], "online"),
+    ).toEqual({ stageKey: "thinking", toolKey: "running_command" });
+    expect(
+      pickStageKeys("running", [{ type: "tool_use", tool: "patch_apply" } as never], "online"),
+    ).toEqual({ stageKey: "thinking", toolKey: "making_edits" });
   });
 });
