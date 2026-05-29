@@ -50,6 +50,22 @@ type TaskMessagePayload struct {
 	Output  string         `json:"output,omitempty"`  // tool output (tool_result only)
 }
 
+// TaskActivityPayload is a transient hint about what a running task is doing
+// right now (e.g. reconnecting to the model upstream). Unlike
+// TaskMessagePayload it is never written to the task transcript — it updates
+// an in-place indicator and is superseded by the next real task message.
+type TaskActivityPayload struct {
+	TaskID   string `json:"task_id"`
+	IssueID  string `json:"issue_id,omitempty"`
+	Activity string `json:"activity"` // e.g. "reconnecting"
+	// AfterSeq is the task's message-sequence frontier when this hint was
+	// emitted. The frontend ignores the hint if it has already seen a message
+	// past this seq — the activity POST is async and can be reordered behind a
+	// later (batched) task:message, which would otherwise wrongly re-show
+	// "Reconnecting" after a real message already superseded it.
+	AfterSeq int `json:"after_seq"`
+}
+
 // DaemonRegisterPayload is sent from daemon to server on connection.
 type DaemonRegisterPayload struct {
 	DaemonID string        `json:"daemon_id"`

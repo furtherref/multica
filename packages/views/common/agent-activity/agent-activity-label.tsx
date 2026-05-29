@@ -14,6 +14,8 @@ interface Props {
   taskMessages: readonly TaskMessagePayload[];
   /** Resolved agent presence; pass `undefined` to skip availability hints. */
   availability?: AgentAvailability | undefined;
+  /** Transient hint from a `task:activity` event (e.g. "reconnecting"). */
+  activity?: string;
   /** Suppress the built-in spinner when the caller renders its own. */
   hideSpinner?: boolean;
   className?: string;
@@ -28,11 +30,12 @@ export function AgentActivityLabel({
   status,
   taskMessages,
   availability,
+  activity,
   hideSpinner,
   className,
 }: Props) {
   const { t } = useT("common");
-  const decision = pickStageKeys(status, taskMessages, availability);
+  const decision = pickStageKeys(status, taskMessages, availability, activity);
   const label = decision.toolKey
     ? t(($) => $.status_pill.tools[decision.toolKey!])
     : t(($) => $.status_pill.stages[decision.stageKey]);

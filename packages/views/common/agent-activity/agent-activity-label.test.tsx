@@ -65,6 +65,18 @@ describe("AgentActivityLabel", () => {
     expect(screen.getByText("Making edits")).toBeInTheDocument();
   });
 
+  it("shows Reconnecting when a reconnecting activity hint is set, overriding the tool stage", () => {
+    wrap(
+      <AgentActivityLabel
+        status="running"
+        taskMessages={[msg({ type: "tool_use", tool: "exec_command" })]}
+        activity="reconnecting"
+      />,
+    );
+    expect(screen.getByText("Reconnecting")).toBeInTheDocument();
+    expect(screen.queryByText("Running a command")).not.toBeInTheDocument();
+  });
+
   it("keeps the tool label after a trailing tool_result (the inter-tool gap)", () => {
     // The 6–12s "model is deciding the next tool" gap: a tool_result lands but
     // no new tool_use yet. The label must stay on the last tool, not reset to

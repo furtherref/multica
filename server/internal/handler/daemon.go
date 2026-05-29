@@ -2005,6 +2005,57 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// ReportTaskActivity broadcasts a transient activity hint for a running task
+// (e.g. "reconnecting") to the workspace's realtime subscribers WITHOUT
+// persisting it. Unlike ReportTaskMessages there is no DB write: the frontend
+// shows it as an in-place indicator and drops it when the next real task
+// message arrives, so a burst of upstream reconnects never pollutes the
+// append-only transcript.
+func (h *Handler) ReportTaskActivity(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "taskId")
+
+	var req struct {
+		Activity string `json:"activity"`
+		AfterSeq int    `json:"after_seq"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Activity) == "" {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
+	// Verify the caller owns this task's workspace.
+	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	if !ok {
+		return
+	}
+
+	workspaceID := ""
+	if task.IssueID.Valid {
+		if issue, err := h.Queries.GetIssue(r.Context(), task.IssueID); err == nil {
+			workspaceID = uuidToString(issue.WorkspaceID)
+		}
+	}
+	if workspaceID == "" && task.ChatSessionID.Valid {
+		if cs, err := h.Queries.GetChatSession(r.Context(), task.ChatSessionID); err == nil {
+			workspaceID = uuidToString(cs.WorkspaceID)
+		}
+	}
+	if workspaceID != "" {
+		h.publishTask(protocol.EventTaskActivity, workspaceID, "system", "", taskID, protocol.TaskActivityPayload{
+			TaskID:   taskID,
+			IssueID:  uuidToString(task.IssueID),
+			Activity: req.Activity,
+			AfterSeq: req.AfterSeq,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 // ListTaskMessages returns the persisted messages for a task (for catch-up after reconnect).
 func (h *Handler) ListTaskMessages(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")

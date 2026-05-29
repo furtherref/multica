@@ -1003,7 +1003,10 @@ func codexFirstTurnNoProgressTimeout(semanticInactivityTimeout time.Duration) ti
 }
 
 func isCodexFirstTurnProgressActivity(activity string) bool {
-	return activity != "" && activity != "status:running" && activity != "error:retry"
+	return activity != "" &&
+		activity != "status:running" &&
+		activity != "status:reconnecting" &&
+		activity != "error:retry"
 }
 
 func buildCodexTimeoutDiagnosticError(diag codexTimeoutDiagnostic, stderrTail string) string {
@@ -1547,7 +1550,16 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 					c.onSemanticActivity("error:terminal")
 				}
 			}
-			if !willRetry {
+			if willRetry {
+				// Surface the reconnect attempt as a transient activity so the
+				// UI can show "Reconnecting…" instead of a frozen last-stage
+				// label during the upstream blip. Broadcast in place by the
+				// daemon (never persisted to the transcript) and superseded by
+				// the next real message.
+				if c.onMessage != nil {
+					c.onMessage(Message{Type: MessageStatus, Status: "reconnecting"})
+				}
+			} else {
 				c.setTurnError(errMsg)
 				if c.onTurnDone != nil {
 					c.onTurnDone(false)

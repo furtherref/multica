@@ -38,6 +38,7 @@ const (
 	EventTaskCompleted               = "task:completed"                 // running → completed
 	EventTaskFailed                  = "task:failed"                    // running → failed
 	EventTaskMessage                 = "task:message"
+	EventTaskActivity                = "task:activity"                  // transient running-state hint (e.g. reconnecting); not persisted
 	EventTaskCancelled               = "task:cancelled"                 // * → cancelled
 
 	// Inbox events

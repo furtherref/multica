@@ -3124,6 +3124,10 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		}()
 
 		var sessionPinned atomic.Bool
+		// lastActivity dedupes transient activity hints (e.g. "reconnecting"):
+		// publish only when the activity changes, and reset on any real message
+		// so a later reconnect re-publishes and the UI drops the in-place hint.
+		lastActivity := ""
 		for {
 			select {
 			case msg, ok := <-session.Messages:
@@ -3136,6 +3140,12 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 				// slow downstream call (mu.Lock contention, batch resize)
 				// can't be misattributed to backend silence.
 				lastActivityAt.Store(time.Now().UnixNano())
+				// A real (non-status) message means the agent made progress —
+				// clear any transient activity hint so a later reconnect
+				// re-publishes and the UI drops the in-place "reconnecting".
+				if msg.Type != agent.MessageStatus {
+					lastActivity = ""
+				}
 				switch msg.Type {
 				case agent.MessageStatus:
 					// Persist the session/work_dir as soon as the backend
@@ -3150,6 +3160,24 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 							defer cancel()
 							if err := d.client.PinTaskSession(pinCtx, taskID, sid, wd); err != nil {
 								taskLog.Debug("pin session failed", "error", err)
+							}
+						}()
+					}
+					// Transient activity hint (e.g. "reconnecting" while the
+					// backend retries its upstream): broadcast in place, never
+					// persisted to the transcript. Deduped via lastActivity so a
+					// burst of reconnect notifications collapses to one publish.
+					if msg.Status == "reconnecting" && lastActivity != msg.Status {
+						lastActivity = msg.Status
+						activity := msg.Status
+						// Capture the current seq frontier so the frontend can
+						// drop this hint if a later message beats it to the client.
+						afterSeq := int(seq.Load())
+						go func() {
+							actCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+							defer cancel()
+							if err := d.client.ReportTaskActivity(actCtx, taskID, activity, afterSeq); err != nil {
+								taskLog.Debug("report task activity failed", "error", err)
 							}
 						}()
 					}

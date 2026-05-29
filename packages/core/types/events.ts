@@ -29,6 +29,7 @@ export type WSEventType =
   | "task:completed"
   | "task:failed"
   | "task:message"
+  | "task:activity"
   | "task:cancelled"
   | "inbox:new"
   | "inbox:read"
@@ -228,6 +229,26 @@ export interface TaskMessagePayload {
   output?: string;
 }
 
+/**
+ * Transient hint about what a running task is doing right now (e.g.
+ * reconnecting to the model upstream). Never persisted to the transcript —
+ * the UI shows it as an in-place indicator and drops it on the next
+ * TaskMessagePayload. Treat `activity` as open-ended: render known values,
+ * ignore the rest.
+ */
+export interface TaskActivityPayload {
+  task_id: string;
+  issue_id?: string;
+  activity: string;
+  /**
+   * Message-sequence frontier when the hint was emitted. The activity event is
+   * sent async and can arrive after a later (batched) `task:message`; consumers
+   * ignore the hint if they've already seen a message past this seq so a stale
+   * reconnect can't re-show after a real message superseded it.
+   */
+  after_seq?: number;
+}
+
 export interface TaskQueuedPayload {
   task_id: string;
   agent_id: string;
@@ -417,6 +438,7 @@ export interface WSEventPayloadMap {
   "task:completed": TaskCompletedPayload;
   "task:failed": TaskFailedPayload;
   "task:message": TaskMessagePayload;
+  "task:activity": TaskActivityPayload;
   "task:cancelled": TaskCancelledPayload;
   "task:progress": unknown;
   "inbox:new": InboxNewPayload;

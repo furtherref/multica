@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Bot, Clock, Loader2, Square } from "lucide-react";
 import { api } from "@multica/core/api";
 import { useWSEvent, useWSReconnect } from "@multica/core/realtime";
-import type { TaskMessagePayload } from "@multica/core/types/events";
+import type { TaskMessagePayload, TaskActivityPayload } from "@multica/core/types/events";
 import type { AgentTask } from "@multica/core/types/agent";
 import { toast } from "sonner";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -45,6 +45,10 @@ function formatElapsed(startedAt: string): string {
 interface TaskState {
   task: AgentTask;
   messages: TaskMessagePayload[];
+  /** Transient activity hint (e.g. "reconnecting"); cleared by a newer message. */
+  activity?: string;
+  /** Seq frontier the activity hint was emitted at — guards against reorder. */
+  activityAfterSeq?: number;
 }
 
 interface AgentLiveCardProps {
@@ -161,8 +165,46 @@ export function AgentLiveCard({ issueId }: AgentLiveCardProps) {
         const existing = next.get(msg.task_id);
         if (existing) {
           const messages = [...existing.messages, msg].sort((a, b) => a.seq - b.seq);
-          next.set(msg.task_id, { ...existing, messages });
+          // A message strictly newer than the reconnect hint supersedes it.
+          // Comparing seqs (not just "any message clears") is what makes this
+          // robust to the async activity event arriving after this message.
+          const supersedes =
+            existing.activity !== undefined &&
+            msg.seq > (existing.activityAfterSeq ?? -1);
+          next.set(msg.task_id, {
+            ...existing,
+            messages,
+            activity: supersedes ? undefined : existing.activity,
+            activityAfterSeq: supersedes ? undefined : existing.activityAfterSeq,
+          });
         }
+        return next;
+      });
+    }, [issueId]),
+  );
+
+  // Transient activity hint (e.g. "reconnecting") — not persisted; updates the
+  // banner's live stage in place. The activity event is sent async and can be
+  // reordered behind a later batched task:message, so drop it if a message at
+  // or past its seq frontier has already arrived.
+  useWSEvent(
+    "task:activity",
+    useCallback((payload: unknown) => {
+      const p = payload as TaskActivityPayload;
+      if (p.issue_id && p.issue_id !== issueId) return;
+      setTaskStates((prev) => {
+        const existing = prev.get(p.task_id);
+        if (!existing) return prev;
+        const afterSeq = p.after_seq ?? 0;
+        const lastMsg = existing.messages[existing.messages.length - 1];
+        const maxSeq = lastMsg ? lastMsg.seq : 0;
+        if (afterSeq < maxSeq) return prev; // stale — a newer message already arrived
+        const next = new Map(prev);
+        next.set(p.task_id, {
+          ...existing,
+          activity: p.activity,
+          activityAfterSeq: afterSeq,
+        });
         return next;
       });
     }, [issueId]),
@@ -241,6 +283,7 @@ export function AgentLiveCard({ issueId }: AgentLiveCardProps) {
           task={firstEntry.task}
           items={buildTimeline(firstEntry.messages)}
           messages={firstEntry.messages}
+          activity={firstEntry.activity}
           issueId={issueId}
           agentName={firstEntry.task.agent_id ? getActorName("agent", firstEntry.task.agent_id) : t(($) => $.agent_live.fallback_name)}
         />
@@ -248,12 +291,13 @@ export function AgentLiveCard({ issueId }: AgentLiveCardProps) {
       {/* Additional agents — non-sticky, scroll with the page */}
       {restEntries.length > 0 && (
         <div className="mt-1.5 space-y-1.5">
-          {restEntries.map(({ task, messages }) => (
+          {restEntries.map(({ task, messages, activity }) => (
             <SingleAgentLiveCard
               key={task.id}
               task={task}
               items={buildTimeline(messages)}
               messages={messages}
+              activity={activity}
               issueId={issueId}
               agentName={task.agent_id ? getActorName("agent", task.agent_id) : t(($) => $.agent_live.fallback_name)}
             />
@@ -271,11 +315,13 @@ interface SingleAgentLiveCardProps {
   items: TimelineItem[];
   /** Raw task messages — feeds the live activity label (running stage). */
   messages: TaskMessagePayload[];
+  /** Transient activity hint (e.g. "reconnecting"); overrides the message stage. */
+  activity?: string;
   issueId: string;
   agentName: string;
 }
 
-function SingleAgentLiveCard({ task, items, messages, issueId, agentName }: SingleAgentLiveCardProps) {
+function SingleAgentLiveCard({ task, items, messages, activity, issueId, agentName }: SingleAgentLiveCardProps) {
   const { t } = useT("issues");
   const [elapsed, setElapsed] = useState("");
   const [cancelling, setCancelling] = useState(false);
@@ -354,6 +400,7 @@ function SingleAgentLiveCard({ task, items, messages, issueId, agentName }: Sing
             <AgentActivityLabel
               status={task.status}
               taskMessages={messages}
+              activity={activity}
               hideSpinner
               className="text-muted-foreground"
             />

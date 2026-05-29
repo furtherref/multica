@@ -380,6 +380,10 @@ export function useRealtimeSync(
       // every message would flood the network. Specific chat handlers below
       // still receive it via ws.on() (a separate subscription channel).
       "task:message",
+      // task:activity is a transient in-place hint (e.g. reconnecting) fired
+      // repeatedly during a single turn. Like task:message it must NOT hit the
+      // task-prefix invalidate storm; components consume it via ws.on().
+      "task:activity",
       // task:completed / task:failed deliberately NOT here. They go through
       // both the task-prefix invalidate (refreshes the agent-task-snapshot
       // cache) AND the chat-specific ws.on() handlers below. The two

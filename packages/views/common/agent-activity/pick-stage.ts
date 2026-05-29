@@ -63,6 +63,9 @@ export function pickStageKeys(
   status: string | undefined,
   taskMessages: readonly TaskMessagePayload[],
   availability: AgentAvailability | undefined,
+  // Transient activity hint from a `task:activity` event (e.g. "reconnecting").
+  // Highest-priority signal while running — overrides the message-derived stage.
+  activity?: string,
 ): { stageKey: StageKey; toolKey?: ToolKey; static?: boolean } {
   if (
     (status === "queued" || status === "dispatched") &&
@@ -87,7 +90,12 @@ export function pickStageKeys(
   if (status === "queued") return { stageKey: "queued" };
   if (status === "dispatched") return { stageKey: "starting_up" };
 
-  // running: latest meaningful message decides the label.
+  // running: a live "reconnecting" hint is the most current signal — surface
+  // it over the message-derived stage so the panel reads "Reconnecting"
+  // instead of a stale "Running a command" while nothing is progressing.
+  if (activity === "reconnecting") return { stageKey: "reconnecting" };
+
+  // Otherwise the latest meaningful message decides the label.
   let latest: TaskMessagePayload | null = null;
   for (let i = taskMessages.length - 1; i >= 0; i--) {
     const m = taskMessages[i];

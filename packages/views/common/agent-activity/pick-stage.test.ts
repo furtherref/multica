@@ -72,4 +72,25 @@ describe("pickStageKeys", () => {
       pickStageKeys("running", [{ type: "tool_use", tool: "patch_apply" } as never], "online"),
     ).toEqual({ stageKey: "thinking", toolKey: "making_edits" });
   });
+
+  it("surfaces a reconnecting hint over the message-derived running stage", () => {
+    // The backend just told us it's reconnecting upstream — that's more
+    // current than the last tool_use, so the panel should say "Reconnecting"
+    // rather than a stale "Running a command".
+    expect(
+      pickStageKeys(
+        "running",
+        [{ type: "tool_use", tool: "exec_command" } as never],
+        "online",
+        "reconnecting",
+      ),
+    ).toEqual({ stageKey: "reconnecting" });
+  });
+
+  it("a reconnecting hint does not override queued/offline lifecycle states", () => {
+    // The agent isn't running yet — the lifecycle status wins over a stale hint.
+    expect(pickStageKeys("queued", [], "online", "reconnecting")).toEqual({
+      stageKey: "queued",
+    });
+  });
 });
