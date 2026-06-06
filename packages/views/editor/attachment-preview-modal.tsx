@@ -189,15 +189,24 @@ export function useAttachmentPreview(): AttachmentPreviewHandle {
     return true;
   }, []);
 
-  const modal = current ? (
-    <AttachmentPreviewModal
-      source={current}
-      open
-      onClose={() => setCurrent(null)}
-    />
-  ) : null;
-
-  return useMemo(() => ({ open, tryOpen, modal }), [open, tryOpen, modal]);
+  // Build `modal` inside the memo so the returned handle only changes when the
+  // active source does. Computing it outside (a fresh element every render)
+  // would make it an unstable useMemo dependency, defeating the memo and
+  // re-rendering every consumer of `handle.modal` on each tick.
+  return useMemo(
+    () => ({
+      open,
+      tryOpen,
+      modal: current ? (
+        <AttachmentPreviewModal
+          source={current}
+          open
+          onClose={() => setCurrent(null)}
+        />
+      ) : null,
+    }),
+    [open, tryOpen, current],
+  );
 }
 
 // ---------------------------------------------------------------------------
