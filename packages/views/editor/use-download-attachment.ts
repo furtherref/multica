@@ -61,11 +61,15 @@ function hasDesktopDownloadBridge(): boolean {
  *   Content-Disposition, so large files stay in the browser's native download
  *   pipeline.
  *
- * - **Desktop**: uses `desktopAPI.downloadURL()` which invokes Electron's
- *   native `webContents.downloadURL()`, showing a save dialog and saving
- *   the file directly. This avoids the system browser entirely and fixes
- *   the Linux/Ubuntu issue where HTML files are rendered inline instead
- *   of being downloaded.
+ * - **Desktop**: hands the attachment's public storage `url` to
+ *   `desktopAPI.downloadURL()`, which invokes Electron's native
+ *   `webContents.downloadURL()` to show a save dialog and write the file
+ *   directly. It downloads the storage URL rather than the access-controlled
+ *   `download_url` endpoint because a main-process `downloadURL` request can't
+ *   carry the renderer's Bearer token (the endpoint would 401 and Electron
+ *   would save the error body). This also avoids the system browser entirely
+ *   and fixes the Linux/Ubuntu issue where HTML files are rendered inline
+ *   instead of being downloaded.
  */
 export function useDownloadAttachment(): (attachmentId: string) => Promise<void> {
   const { t } = useT("editor");
@@ -77,15 +81,23 @@ export function useDownloadAttachment(): (attachmentId: string) => Promise<void>
       if (hasDesktopDownloadBridge()) {
         try {
           const fresh = await api.getAttachment(attachmentId);
-          // Server may return a server-relative `download_url`
-          // (`/api/attachments/{id}/download`) when no CloudFront
-          // signer is configured — the unified download endpoint chooses
-          // CloudFront/presign/proxy at request time. Electron's main-side
-          // `downloadURLSafely` requires `new URL()` to parse to http/https,
-          // so resolve against the configured API base before we cross the
-          // bridge. Absolute URLs (legacy CloudFront / S3 presigned) pass
-          // through unchanged.
-          const downloadUrl = resolvePublicFileUrl(fresh.download_url);
+          // Download from the attachment's public storage `url` — the same
+          // directly-reachable address the inline thumbnail and preview load
+          // from. `webContents.downloadURL` is a main-process session request
+          // that can't carry the renderer's Bearer token, so the
+          // access-controlled `download_url` endpoint
+          // (/api/attachments/{id}/download) rejects it and Electron saves the
+          // error body (named `download.txt`). The storage URL needs no auth;
+          // Electron derives the filename from its path
+          // (`workspaces/{ws}/{uuid}.{ext}`), so the saved name is
+          // `{uuid}.{ext}`. Fall back to `download_url` only when `url` is
+          // missing.
+          //
+          // `resolvePublicFileUrl` resolves any server-relative form against
+          // the configured API base — Electron's `downloadURLSafely` requires
+          // an http(s)-parsable URL — and passes absolute URLs through.
+          const rawUrl = fresh.url || fresh.download_url;
+          const downloadUrl = resolvePublicFileUrl(rawUrl) ?? rawUrl;
           if (!downloadUrl) {
             failed();
             return;

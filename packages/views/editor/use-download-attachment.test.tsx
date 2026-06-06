@@ -196,16 +196,18 @@ describe("useDownloadAttachment (web)", () => {
 });
 
 describe("useDownloadAttachment (desktop)", () => {
-  it("skips the placeholder tab and hands the signed URL to the desktop download bridge", async () => {
+  it("hands the public storage url to the bridge, not the access-controlled download_url", async () => {
     const downloadURL = vi.fn();
     (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
       downloadURL,
     };
     getAttachmentMock.mockResolvedValueOnce({
       id: "att-1",
-      url: "https://static.example.test/file.md",
-      download_url: SIGNED_URL,
-      filename: "file.md",
+      url: "https://oss.example.test/workspaces/ws-1/att-1.png",
+      // download_url needs auth/workspace headers a main-process downloadURL
+      // request can't send — the bridge must use the public storage url.
+      download_url: "/api/attachments/att-1/download?workspace_id=ws-1",
+      filename: "image.png",
     });
     const openSpy = vi.spyOn(window, "open");
 
@@ -218,7 +220,57 @@ describe("useDownloadAttachment (desktop)", () => {
     // No placeholder — Electron's setWindowOpenHandler would reject
     // about:blank, so we go straight to the platform's IPC bridge.
     expect(openSpy).not.toHaveBeenCalled();
-    expect(downloadURL).toHaveBeenCalledWith(SIGNED_URL);
+    expect(downloadURL).toHaveBeenCalledWith(
+      "https://oss.example.test/workspaces/ws-1/att-1.png",
+    );
+  });
+
+  it("passes an already-absolute storage url through unchanged even with a configured API base", async () => {
+    const downloadURL = vi.fn();
+    (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
+      downloadURL,
+    };
+    getBaseUrlMock.mockReturnValue("https://api.example.test");
+    getAttachmentMock.mockResolvedValueOnce({
+      id: "att-1",
+      url: "https://oss.example.test/workspaces/ws-1/att-1.png",
+      download_url: SIGNED_URL,
+      filename: "image.png",
+    });
+
+    const { result } = renderHook(() => useDownloadAttachment());
+
+    await act(async () => {
+      await result.current("att-1");
+    });
+
+    expect(downloadURL).toHaveBeenCalledWith(
+      "https://oss.example.test/workspaces/ws-1/att-1.png",
+    );
+  });
+
+  it("falls back to download_url (resolved against the API base) when the storage url is missing", async () => {
+    const downloadURL = vi.fn();
+    (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
+      downloadURL,
+    };
+    getBaseUrlMock.mockReturnValue("https://api.example.test");
+    getAttachmentMock.mockResolvedValueOnce({
+      id: "att-1",
+      url: "",
+      download_url: "/api/attachments/att-1/download",
+      filename: "image.png",
+    });
+
+    const { result } = renderHook(() => useDownloadAttachment());
+
+    await act(async () => {
+      await result.current("att-1");
+    });
+
+    expect(downloadURL).toHaveBeenCalledWith(
+      "https://api.example.test/api/attachments/att-1/download",
+    );
   });
 
   it("shows a toast when the API rejects on desktop", async () => {
@@ -236,82 +288,5 @@ describe("useDownloadAttachment (desktop)", () => {
 
     expect(downloadURL).not.toHaveBeenCalled();
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
-  });
-
-  // MUL-2976: when the backend has no CloudFront signer, `getAttachment`
-  // returns a server-relative `download_url` like `/api/attachments/.../download`.
-  // The Electron main-process `downloadURLSafely` requires a parsable
-  // http(s) URL or it drops the request — so the renderer must resolve
-  // the path against the configured API base before crossing the bridge.
-  it("resolves a server-relative download_url against the API base before handing it to the desktop bridge", async () => {
-    const downloadURL = vi.fn();
-    (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
-      downloadURL,
-    };
-    getBaseUrlMock.mockReturnValue("https://api.example.test");
-    getAttachmentMock.mockResolvedValueOnce({
-      id: "att-1",
-      url: "https://static.example.test/file.md",
-      download_url: "/api/attachments/att-1/download",
-      filename: "file.md",
-    });
-
-    const { result } = renderHook(() => useDownloadAttachment());
-
-    await act(async () => {
-      await result.current("att-1");
-    });
-
-    expect(downloadURL).toHaveBeenCalledWith(
-      "https://api.example.test/api/attachments/att-1/download",
-    );
-  });
-
-  it("trims a trailing slash on the API base when resolving a relative download_url", async () => {
-    const downloadURL = vi.fn();
-    (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
-      downloadURL,
-    };
-    getBaseUrlMock.mockReturnValue("https://api.example.test/");
-    getAttachmentMock.mockResolvedValueOnce({
-      id: "att-1",
-      url: "/api/attachments/att-1/content",
-      download_url: "/api/attachments/att-1/download",
-      filename: "file.md",
-    });
-
-    const { result } = renderHook(() => useDownloadAttachment());
-
-    await act(async () => {
-      await result.current("att-1");
-    });
-
-    expect(downloadURL).toHaveBeenCalledWith(
-      "https://api.example.test/api/attachments/att-1/download",
-    );
-  });
-
-  it("passes an already-absolute download_url through unchanged when the bridge is present", async () => {
-    const downloadURL = vi.fn();
-    (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
-      downloadURL,
-    };
-    // Even with a non-empty base configured, a CloudFront signed URL
-    // must not be re-prefixed.
-    getBaseUrlMock.mockReturnValue("https://api.example.test");
-    getAttachmentMock.mockResolvedValueOnce({
-      id: "att-1",
-      url: "https://cdn.example.test/att-1.bin",
-      download_url: SIGNED_URL,
-      filename: "file.md",
-    });
-
-    const { result } = renderHook(() => useDownloadAttachment());
-
-    await act(async () => {
-      await result.current("att-1");
-    });
-
-    expect(downloadURL).toHaveBeenCalledWith(SIGNED_URL);
   });
 });
