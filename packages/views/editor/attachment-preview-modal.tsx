@@ -25,7 +25,11 @@
  *   - text     : fetch text, highlight with lowlight if the extension
  *                maps to a known hljs language; otherwise plain <pre>.
  *
- * Media types load directly from the CloudFront signed `download_url`.
+ * Media types load directly from the attachment's storage `url` — the same
+ * publicly-reachable address the inline thumbnail renders from — so the preview
+ * works without the auth/workspace headers a bare media-element load can't
+ * send. The `download_url` endpoint stays reserved for the explicit Download
+ * button (it re-signs through the API client).
  * Text types go through `/api/attachments/{id}/content` to sidestep
  * CloudFront CORS (not configured) + Content-Disposition: attachment.
  */
@@ -102,22 +106,27 @@ interface PreviewState {
 }
 
 function normalize(source: PreviewSource): PreviewState {
-  // Resolve any server-relative URL (e.g. `/api/attachments/{id}/download`
-  // returned by the unified-endpoint metadata path when no CloudFront
-  // signer is configured) against the configured API base. Web with the
-  // default empty base keeps the relative path and resolves it against
-  // the page origin — same behaviour as before this PR. Desktop renderer
-  // (loaded from `app://` / file: / dev-server origin) needs the absolute
-  // form so `<img src>` / `<iframe src>` / `<video src>` actually point at
-  // the API server instead of the shell origin.
+  // Media preview elements (<img>/<iframe>/<video>/<audio>) load their src
+  // directly in the browser, carrying no auth or workspace headers. Use the
+  // attachment's own storage `url` — the same publicly-reachable address the
+  // inline thumbnail already renders from — instead of the access-controlled
+  // `/api/attachments/{id}/download` endpoint, which needs the X-Workspace-Slug
+  // header the JS API client injects but a bare media-element load cannot send
+  // (it 400s on web in proxy mode and fails on the desktop renderer, whose
+  // cross-origin requests authenticate with a Bearer token an <img> can't
+  // attach). `download_url` stays reserved for the explicit Download button.
+  // Fall back to `download_url` only when `url` is missing.
+  //
+  // `resolvePublicFileUrl` resolves any server-relative form against the
+  // configured API base (a no-op for the absolute storage URLs `url` normally
+  // holds) so the desktop renderer, loaded from a non-API origin, still points
+  // at a reachable address.
   if (source.kind === "full") {
-    const mediaUrl =
-      resolvePublicFileUrl(source.attachment.download_url) ??
-      source.attachment.download_url;
+    const rawUrl = source.attachment.url || source.attachment.download_url;
     return {
       filename: source.attachment.filename,
       contentType: source.attachment.content_type,
-      mediaUrl,
+      mediaUrl: resolvePublicFileUrl(rawUrl) ?? rawUrl,
       attachmentId: source.attachment.id,
     };
   }
