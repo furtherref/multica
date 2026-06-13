@@ -221,6 +221,37 @@ func verifyAssetSHA256(data []byte, expectedHex, assetName string) error {
 	return nil
 }
 
+// addGitHubAuthHeader attaches the GITHUB_TOKEN bearer header when the env var
+// is set. Unauthenticated GitHub REST API requests are capped at 60/hour per
+// source IP — trivially exhausted when several daemons (or unrelated tools)
+// share one egress IP behind a NAT or forward proxy, where it surfaces as the
+// "fetch release metadata: GitHub API returned 403" failure on CLI self-update.
+// A token raises the limit to 5000/hour and is scoped to the token rather than
+// the IP, so it survives shared egress. This mirrors the skill-import path's
+// helper of the same name in the handler package; it is duplicated here because
+// the cli package must not import the server handler package.
+func addGitHubAuthHeader(req *http.Request) {
+	if req == nil {
+		return
+	}
+	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+}
+
+// githubAPIStatusError builds the error for a non-200 GitHub API response. On a
+// rate-limited response (403/429 with the budget header at zero) it appends an
+// actionable hint so the daemon log points operators at the fix instead of a
+// bare status code. The "GitHub API returned %d" prefix is preserved so any
+// log scraping keyed on it keeps matching.
+func githubAPIStatusError(resp *http.Response) error {
+	if (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests) &&
+		resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		return fmt.Errorf("GitHub API returned %d (rate limit exhausted for this IP; set GITHUB_TOKEN to raise the limit to 5000/hour)", resp.StatusCode)
+	}
+	return fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+}
+
 func fetchReleaseByTag(tag string) (*GitHubRelease, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/furtherref/multica/releases/tags/"+tag, nil)
@@ -228,6 +259,7 @@ func fetchReleaseByTag(tag string) (*GitHubRelease, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	addGitHubAuthHeader(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -236,7 +268,7 @@ func fetchReleaseByTag(tag string) (*GitHubRelease, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+		return nil, githubAPIStatusError(resp)
 	}
 
 	var release GitHubRelease
@@ -254,6 +286,7 @@ func FetchLatestRelease() (*GitHubRelease, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	addGitHubAuthHeader(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -262,7 +295,7 @@ func FetchLatestRelease() (*GitHubRelease, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+		return nil, githubAPIStatusError(resp)
 	}
 
 	var release GitHubRelease

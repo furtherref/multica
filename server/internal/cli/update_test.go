@@ -3,6 +3,8 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -298,6 +300,79 @@ func TestUpdateDownloadTimeoutOrDefault(t *testing.T) {
 			got := updateDownloadTimeoutOrDefault(tt.timeout)
 			if got != tt.want {
 				t.Fatalf("timeout = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAddGitHubAuthHeader(t *testing.T) {
+	t.Run("attaches bearer when GITHUB_TOKEN set", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", "tok_abc")
+		req, err := http.NewRequest(http.MethodGet, "https://api.github.com/x", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		addGitHubAuthHeader(req)
+		if got := req.Header.Get("Authorization"); got != "Bearer tok_abc" {
+			t.Fatalf("Authorization = %q, want %q", got, "Bearer tok_abc")
+		}
+	})
+
+	t.Run("no header when GITHUB_TOKEN unset", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", "")
+		req, err := http.NewRequest(http.MethodGet, "https://api.github.com/x", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		addGitHubAuthHeader(req)
+		if got := req.Header.Get("Authorization"); got != "" {
+			t.Fatalf("Authorization = %q, want empty", got)
+		}
+	})
+
+	t.Run("trims surrounding whitespace from token", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", "  tok_xyz  ")
+		req, err := http.NewRequest(http.MethodGet, "https://api.github.com/x", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		addGitHubAuthHeader(req)
+		if got := req.Header.Get("Authorization"); got != "Bearer tok_xyz" {
+			t.Fatalf("Authorization = %q, want %q", got, "Bearer tok_xyz")
+		}
+	})
+}
+
+func TestGitHubAPIStatusError(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		remaining string // "" means header absent
+		wantHint  bool
+	}{
+		{"403 with exhausted budget adds hint", http.StatusForbidden, "0", true},
+		{"429 with exhausted budget adds hint", http.StatusTooManyRequests, "0", true},
+		{"403 with budget remaining gets no hint", http.StatusForbidden, "57", false},
+		{"403 without budget header gets no hint", http.StatusForbidden, "", false},
+		{"404 gets no hint", http.StatusNotFound, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{StatusCode: tt.status, Header: http.Header{}}
+			if tt.remaining != "" {
+				resp.Header.Set("X-RateLimit-Remaining", tt.remaining)
+			}
+			err := githubAPIStatusError(resp)
+			if err == nil {
+				t.Fatal("expected a non-nil error")
+			}
+			msg := err.Error()
+			if prefix := fmt.Sprintf("GitHub API returned %d", tt.status); !strings.Contains(msg, prefix) {
+				t.Fatalf("error %q missing status prefix %q", msg, prefix)
+			}
+			if hasHint := strings.Contains(msg, "GITHUB_TOKEN"); hasHint != tt.wantHint {
+				t.Fatalf("GITHUB_TOKEN hint present = %v, want %v (msg: %q)", hasHint, tt.wantHint, msg)
 			}
 		})
 	}
