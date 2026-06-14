@@ -33,6 +33,8 @@ multica update
 
 `multica update` auto-detects your installation method and upgrades accordingly.
 
+> **Behind a shared egress IP (NAT / forward proxy)?** Release lookups call the GitHub API, which is rate-limited to **60 requests/hour per IP** for unauthenticated callers. When several daemons (or other tools) share one outbound IP — common on self-hosted servers that reach GitHub through a proxy — that budget is easily exhausted, and `multica update` *and the daemon's automatic self-update* fail with `fetch release metadata: GitHub API returned 403`. Set the `GITHUB_TOKEN` environment variable to raise the limit to **5000/hour scoped to the token** (any token that can read the public release repo works — no scopes required). The daemon reads it at startup, so **restart the daemon after setting it**.
+
 ## Quick Start
 
 ```bash
@@ -181,6 +183,7 @@ Daemon behavior is configured via flags or environment variables:
 | GC orphan TTL (no `.gc_meta.json`) | — | `MULTICA_GC_ORPHAN_TTL` | `72h` |
 | GC artifact TTL (open issues) | — | `MULTICA_GC_ARTIFACT_TTL` | `12h` (set `0` to disable) |
 | GC artifact patterns | — | `MULTICA_GC_ARTIFACT_PATTERNS` | `node_modules,.next,.turbo` |
+| GitHub API token for CLI self-update (see [Update](#update)) | — | `GITHUB_TOKEN` | empty |
 
 #### Workspace garbage collection
 

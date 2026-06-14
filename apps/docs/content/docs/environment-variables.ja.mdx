@@ -218,6 +218,16 @@ S3 の前段に CloudFront を置く場合、3 つの変数が適用されます
 
 **注:** `GITHUB_WEBHOOK_SECRET` はインストールフローの state token の署名キーとして再利用されるため、運用者は secret を 1 つだけ管理すればよいです。これは GitHub App の *Client* secret では**ありません** — Client secret は OAuth 関連であり、この連携では使われません。完全な手順は [GitHub 連携 → セルフホストのセットアップ](/github-integration#self-host-setup)を参照してください。
 
+### GitHub API token（レート制限）
+
+| 変数 | デフォルト | 説明 |
+|---|---|---|
+| `GITHUB_TOKEN` | 空 | Multica 自身の GitHub REST API 呼び出しを認証する任意の token。レート制限を 60 から 5000 リクエスト/時に引き上げます |
+
+`GITHUB_TOKEN` は上記の GitHub App 連携とは**無関係**です。2 種類の GitHub REST API 呼び出しを認証します: **CLI 自己更新**のリリース照会（**デーモン**が読み取り）と、GitHub リポジトリからの **skill インポート**（**サーバー**が読み取り）。認証なしの GitHub API リクエストは**送信元 IP ごとに 60 リクエスト/時**に制限され、多数のデーモンやツールが 1 つの送信元 IP（NAT / フォワードプロキシ）を共有すると簡単に使い切られ、`403` エラーとして現れます — 例えば CLI 自己更新時の `fetch release metadata: GitHub API returned 403`。`GITHUB_TOKEN` を設定すると、上限は IP ではなく **token 単位で 5000 リクエスト/時**に引き上げられます。公開リリースリポジトリを読める token であれば何でも動作し、公開リポジトリでは scope は不要です。
+
+必要なプロセスの環境に設定してください — **CLI 自己更新にはデーモン**、**skill インポートにはサーバー** — そして**そのプロセスを再起動**してください。token は起動時に読み取られます。
+
 ## 使用量分析
 
 デフォルトでは、サーバーは Multica の公式 PostHog インスタンスにレポートします。オプトアウトするには `ANALYTICS_DISABLED=true` を設定してください。

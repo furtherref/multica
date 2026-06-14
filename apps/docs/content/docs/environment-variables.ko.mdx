@@ -218,6 +218,16 @@ S3 앞에 CloudFront를 두는 경우 세 가지 변수가 적용됩니다: `CLO
 
 **참고:** `GITHUB_WEBHOOK_SECRET`은 설치 흐름 state token의 서명 키로 재사용되므로, 운영자는 secret 하나만 관리하면 됩니다. 이것은 GitHub App의 *Client* secret이 **아닙니다** — Client secret은 OAuth 관련이며 이 연동에서는 사용되지 않습니다. 전체 안내는 [GitHub 연동 → 자체 호스팅 설정](/github-integration#self-host-setup)을 참고하세요.
 
+### GitHub API token (속도 제한)
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `GITHUB_TOKEN` | 비어 있음 | Multica 자체의 GitHub REST API 호출을 인증하는 선택적 token. 속도 제한을 60에서 5000 요청/시간으로 올립니다 |
+
+`GITHUB_TOKEN`은 위의 GitHub App 연동과 **무관합니다**. 두 종류의 GitHub REST API 호출을 인증합니다: **CLI 자체 업데이트**의 릴리스 조회(**데몬**이 읽음)와 GitHub 저장소에서의 **skill 가져오기**(**서버**가 읽음). 인증되지 않은 GitHub API 요청은 **소스 IP당 60 요청/시간**으로 제한되며, 여러 데몬이나 도구가 하나의 송신 IP(NAT / 포워드 프록시)를 공유하면 쉽게 소진되어 `403` 오류로 나타납니다 — 예를 들어 CLI 자체 업데이트 시 `fetch release metadata: GitHub API returned 403`. `GITHUB_TOKEN`을 설정하면 한도가 IP가 아니라 **token 기준으로 5000 요청/시간**으로 올라갑니다. 공개 릴리스 저장소를 읽을 수 있는 token이면 무엇이든 동작하며, 공개 저장소에서는 scope가 필요 없습니다.
+
+필요한 프로세스의 환경에 설정하세요 — **CLI 자체 업데이트는 데몬**, **skill 가져오기는 서버** — 그리고 **해당 프로세스를 재시작**하세요. token은 시작 시점에 읽힙니다.
+
 ## 사용량 분석
 
 기본적으로 서버는 Multica의 공식 PostHog 인스턴스로 보고합니다. 옵트아웃하려면 `ANALYTICS_DISABLED=true`로 설정하세요.

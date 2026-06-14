@@ -220,6 +220,16 @@ The [GitHub PR ↔ issue integration](/github-integration) needs two variables. 
 
 **Note:** `GITHUB_WEBHOOK_SECRET` is reused as the signing key for the install-flow state token, so operators only need to manage one secret. It is **not** the GitHub App's *Client* secret — Client secrets are OAuth-related and not used by this integration. See [GitHub integration → Self-host setup](/github-integration#self-host-setup) for the full walkthrough.
 
+### GitHub API token (rate limits)
+
+| Variable | Default | Description |
+|---|---|---|
+| `GITHUB_TOKEN` | empty | Optional token that authenticates Multica's own calls to the GitHub REST API, raising the rate limit from 60 to 5000 requests/hour |
+
+`GITHUB_TOKEN` is **unrelated** to the GitHub App integration above. It authenticates two GitHub REST API callers: **CLI self-update** release lookups (read by the **daemon**) and **skill imports** from GitHub repositories (read by the **server**). Unauthenticated GitHub API requests are capped at **60 requests/hour per source IP**, which is trivially exhausted when many daemons or tools share one egress IP (NAT / forward proxy) and surfaces as `403` errors — for example `fetch release metadata: GitHub API returned 403` during CLI self-update. Setting `GITHUB_TOKEN` raises the limit to **5000/hour scoped to the token** rather than the IP. Any token that can read the public release repo works; no scopes are required for public repositories.
+
+Set it in the environment of whichever process needs it — the **daemon** for CLI self-update, the **server** for skill imports — and **restart that process**, since the token is read at startup.
+
 ## Usage analytics
 
 By default, the server reports to Multica's official PostHog instance. To opt out, set `ANALYTICS_DISABLED=true`.

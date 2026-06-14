@@ -223,6 +223,16 @@ API 返回的 `download_url` 在未配置 CloudFront 签名时会指向 `GET /ap
 
 **注意：** `GITHUB_WEBHOOK_SECRET` 同时被复用为 install 流程里 state token 的签名密钥，所以运维只需要维护一个 secret。它**不是** GitHub App 的 *Client* secret——Client secret 是 OAuth 用的，和本集成无关。完整配置流程见 [GitHub 集成 → Self-Host 配置](/github-integration#self-host-配置)。
 
+### GitHub API token（限流）
+
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `GITHUB_TOKEN` | 空 | 可选 token，给 Multica 自己调 GitHub REST API 的请求做认证，把限额从 60 抬到 5000 次/小时 |
+
+`GITHUB_TOKEN` 和上面的 GitHub App 集成**没有关系**。它给两类 GitHub REST API 调用做认证：**CLI 自更新**的 release 查询（由**守护进程**读取）和从 GitHub 仓库**导入 skill**（由 **server** 读取）。匿名 GitHub API 请求按**来源 IP 限流到 60 次/小时**，多个守护进程或其他工具共用一个出口 IP（NAT / 转发代理）时很容易打满，表现为 `403`——例如 CLI 自更新时的 `fetch release metadata: GitHub API returned 403`。设置 `GITHUB_TOKEN` 后限额提到 **5000 次/小时，且按 token 算、与 IP 无关**。任意能读公开 release 仓库的 token 都行，公开仓库无需特殊 scope。
+
+哪个进程需要就配在哪个进程的环境里——**守护进程**用于 CLI 自更新，**server** 用于 skill 导入——并**重启该进程**，因为 token 是在启动时读取的。
+
 ## 用量统计
 
 默认上报到 Multica 官方 PostHog 实例。不想上报就把 `ANALYTICS_DISABLED=true`。
