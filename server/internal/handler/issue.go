@@ -66,8 +66,10 @@ type IssueResponse struct {
 // validIssueStatuses / validIssuePriorities mirror the CHECK constraints on
 // the issue table. Write handlers pre-validate these so callers get a clean
 // 400 with the allowed values instead of a database CHECK violation bubbling
-// up as a 500.
-var validIssueStatuses = []string{"backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"}
+// up as a 500. "archive" is the fork's terminal status added by migration
+// 069_issue_archive_status; it must stay in this list or the archive flow
+// (UpdateIssue / BatchUpdateIssues with status="archive") fails validation.
+var validIssueStatuses = []string{"backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled", "archive"}
 var validIssuePriorities = []string{"urgent", "high", "medium", "low", "none"}
 
 func validateIssueEnum(w http.ResponseWriter, field, value string, allowed []string) bool {
