@@ -65,6 +65,17 @@ interface AgentTranscriptDialogProps {
    * The dialog stays generic — slot content is the caller's concern.
    */
   headerSlot?: React.ReactNode;
+  /**
+   * The displayed transcript has not yet been verified by the authoritative
+   * server catch-up, so it may be partial. Only meaningful for non-live tasks.
+   */
+  loadIncomplete?: boolean;
+  /** The server catch-up is still in flight. */
+  loadPending?: boolean;
+  /** Re-run the catch-up fetch after a failed load. */
+  onRetryLoad?: () => void;
+  /** Catch-up retry in flight — disables the retry control. */
+  retrying?: boolean;
 }
 
 // ─── Color mapping for timeline segments ────────────────────────────────────
@@ -186,6 +197,10 @@ export function AgentTranscriptDialog({
   isLive = false,
   activity,
   headerSlot,
+  loadIncomplete,
+  loadPending,
+  onRetryLoad,
+  retrying,
 }: AgentTranscriptDialogProps) {
   const { t } = useT("agents");
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
@@ -306,6 +321,7 @@ export function AgentTranscriptDialog({
   }, [task.relative_work_dir]);
 
   const handleCopyAll = useCallback(() => {
+    if (loadIncomplete) return;
     const text = displayItems
       .map((item) => {
         const label = getEventLabel(item);
@@ -318,7 +334,7 @@ export function AgentTranscriptDialog({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
-  }, [displayItems]);
+  }, [displayItems, loadIncomplete]);
 
   // Toggle tool filter
   const toggleTool = useCallback((tool: string) => {
@@ -445,7 +461,15 @@ export function AgentTranscriptDialog({
               <button
                 type="button"
                 onClick={handleCopyAll}
-                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                disabled={loadIncomplete}
+                title={
+                  loadIncomplete
+                    ? loadPending
+                      ? t(($) => $.transcript.load_pending)
+                      : t(($) => $.transcript.load_incomplete)
+                    : undefined
+                }
+                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:pointer-events-none disabled:opacity-50"
               >
                 {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
                 {copied ? t(($) => $.transcript.copied) : selectedTools.size > 0 ? t(($) => $.transcript.copy_filtered) : t(($) => $.transcript.copy_all)}
@@ -557,6 +581,31 @@ export function AgentTranscriptDialog({
         {headerSlot && (
           <div className="border-b px-4 py-3 shrink-0 bg-muted/20">
             {headerSlot}
+          </div>
+        )}
+
+        {/* ── Catch-up failure warning ───────────────────────────── */}
+        {/* Surfaced only once a catch-up has actually failed. A pending
+            catch-up stays silent — the displayed content is still the warm
+            cache, and flashing a "loading" banner on every open is noise.
+            (copy-all stays disabled while pending via `loadIncomplete`.) */}
+        {loadIncomplete && !loadPending && (
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-destructive/20 bg-destructive/10 px-4 py-2 text-xs text-destructive">
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{t(($) => $.transcript.load_incomplete)}</span>
+            </span>
+            {onRetryLoad && (
+              <button
+                type="button"
+                onClick={() => onRetryLoad()}
+                disabled={retrying}
+                className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-0.5 font-medium transition-colors hover:bg-destructive/15 disabled:opacity-50"
+              >
+                {retrying && <Loader2 className="h-3 w-3 animate-spin" />}
+                {t(($) => $.transcript.retry)}
+              </button>
+            )}
           </div>
         )}
 
