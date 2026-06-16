@@ -45,6 +45,7 @@ beforeEach(() => {
     setRendererRouteContext: vi.fn(),
     onCloseActiveTab: vi.fn(() => vi.fn()),
     closeWindow: vi.fn(),
+    getLastFreeze: vi.fn(() => null),
   };
 
   window.updater = {

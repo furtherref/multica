@@ -75,7 +75,7 @@ const (
 //   - `issue` and `all` mentions: left untouched. Issue mention labels are
 //     resolved at render time via IssueMentionLink; `all` is a literal.
 //   - Mentions inside inline code or fenced code blocks: left untouched
-//     (shared with ExpandIssueIdentifiers via findSkipRegions).
+//     (detected via findSkipRegions).
 func CanonicalizeMentions(ctx context.Context, resolver NameResolver, workspaceID pgtype.UUID, content string) string {
 	if content == "" {
 		return content
@@ -185,4 +185,3 @@ func lookupCanonicalName(ctx context.Context, r NameResolver, workspaceID pgtype
 	}
 	return "", lookupKeepAsIs
 }
-

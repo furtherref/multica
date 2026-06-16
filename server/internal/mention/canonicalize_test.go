@@ -10,6 +10,14 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+// makeUUID builds a deterministic pgtype.UUID from a short string for testing.
+func makeUUID(id string) pgtype.UUID {
+	var u pgtype.UUID
+	u.Valid = true
+	copy(u.Bytes[:], []byte(fmt.Sprintf("%-16s", id)))
+	return u
+}
+
 // nameResolverMock implements NameResolver for testing. Entries are keyed by
 // the canonical UUID string (uuidToString output) of the entity.
 type nameResolverMock struct {
@@ -354,4 +362,3 @@ func TestCanonicalizeMentions_CrossWorkspaceAgentLeftAsIs(t *testing.T) {
 		t.Errorf("cross-workspace agent should be left unchanged:\n got:  %q\n want: %q", got, want)
 	}
 }
-

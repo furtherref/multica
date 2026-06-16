@@ -873,7 +873,7 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 
 	var parentID pgtype.UUID
 	if req.ParentID != nil {
-		parentID, ok := parseUUIDOrBadRequest(w, *req.ParentID, "parent_id")
+		parentID, ok = parseUUIDOrBadRequest(w, *req.ParentID, "parent_id")
 		if !ok {
 			return
 		}
@@ -896,7 +896,7 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 		parentComment = &parent
 	}
 
-	content := mention.ExpandIssueIdentifiers(r.Context(), h.Queries, issue.WorkspaceID, req.Content)
+	content := req.Content
 	if content == "" {
 		writeJSON(w, http.StatusOK, CommentTriggerPreviewResponse{Agents: []CommentTriggerAgentResponse{}})
 		return
@@ -1010,12 +1010,8 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// an author (typically an LLM) can post a comment whose mention link
 	// says "[@A](mention://agent/<B-uuid>)" — the UI renders @A but the
 	// routing layer triggers B, so the wrong agent picks up the task while
-	// humans see the right name. Done before ExpandIssueIdentifiers so the
-	// issue-identifier pass operates on already-cleaned content.
+	// humans see the right name.
 	req.Content = mention.CanonicalizeMentions(r.Context(), h.Queries, issue.WorkspaceID, req.Content)
-
-	// Expand bare issue identifiers (e.g. MUL-117) into mention links.
-	req.Content = mention.ExpandIssueIdentifiers(r.Context(), h.Queries, issue.WorkspaceID, req.Content)
 
 	// NOTE: Comment content is stored as Markdown source. XSS is handled at the
 	// rendering layer (rehype-sanitize) and at the editor layer
@@ -1650,7 +1646,6 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	oldContent := existing.Content
 
 	req.Content = mention.CanonicalizeMentions(r.Context(), h.Queries, wsUUID, req.Content)
-	req.Content = mention.ExpandIssueIdentifiers(r.Context(), h.Queries, wsUUID, req.Content)
 
 	comment, err := h.Queries.UpdateComment(r.Context(), db.UpdateCommentParams{
 		ID:      commentUUID,

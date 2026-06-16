@@ -2125,8 +2125,6 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 	// `[@A](mention://agent/<B-uuid>)` would persist the same label/UUID
 	// mismatch this defense exists to prevent.
 	content = mention.CanonicalizeMentions(ctx, s.Queries, issue.WorkspaceID, content)
-	// Expand bare issue identifiers (e.g. MUL-117) into mention links.
-	content = mention.ExpandIssueIdentifiers(ctx, s.Queries, issue.WorkspaceID, content)
 	comment, err := s.Queries.CreateComment(ctx, db.CreateCommentParams{
 		IssueID:     issueID,
 		WorkspaceID: issue.WorkspaceID,
