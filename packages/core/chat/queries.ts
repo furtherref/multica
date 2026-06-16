@@ -1,5 +1,6 @@
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
+import type { TaskMessagePayload } from "../types/events";
 
 // NOTE on workspace scoping:
 // `wsId` is used only as part of queryKey for cache isolation per workspace.
@@ -26,6 +27,24 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 export function isTaskMessageTaskId(taskId: string | null | undefined): taskId is string {
   return typeof taskId === "string" && UUID_PATTERN.test(taskId);
+}
+
+/**
+ * Union two task-message lists by `seq`, ascending. Used to reconcile an HTTP
+ * catch-up read with WS-appended increments without dropping either side: a
+ * query refetch would replace the whole `["task-messages", taskId]` cache, so a
+ * `task:message` that arrived while the read was in flight would be clobbered.
+ * Merging by seq keeps both; the fetched (authoritative, post-redaction DB)
+ * copy wins on a seq collision.
+ */
+export function mergeTaskMessagesBySeq(
+  current: TaskMessagePayload[],
+  fetched: TaskMessagePayload[],
+): TaskMessagePayload[] {
+  const bySeq = new Map<number, TaskMessagePayload>();
+  for (const m of current) bySeq.set(m.seq, m);
+  for (const m of fetched) bySeq.set(m.seq, m);
+  return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
 }
 
 export function chatSessionsOptions(wsId: string) {

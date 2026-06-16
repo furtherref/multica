@@ -263,3 +263,77 @@ describe("AgentTranscriptDialog live activity", () => {
     expect(screen.getByText("Reconnecting")).toBeInTheDocument();
   });
 });
+
+describe("AgentTranscriptDialog catch-up banner", () => {
+  const items: TimelineItem[] = [{ seq: 1, type: "text", content: "hello" }];
+
+  function renderBanner(props: {
+    loadIncomplete?: boolean;
+    loadPending?: boolean;
+    onRetryLoad?: () => void;
+    retrying?: boolean;
+  }) {
+    return render(
+      <AgentTranscriptDialog
+        open={true}
+        onOpenChange={() => {}}
+        task={baseTask()}
+        items={items}
+        agentName="Codex"
+        {...props}
+      />,
+      { wrapper: I18nWrapper },
+    );
+  }
+
+  it("stays silent while the catch-up is still pending (no banner, no retry)", () => {
+    renderBanner({
+      loadIncomplete: true,
+      loadPending: true,
+      onRetryLoad: () => {},
+      retrying: true,
+    });
+
+    expect(
+      screen.queryByText(enAgents.transcript.load_incomplete),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: enAgents.transcript.retry }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the incomplete warning with a retry only after the catch-up fails", () => {
+    renderBanner({ loadIncomplete: true, loadPending: false, onRetryLoad: () => {} });
+
+    expect(
+      screen.getByText(enAgents.transcript.load_incomplete),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: enAgents.transcript.retry }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps copy-all disabled while the transcript is unverified, even while pending", () => {
+    renderBanner({ loadIncomplete: true, loadPending: true });
+
+    expect(
+      screen.getByRole("button", { name: enAgents.transcript.copy_all }),
+    ).toBeDisabled();
+  });
+
+  it("explains the disabled copy-all is still loading while the catch-up is pending", () => {
+    renderBanner({ loadIncomplete: true, loadPending: true });
+
+    expect(
+      screen.getByRole("button", { name: enAgents.transcript.copy_all }),
+    ).toHaveAttribute("title", enAgents.transcript.load_pending);
+  });
+
+  it("explains the disabled copy-all could not be loaded once the catch-up failed", () => {
+    renderBanner({ loadIncomplete: true, loadPending: false });
+
+    expect(
+      screen.getByRole("button", { name: enAgents.transcript.copy_all }),
+    ).toHaveAttribute("title", enAgents.transcript.load_incomplete);
+  });
+});
