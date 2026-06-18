@@ -31,15 +31,21 @@ vi.mock("@multica/ui/components/ui/tooltip", () => ({
   TooltipContent: ({ children }: any) => <div data-testid="tooltip-content">{children}</div>,
 }));
 
-function renderChip(ui: ReactNode) {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: {
-        retry: false,
-      },
-    },
+function makeClient() {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false } },
   });
-  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
+
+function renderChip(ui: ReactNode, client: QueryClient = makeClient()) {
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
+
+function seedIssue(
+  client: QueryClient,
+  issue: { id: string; identifier: string; title: string; status: string },
+) {
+  client.setQueryData(["issues", "ws-test", "list"], [issue]);
 }
 
 describe("IssueChip", () => {
@@ -51,27 +57,15 @@ describe("IssueChip", () => {
   });
 
   it("renders tooltip content for resolved issues", () => {
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
+    const client = makeClient();
+    seedIssue(client, {
+      id: "issue-1",
+      identifier: "MUL-1",
+      title: "A very long issue title that should be available in the tooltip",
+      status: "todo",
     });
-    queryClient.setQueryData(["issues", "ws-test", "list"], [
-      {
-        id: "issue-1",
-        identifier: "MUL-1",
-        title: "A very long issue title that should be available in the tooltip",
-        status: "todo",
-      },
-    ]);
 
-    render(
-      <QueryClientProvider client={queryClient}>
-        <IssueChip issueId="issue-1" />
-      </QueryClientProvider>,
-    );
+    renderChip(<IssueChip issueId="issue-1" />, client);
 
     expect(screen.getByText("MUL-1")).toBeInTheDocument();
     expect(
@@ -83,34 +77,53 @@ describe("IssueChip", () => {
   });
 
   it("uses the title span as the tooltip trigger content for resolved issues", () => {
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
+    const client = makeClient();
+    seedIssue(client, {
+      id: "issue-2",
+      identifier: "MUL-2",
+      title: "Tooltip trigger should reuse the title span",
+      status: "todo",
     });
-    queryClient.setQueryData(["issues", "ws-test", "list"], [
-      {
-        id: "issue-2",
-        identifier: "MUL-2",
-        title: "Tooltip trigger should reuse the title span",
-        status: "todo",
-      },
-    ]);
 
-    render(
-      <QueryClientProvider client={queryClient}>
-        <IssueChip issueId="issue-2" />
-      </QueryClientProvider>,
-    );
+    renderChip(<IssueChip issueId="issue-2" />, client);
 
     const titleInTrigger = screen.getByTestId("tooltip-trigger").querySelector(
       ".text-foreground",
     ) as HTMLElement | null;
 
-    expect(screen.getByTestId("tooltip-trigger")).toContainElement(
-      titleInTrigger,
+    expect(screen.getByTestId("tooltip-trigger")).toContainElement(titleInTrigger);
+    expect(titleInTrigger).toHaveClass("min-w-0", "truncate");
+  });
+
+  it("caps the chip to its parent container and truncates the title", () => {
+    const client = makeClient();
+    seedIssue(client, {
+      id: "issue-3",
+      identifier: "MUL-3405",
+      title: "A very long issue title that should stay inside a narrow chat bubble",
+      status: "todo",
+    });
+
+    renderChip(<IssueChip issueId="issue-3" />, client);
+
+    const chip = screen.getByText("MUL-3405").closest(".issue-mention");
+    expect(chip).toHaveClass("min-w-0", "max-w-full");
+
+    const titleInTrigger = screen.getByTestId("tooltip-trigger").querySelector(
+      ".text-foreground",
+    ) as HTMLElement | null;
+    expect(titleInTrigger).toHaveClass("min-w-0", "truncate");
+  });
+
+  it("truncates unresolved fallback labels inside the chip width", () => {
+    renderChip(
+      <IssueChip
+        issueId="missing-issue"
+        fallbackLabel="MUL-999999999999999999999999999999999"
+      />,
     );
+
+    expect(screen.getByText("MUL-999999999999999999999999999999999"))
+      .toHaveClass("min-w-0", "truncate");
   });
 });
