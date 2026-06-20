@@ -84,6 +84,22 @@ type Config struct {
 	CloudRuntimeFleetTimeout time.Duration
 	AttachmentDownloadMode   string
 	AttachmentDownloadURLTTL time.Duration
+
+	// OnlyOffice read-only document preview. When OnlyOfficeEnabled is false
+	// the office-config endpoint 404s and the frontend falls back to a plain
+	// download card.
+	OnlyOfficeEnabled                 bool
+	OnlyOfficeDocumentServerPublicURL string
+	// OnlyOfficeJWTSecret must equal the Document Server's JWT_SECRET; used to
+	// sign the browser editor config.
+	OnlyOfficeJWTSecret string
+	// OnlyOfficeFetchSecret signs the short-lived token the Document Server
+	// presents when fetching the file. Independent of OnlyOfficeJWTSecret.
+	OnlyOfficeFetchSecret string
+	// OnlyOfficeFetchBaseURL is the base of document.url that the Document
+	// Server fetches. MUST be a public, non-private-IP host: the DS blocks
+	// private/reserved addresses by default. Falls back to PublicURL.
+	OnlyOfficeFetchBaseURL string
 }
 
 type cloudRuntimeProxy interface {

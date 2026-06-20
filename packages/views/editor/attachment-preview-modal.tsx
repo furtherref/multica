@@ -3,7 +3,7 @@
 /**
  * AttachmentPreviewModal — full-screen inline preview for an attachment.
  *
- * Single modal for every previewable kind. Handles 7 PreviewKinds:
+ * Single modal for every previewable kind. Handles 8 PreviewKinds:
  *
  *   - image : <img className="object-contain"> centered in the modal frame.
  *             Replaces the previous standalone ImageLightbox.
@@ -24,6 +24,9 @@
  *                `allow-same-origin` is intentionally NOT included.
  *   - text     : fetch text, highlight with lowlight if the extension
  *                maps to a known hljs language; otherwise plain <pre>.
+ *   - office   : OnlyOffice DocEditor — fetches config via getOfficeConfig,
+ *                then loads the ONLYOFFICE Document Server JS bundle and
+ *                initializes DocEditor in an inline placeholder div.
  *
  * Media types load directly from the attachment's storage `url` — the same
  * publicly-reachable address the inline thumbnail renders from — so the preview
@@ -72,6 +75,8 @@ import { useDownloadAttachment } from "./use-download-attachment";
 import { useAttachmentHtmlText } from "./hooks/use-attachment-html-text";
 import { HtmlPreviewBody } from "./html-preview-body";
 import { CodeBlockStatic } from "./code-block-static";
+import { OfficeAttachmentPreview } from "./office-attachment-preview";
+import { UnsupportedFallback } from "./attachment-preview-fallback";
 
 // ---------------------------------------------------------------------------
 // Preview source — full attachment, or URL-only (media types only)
@@ -476,7 +481,7 @@ function PreviewContent({
   // source whose filename later resolves to a text kind would otherwise
   // crash on a null id.
   if (
-    (kind === "markdown" || kind === "html" || kind === "text") &&
+    (kind === "markdown" || kind === "html" || kind === "text" || kind === "office") &&
     !state.attachmentId
   ) {
     return (
@@ -565,6 +570,13 @@ function PreviewContent({
           )}
         />
       );
+    case "office":
+      return (
+        <OfficeAttachmentPreview
+          attachmentId={state.attachmentId!}
+          onDownload={onDownload}
+        />
+      );
   }
 }
 
@@ -627,30 +639,6 @@ function TextBackedPreview({
 // ---------------------------------------------------------------------------
 // Fallback — used for 413 / 415 / unknown kinds
 // ---------------------------------------------------------------------------
-
-function UnsupportedFallback({
-  message,
-  onDownload,
-}: {
-  message: string;
-  onDownload: () => void;
-}) {
-  const { t } = useT("editor");
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
-      <FileText className="size-8 text-muted-foreground" />
-      <p className="text-sm text-muted-foreground">{message}</p>
-      <button
-        type="button"
-        className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-sm transition-colors hover:bg-muted"
-        onClick={onDownload}
-      >
-        <Download className="size-4" />
-        {t(($) => $.image.download)}
-      </button>
-    </div>
-  );
-}
 
 // Re-export the predicate from the dispatch util so entry-point components
 // only need a single import to gate the Eye button.

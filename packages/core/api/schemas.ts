@@ -21,6 +21,7 @@ import type {
   TimelineEntry,
   User,
   WebhookDelivery,
+  OfficeConfig,
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 
@@ -39,6 +40,10 @@ export interface AppConfigResponse {
   daemon_server_url?: string;
   daemon_app_url?: string;
   workspace_creation_disabled?: boolean;
+  // True only when the server has a fully configured OnlyOffice Document
+  // Server. Older servers (and forks deployed without OnlyOffice) omit it;
+  // treat missing as false so the office-attachment preview Eye stays hidden.
+  office_preview_enabled?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +130,18 @@ export const EMPTY_ATTACHMENT: Attachment = {
   created_at: "",
 };
 
+export const OfficeConfigResponseSchema = z
+  .object({
+    document_server_url: z.string(),
+    config: z.record(z.string(), z.unknown()),
+  })
+  .loose();
+
+export const EMPTY_OFFICE_CONFIG: OfficeConfig = {
+  document_server_url: "",
+  config: {},
+};
+
 // All object schemas use `.loose()` so unknown server-side fields pass
 // through unchanged. zod 4's `.object()` defaults to STRIP, which would
 // silently drop new fields and surface as a "field neither showed up in
@@ -179,6 +196,7 @@ export const AppConfigSchema = z.object({
   daemon_server_url: OptionalStringSchema,
   daemon_app_url: OptionalStringSchema,
   workspace_creation_disabled: BooleanWithDefaultSchema(false).optional(),
+  office_preview_enabled: BooleanWithDefaultSchema(false).optional(),
 }).loose();
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {
@@ -189,6 +207,7 @@ export const EMPTY_APP_CONFIG: AppConfigResponse = {
   daemon_server_url: "",
   daemon_app_url: "",
   workspace_creation_disabled: false,
+  office_preview_enabled: false,
 };
 
 export const CommentSchema = z.object({

@@ -111,6 +111,14 @@ backend:
     cloudfrontDomain: ""
     cloudfrontKeyPairId: ""
     localUploadBaseUrl: http://api.multica.dev.lan
+    # OnlyOffice document preview (Word/Excel/PPT/CSV). Empty/false disables it.
+    # The JWT/fetch secrets are NOT here — put ONLYOFFICE_JWT_SECRET and
+    # ONLYOFFICE_FETCH_SECRET in the Secret named by `.Values.existingSecret`.
+    onlyofficeEnabled: false
+    onlyofficeDocumentServerPublicUrl: ""
+    # MUST be a public, non-private-IP host — the Document Server blocks
+    # private/reserved addresses when fetching the file (e.g. https://multica.example.com).
+    onlyofficeFetchBaseUrl: ""
   resources:
     requests:
       cpu: 100m

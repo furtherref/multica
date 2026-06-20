@@ -15,7 +15,11 @@ vi.mock("../i18n", () => ({
   }),
 }));
 
+import { configStore } from "@multica/core/config";
 import { AttachmentCard } from "./attachment-card";
+
+const DOCX_CT =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 beforeEach(() => vi.clearAllMocks());
 afterEach(() => vi.restoreAllMocks());
@@ -137,5 +141,71 @@ describe("AttachmentCard — Eye / Download buttons", () => {
     // proves the uploading branch was selected without depending on the
     // interpolation behavior of the mock.
     expect(screen.getByText("Uploading {{filename}}")).toBeTruthy();
+  });
+});
+
+describe("AttachmentCard — office preview gating", () => {
+  afterEach(() => configStore.setState({ officePreviewEnabled: false }));
+
+  it("hides the Eye for an office file when OnlyOffice preview is unavailable", () => {
+    // Forks deployed without OnlyOffice: the server omits office_preview_enabled
+    // → the store defaults to false → the Eye must not appear.
+    configStore.setState({ officePreviewEnabled: false });
+    render(
+      <AttachmentCard
+        filename="report.docx"
+        contentType={DOCX_CT}
+        attachmentId="att-1"
+        href="https://cdn.example/report.docx"
+        onPreview={() => {}}
+        onDownload={() => {}}
+      />,
+    );
+    expect(screen.queryByTitle("Preview")).toBeNull();
+    // Download stays available so the file is still reachable.
+    expect(screen.getByTitle("Download")).toBeTruthy();
+  });
+
+  it("shows the Eye for an office file when OnlyOffice preview is enabled", () => {
+    configStore.setState({ officePreviewEnabled: true });
+    render(
+      <AttachmentCard
+        filename="report.docx"
+        contentType={DOCX_CT}
+        attachmentId="att-1"
+        href="https://cdn.example/report.docx"
+        onPreview={() => {}}
+        onDownload={() => {}}
+      />,
+    );
+    expect(screen.getByTitle("Preview")).toBeTruthy();
+  });
+
+  it("still hides the Eye for an office file without an attachmentId, even when enabled", () => {
+    configStore.setState({ officePreviewEnabled: true });
+    render(
+      <AttachmentCard
+        filename="report.docx"
+        contentType={DOCX_CT}
+        href="https://cdn.example/report.docx"
+        onPreview={() => {}}
+        onDownload={() => {}}
+      />,
+    );
+    expect(screen.queryByTitle("Preview")).toBeNull();
+  });
+
+  it("does not gate non-office kinds: a pdf Eye shows regardless of the office flag", () => {
+    configStore.setState({ officePreviewEnabled: false });
+    render(
+      <AttachmentCard
+        filename="manual.pdf"
+        contentType="application/pdf"
+        href="https://cdn.example/manual.pdf"
+        onPreview={() => {}}
+        onDownload={() => {}}
+      />,
+    );
+    expect(screen.getByTitle("Preview")).toBeTruthy();
   });
 });
