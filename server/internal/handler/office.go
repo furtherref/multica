@@ -161,6 +161,13 @@ func (h *Handler) GetOfficeConfig(w http.ResponseWriter, r *http.Request) {
 	fetchURL := strings.TrimRight(base, "/") + "/api/office/" + attID + "/content?token=" + url.QueryEscape(token)
 
 	config := map[string]any{
+		// Embedded read-only viewer. This is the Community-edition-safe way to
+		// drop the File/View/Plugins menu bar: the per-tab `customization.layout`
+		// API is a paid white-label feature of the Developer edition, ignored by
+		// the open-source (AGPL) Document Server. The embedded viewer has no menu
+		// bar at all, keeps the ONLYOFFICE branding (AGPL requirement), and is
+		// purpose-built for previewing a document inline.
+		"type": "embedded",
 		"document": map[string]any{
 			"fileType": fileType,
 			"key":      attID, // attachments are immutable → stable cache key
@@ -176,10 +183,27 @@ func (h *Handler) GetOfficeConfig(w http.ResponseWriter, r *http.Request) {
 		"editorConfig": map[string]any{
 			"mode": "view",
 			"lang": lang,
+			// No `user` object: the embedded viewer is single-user and view-only,
+			// so it renders no user/avatar chip — passing user identity (and an
+			// avatar URL) would only add an unused, user-controlled value to the
+			// signed config. anonymous.request stays false so the "enter a name
+			// for collaboration" prompt can never appear.
 			"customization": map[string]any{
-				"chat":     false,
-				"comments": false,
-				"help":     false,
+				"chat":      false,
+				"comments":  false,
+				"help":      false,
+				"anonymous": map[string]any{"request": false},
+			},
+			// Embedded-viewer controls live under editorConfig.embedded — a
+			// top-level `embedded` field is ignored by the Document Server.
+			// autostart:"document" keeps presentations in the document view
+			// instead of the slideshow player; toolbarDocked pins the slim
+			// toolbar to the top. No share/embed/save URLs are supplied, so those
+			// buttons stay hidden — Multica's modal owns download / full-screen /
+			// close.
+			"embedded": map[string]any{
+				"autostart":     "document",
+				"toolbarDocked": "top",
 			},
 		},
 	}

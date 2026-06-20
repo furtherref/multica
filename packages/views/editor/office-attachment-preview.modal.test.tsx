@@ -121,4 +121,19 @@ describe("AttachmentPreviewModal — office kind", () => {
     renderWithClient(<Harness attachment={officeAttachment} />);
     await waitFor(() => expect(mocks.getOfficeConfig).toHaveBeenCalledWith("att-office-1"));
   });
+
+  // OOXML files are ZIP containers and are often stored as application/zip; the
+  // header must show a label that matches the real file, derived from the
+  // extension, not the raw (wrong) content type.
+  it("shows a short extension label in the header, not the raw content type", async () => {
+    mocks.getOfficeConfig.mockResolvedValue({ document_server_url: "https://weboffice.x", config: {} });
+    const zipStored: Attachment = {
+      ...officeAttachment,
+      filename: "Sheet.xlsx",
+      content_type: "application/zip",
+    };
+    const { getByText, queryByText } = renderWithClient(<Harness attachment={zipStored} />);
+    await waitFor(() => expect(getByText("XLSX")).toBeTruthy());
+    expect(queryByText("application/zip")).toBeNull();
+  });
 });
