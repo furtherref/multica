@@ -36,8 +36,19 @@ describe("getPreviewKind", () => {
     ["application/octet-stream", "Dockerfile", "text"],
     ["application/octet-stream", "Makefile", "text"],
 
+    // Office documents — previously out-of-scope, now handled as "office"
+    ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "report.docx", "office"],
+    ["", "data.xlsx", "office"],
+    ["", "deck.pptx", "office"],
+    // csv sniffed as text/plain must resolve to office, not text (regression guard)
+    ["text/plain", "data.csv", "office"],
+    // tsv stays text
+    ["", "data.tsv", "text"],
+
+    // Image
+    ["image/png", "a.png", "image"],
+
     // Out of scope
-    ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "report.docx", null],
     ["application/octet-stream", "blob.bin", null],
     ["application/zip", "archive.zip", null],
   ];

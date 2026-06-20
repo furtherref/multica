@@ -286,3 +286,49 @@ func TestGetConfigExposesWorkspaceCreationDisabled(t *testing.T) {
 		t.Fatalf("workspace_creation_disabled: want true with env on, got false (body=%s)", w.Body.String())
 	}
 }
+
+func TestGetConfigExposesOfficePreviewEnabled(t *testing.T) {
+	origStorage := testHandler.Storage
+	testHandler.Storage = &mockStorage{}
+	defer func() { testHandler.Storage = origStorage }()
+
+	prev := testHandler.cfg
+	t.Cleanup(func() { testHandler.cfg = prev })
+
+	getFlag := func() bool {
+		req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+		w := httptest.NewRecorder()
+		testHandler.GetConfig(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var cfg AppConfig
+		if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
+			t.Fatalf("decode config: %v", err)
+		}
+		return cfg.OfficePreviewEnabled
+	}
+
+	// Enabled AND fully configured → true (a click would return 200).
+	testHandler.cfg.OnlyOfficeEnabled = true
+	testHandler.cfg.OnlyOfficeJWTSecret = "jwt"
+	testHandler.cfg.OnlyOfficeFetchSecret = "fetch"
+	testHandler.cfg.OnlyOfficeFetchBaseURL = "https://api.example.com"
+	testHandler.cfg.OnlyOfficeDocumentServerPublicURL = "https://weboffice.example.com"
+	if !getFlag() {
+		t.Error("office_preview_enabled: want true when enabled + fully configured")
+	}
+
+	// Not enabled → false (the common fork-without-OnlyOffice deployment).
+	testHandler.cfg.OnlyOfficeEnabled = false
+	if getFlag() {
+		t.Error("office_preview_enabled: want false when ONLYOFFICE_ENABLED is off")
+	}
+
+	// Enabled but a secret missing → false (a click would only 503).
+	testHandler.cfg.OnlyOfficeEnabled = true
+	testHandler.cfg.OnlyOfficeJWTSecret = ""
+	if getFlag() {
+		t.Error("office_preview_enabled: want false when enabled but misconfigured")
+	}
+}

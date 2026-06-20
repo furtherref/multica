@@ -30,6 +30,13 @@ type AppConfig struct {
 	// from the JSON when false to keep responses identical to the
 	// previous shape for the common managed-cloud case (#3433).
 	WorkspaceCreationDisabled bool `json:"workspace_creation_disabled,omitempty"`
+	// OfficePreviewEnabled is true only when OnlyOffice is enabled AND fully
+	// configured (secrets + Document Server URL) — i.e. when the office-config
+	// endpoint would return 200. The web app hides the office-attachment
+	// preview Eye when this is false/omitted, so a fork deployed without an
+	// OnlyOffice Document Server never shows a broken preview affordance.
+	// Omitted from the JSON when false to keep the previous response shape.
+	OfficePreviewEnabled bool `json:"office_preview_enabled,omitempty"`
 	// Public daemon setup config consumed by the web app at runtime so
 	// self-hosted instances can show `multica setup self-host` commands
 	// with the operator's own domains instead of Multica Cloud defaults.
@@ -60,6 +67,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		config.CdnDomain = h.Storage.CdnDomain()
 	}
 	config.CdnSigned = h.CFSigner != nil
+	config.OfficePreviewEnabled = h.officePreviewReady()
 	config.DaemonServerURL, config.DaemonAppURL = daemonSetupURLsFromEnv()
 
 	// Re-read from env on every request so operators can rotate keys via

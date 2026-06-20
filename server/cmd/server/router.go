@@ -153,6 +153,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		CloudRuntimeFleetTimeout: envDuration("MULTICA_CLOUD_FLEET_TIMEOUT", 35*time.Second),
 		AttachmentDownloadMode:   os.Getenv("ATTACHMENT_DOWNLOAD_MODE"),
 		AttachmentDownloadURLTTL: envDuration("ATTACHMENT_DOWNLOAD_URL_TTL", 30*time.Minute),
+
+		OnlyOfficeEnabled:                 os.Getenv("ONLYOFFICE_ENABLED") == "true",
+		OnlyOfficeDocumentServerPublicURL: strings.TrimRight(strings.TrimSpace(os.Getenv("ONLYOFFICE_DOCUMENT_SERVER_PUBLIC_URL")), "/"),
+		OnlyOfficeJWTSecret:               os.Getenv("ONLYOFFICE_JWT_SECRET"),
+		OnlyOfficeFetchSecret:             os.Getenv("ONLYOFFICE_FETCH_SECRET"),
+		OnlyOfficeFetchBaseURL:            strings.TrimRight(strings.TrimSpace(os.Getenv("ONLYOFFICE_FETCH_BASE_URL")), "/"),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	h.Metrics = opts.BusinessMetrics
@@ -529,6 +535,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/session", h.PinTaskSession)
 	})
 
+	// OnlyOffice file fetch — PUBLIC, no user auth. The Document Server
+	// authenticates with the short-lived HMAC token in the query string and
+	// sends its own Authorization JWT, which must not hit middleware.Auth.
+	r.Get("/api/office/{id}/content", h.ServeOfficeContent)
+
 	// Protected API routes
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier))
@@ -828,6 +839,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// Attachments
 			r.Get("/api/attachments/{id}", h.GetAttachmentByID)
+			r.Get("/api/attachments/{id}/office-config", h.GetOfficeConfig)
 			// /api/attachments/{id}/download is registered in the
 			// outer Auth-only group above so it can be loaded as a
 			// native <img>/<video> src without workspace headers

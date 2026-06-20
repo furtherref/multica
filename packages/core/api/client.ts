@@ -125,6 +125,7 @@ import type {
   CreateBillingCheckoutSessionResponse,
   BillingCheckoutSessionStatus,
   CreateBillingPortalSessionResponse,
+  OfficeConfig,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type {
@@ -193,6 +194,7 @@ import {
   CreateBillingCheckoutSessionResponseSchema,
   BillingCheckoutSessionStatusSchema,
   CreateBillingPortalSessionResponseSchema,
+  OfficeConfigResponseSchema,
   EMPTY_BILLING_BALANCE,
   EMPTY_BILLING_TRANSACTIONS_PAGE,
   EMPTY_BILLING_BATCHES_PAGE,
@@ -202,6 +204,7 @@ import {
   EMPTY_BILLING_CHECKOUT_SESSION_STATUS,
   EMPTY_CREATE_BILLING_PORTAL_SESSION_RESPONSE,
   EMPTY_CANCEL_TASK_RESPONSE,
+  EMPTY_OFFICE_CONFIG,
 } from "./schemas";
 import {
   EMPTY_ISSUE_TEMPLATE_DETAIL,
@@ -1873,6 +1876,13 @@ export class ApiClient {
       text: await res.text(),
       originalContentType: res.headers.get("X-Original-Content-Type") ?? "",
     };
+  }
+
+  async getOfficeConfig(id: string): Promise<OfficeConfig> {
+    const raw = await this.fetch<unknown>(`/api/attachments/${id}/office-config`);
+    return parseWithFallback(raw, OfficeConfigResponseSchema, EMPTY_OFFICE_CONFIG, {
+      endpoint: "GET /api/attachments/{id}/office-config",
+    });
   }
 
   // Projects

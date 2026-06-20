@@ -62,6 +62,9 @@ export function AuthInitializer({
           // Old servers omit this field — treat that as "creation allowed"
           // (the managed-cloud default) rather than blocking the UI.
           workspaceCreationDisabled: cfg.workspace_creation_disabled === true,
+          // Old servers / forks without OnlyOffice omit this — false hides the
+          // office-attachment preview Eye rather than showing a broken one.
+          officePreviewEnabled: cfg.office_preview_enabled === true,
         });
         configStore.getState().setDaemonConfig({
           daemonServerUrl: cfg.daemon_server_url,

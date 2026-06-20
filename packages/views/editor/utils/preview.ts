@@ -17,7 +17,8 @@ export type PreviewKind =
   | "audio"
   | "markdown"
   | "html"
-  | "text";
+  | "text"
+  | "office";
 
 const EXT_LANGUAGE_MAP: Record<string, string> = {
   // Markdown
@@ -89,7 +90,7 @@ const BASENAME_LANGUAGE_MAP: Record<string, string> = {
 // TODO(follow-up): extract to a JSON single-source-of-truth + generator
 // (mirror reserved-slugs pattern in server/internal/handler/reserved_slugs.json).
 const TEXT_EXTENSIONS = new Set<string>([
-  "md", "markdown", "txt", "log", "csv", "tsv",
+  "md", "markdown", "txt", "log", "tsv",
   "html", "htm", "json", "xml",
   "yml", "yaml", "toml", "ini", "conf",
   "sh", "bash", "zsh",
@@ -125,6 +126,27 @@ const AUDIO_EXTS = new Set<string>([
 ]);
 const IMAGE_EXTS = new Set<string>([
   "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "svg",
+]);
+
+// Office documents handled by the embedded OnlyOffice viewer. CSV is included
+// here (design decision) — it must resolve to "office", not "text".
+const OFFICE_EXTS = new Set<string>([
+  "doc", "docx", "odt", "rtf",
+  "xls", "xlsx", "ods", "csv",
+  "ppt", "pptx", "odp",
+]);
+const OFFICE_CONTENT_TYPES = new Set<string>([
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.oasis.opendocument.text",
+  "application/rtf",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "text/csv",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.oasis.opendocument.presentation",
 ]);
 
 function extOf(filename: string): string {
@@ -172,6 +194,13 @@ export function getPreviewKind(
   // text-like (XML), and image/* content-types include text/svg variants
   // that isTextLike would otherwise catch.
   if (ct.startsWith("image/") || (ext && IMAGE_EXTS.has(ext))) return "image";
+
+  // Office documents (Word/Excel/PPT + ODF + CSV) → OnlyOffice viewer.
+  // Must come before the text branch so .csv (often sniffed text/plain)
+  // resolves to "office" rather than "text".
+  if (OFFICE_CONTENT_TYPES.has(ct) || (ext && OFFICE_EXTS.has(ext))) {
+    return "office";
+  }
 
   // Markdown — covers both the well-typed case and the common
   // server-side sniffer fallback (text/plain for .md).

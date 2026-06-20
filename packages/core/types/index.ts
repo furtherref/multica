@@ -80,6 +80,7 @@ export type * from "./events";
 export type * from "./api";
 export type { Attachment } from "./attachment";
 export { attachmentDownloadPath, attachmentIdFromDownloadURL, contentReferencesAttachment } from "./attachment-url";
+export type { OfficeConfig } from "./office";
 export type {
   ChatSession,
   ChatMessage,
