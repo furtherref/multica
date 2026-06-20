@@ -234,6 +234,60 @@ func TestUploadFileResolvesWorkspaceViaSlugHeader(t *testing.T) {
 	}
 }
 
+// TestUploadFileOverridesOfficeContentType is a regression test for the office
+// preview: OOXML files (.docx/.xlsx/.pptx) are ZIP containers, so
+// http.DetectContentType sniffs their bytes as application/zip. The extension
+// override must persist the real office MIME instead, otherwise the preview
+// modal's type label reads "application/zip" for an Excel file.
+func TestUploadFileOverridesOfficeContentType(t *testing.T) {
+	origStorage := testHandler.Storage
+	testHandler.Storage = &mockStorage{}
+	defer func() { testHandler.Storage = origStorage }()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "Sheet.xlsx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ZIP local-file-header magic — what every OOXML file starts with, and what
+	// makes http.DetectContentType return application/zip.
+	part.Write([]byte("PK\x03\x04 fake xlsx bytes"))
+	writer.Close()
+
+	req := httptest.NewRequest("POST", "/api/upload-file", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-User-ID", testUserID)
+	req.Header.Set("X-Workspace-Slug", handlerTestWorkspaceSlug)
+
+	w := httptest.NewRecorder()
+	testHandler.UploadFile(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UploadFile xlsx: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	const wantCT = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	var gotCT string
+	if err := testPool.QueryRow(
+		context.Background(),
+		`SELECT content_type FROM attachment WHERE workspace_id = $1 AND filename = $2`,
+		testWorkspaceID, "Sheet.xlsx",
+	).Scan(&gotCT); err != nil {
+		t.Fatalf("query content_type: %v", err)
+	}
+	if gotCT != wantCT {
+		t.Errorf("stored content_type = %q, want %q (must not be application/zip)", gotCT, wantCT)
+	}
+
+	if _, err := testPool.Exec(
+		context.Background(),
+		`DELETE FROM attachment WHERE workspace_id = $1 AND filename = $2`,
+		testWorkspaceID, "Sheet.xlsx",
+	); err != nil {
+		t.Fatalf("cleanup attachment: %v", err)
+	}
+}
+
 // TestUploadFileResolvesWorkspaceViaIDHeaderStill confirms the legacy path
 // (CLI / daemon clients sending X-Workspace-ID as a UUID) still works after
 // the refactor. Prevents a regression in the CLI/daemon compat branch.

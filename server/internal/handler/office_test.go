@@ -231,6 +231,45 @@ func TestGetOfficeConfig(t *testing.T) {
 		t.Errorf("editorConfig.lang = %v, want en (default user has no language)", ec["lang"])
 	}
 
+	// The embedded viewer shows no user chip, so no user object is supplied — the
+	// signed config carries no (user-controlled) identity or avatar URL.
+	if _, present := ec["user"]; present {
+		t.Errorf("editorConfig.user must not be set in the embedded preview: %v", ec["user"])
+	}
+	cust, ok := ec["customization"].(map[string]any)
+	if !ok {
+		t.Fatalf("editorConfig.customization is not an object: %v", ec["customization"])
+	}
+	anon, _ := cust["anonymous"].(map[string]any)
+	if anon["request"] != false {
+		t.Errorf("customization.anonymous.request = %v, want false", anon["request"])
+	}
+	// The read-only preview uses the embedded viewer (no File/View/Plugins menu
+	// bar) instead of the paid white-label customization.layout API, which the
+	// open-source Document Server ignores. The layout key must NOT be present.
+	if resp.Config["type"] != "embedded" {
+		t.Errorf("config.type = %v, want embedded (Community-safe read-only viewer)", resp.Config["type"])
+	}
+	if _, present := cust["layout"]; present {
+		t.Errorf("customization.layout must not be set (it is a paid white-label feature): %v", cust["layout"])
+	}
+
+	// Embedded-viewer controls must live under editorConfig.embedded; a top-level
+	// `embedded` field is ignored by the Document Server.
+	if _, present := resp.Config["embedded"]; present {
+		t.Errorf("config.embedded must NOT be a top-level field (belongs under editorConfig): %v", resp.Config["embedded"])
+	}
+	emb, ok := ec["embedded"].(map[string]any)
+	if !ok {
+		t.Fatalf("editorConfig.embedded is not an object: %v", ec["embedded"])
+	}
+	if emb["toolbarDocked"] != "top" {
+		t.Errorf("editorConfig.embedded.toolbarDocked = %v, want top", emb["toolbarDocked"])
+	}
+	if emb["autostart"] != "document" {
+		t.Errorf("editorConfig.embedded.autostart = %v, want document (keep presentations out of the slideshow player)", emb["autostart"])
+	}
+
 	// The editor lang follows the user's saved Multica language preference.
 	if _, err := testPool.Exec(context.Background(),
 		`UPDATE "user" SET language = $1 WHERE id = $2`, "zh-Hans", testUserID); err != nil {

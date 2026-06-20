@@ -143,6 +143,19 @@ function normalize(source: PreviewSource): PreviewState {
   };
 }
 
+// Short, human-friendly type label for the modal header. Derives from the
+// filename extension (e.g. "XLSX") so it always matches the real file even when
+// the stored content_type is a generic sniffer fallback — OOXML/ODF office
+// files are ZIP containers and are often persisted as `application/zip`. Falls
+// back to the raw content type when the filename carries no extension.
+function fileTypeLabel(filename: string, contentType: string): string {
+  const base = filename.toLowerCase().split(/[\\/]/).pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  const ext = dot > 0 ? base.slice(dot + 1) : "";
+  if (ext) return ext.toUpperCase();
+  return contentType || "—";
+}
+
 // ---------------------------------------------------------------------------
 // Public props
 // ---------------------------------------------------------------------------
@@ -381,7 +394,7 @@ export function AttachmentPreviewModal({
             <FileText className="size-4 shrink-0 text-muted-foreground" />
             <p className="truncate text-sm font-medium">{state.filename}</p>
             <span className="ml-1 shrink-0 text-xs text-muted-foreground">
-              {state.contentType || "—"}
+              {fileTypeLabel(state.filename, state.contentType)}
             </span>
             {/* `[-webkit-app-region:no-drag]` keeps these clickable when the
                 modal goes fullscreen on desktop — without it, the Electron
