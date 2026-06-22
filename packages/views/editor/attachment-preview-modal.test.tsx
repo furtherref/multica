@@ -8,6 +8,9 @@ const openExternalMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../platform", () => ({
   openExternal: openExternalMock,
+  // No-op in jsdom: the real hook drives Electron traffic-light visibility
+  // via window.desktopAPI, which doesn't exist here.
+  useImmersiveMode: vi.fn(),
 }));
 
 // vi.hoisted: factories run before module evaluation, letting us name mocks

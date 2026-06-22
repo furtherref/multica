@@ -64,7 +64,7 @@ import { paths, useWorkspaceSlug } from "@multica/core/paths";
 import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
 import { useT } from "../i18n";
 import { useNavigation } from "../navigation";
-import { openExternal } from "../platform";
+import { openExternal, useImmersiveMode } from "../platform";
 import { ReadonlyContent } from "./readonly-content";
 import {
   extensionToLanguage,
@@ -311,6 +311,13 @@ export function AttachmentPreviewModal({
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [open, onClose]);
+
+  // When the modal is full-screen on macOS desktop, its header bar reaches the
+  // window's top-left corner where the native traffic-light controls float
+  // (titleBarStyle "hiddenInset"), overlapping the file icon/name. Hide them
+  // for the duration of full-screen; the modal supplies its own close/minimize
+  // controls (and Escape). No-op on web and non-macOS desktop.
+  useImmersiveMode(open && fullscreen);
 
   const kind = getPreviewKind(state.contentType, state.filename);
 

@@ -40,6 +40,9 @@ vi.mock("./use-download-attachment", () => ({
 
 vi.mock("../platform", () => ({
   openExternal: openExternalMock,
+  // No-op in jsdom: the real hook drives Electron traffic-light visibility
+  // via window.desktopAPI, which doesn't exist here.
+  useImmersiveMode: vi.fn(),
 }));
 
 vi.mock("../i18n", () => ({
