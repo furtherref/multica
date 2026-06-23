@@ -83,6 +83,10 @@ vi.mock("sonner", () => ({
 
 import { BatchActionToolbar } from "./batch-action-toolbar";
 
+// The toolbar derives the issue IDs it mutates from the selection store (mocked
+// below), so these flow tests don't need a populated `issues` list — an empty
+// list is enough for the pickers to render. Picker-value wiring is covered
+// separately in batch-action-toolbar.wiring.test.tsx.
 function wrap(ui: React.ReactNode) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -104,7 +108,7 @@ beforeEach(() => {
 
 describe("BatchActionToolbar", () => {
   it("opens a confirmation modal before batch updating status to cancelled", async () => {
-    render(wrap(<BatchActionToolbar />));
+    render(wrap(<BatchActionToolbar issues={[]} />));
 
     fireEvent.click(screen.getByText("Status"));
     fireEvent.click(await screen.findByText("Cancelled"));
@@ -128,7 +132,7 @@ describe("BatchActionToolbar", () => {
   });
 
   it("opens a confirmation modal before batch updating status to archive", async () => {
-    render(wrap(<BatchActionToolbar />));
+    render(wrap(<BatchActionToolbar issues={[]} />));
 
     fireEvent.click(screen.getByText("Status"));
     fireEvent.click(await screen.findByText("Archive"));
@@ -142,7 +146,7 @@ describe("BatchActionToolbar", () => {
   });
 
   it("updates non-confirmable batch statuses immediately", async () => {
-    render(wrap(<BatchActionToolbar />));
+    render(wrap(<BatchActionToolbar issues={[]} />));
 
     fireEvent.click(screen.getByText("Status"));
     fireEvent.click(await screen.findByText("Done"));

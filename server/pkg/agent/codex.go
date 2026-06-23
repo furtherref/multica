@@ -753,7 +753,11 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 			switch {
 			case aborted:
 				finalStatus = "aborted"
-				finalError = "turn was aborted"
+				if errMsg := c.getTurnError(); errMsg != "" {
+					finalError = errMsg
+				} else {
+					finalError = "turn was aborted"
+				}
 			default:
 				if errMsg := c.getTurnError(); errMsg != "" {
 					finalStatus = "failed"
@@ -1483,11 +1487,56 @@ func (c *codexClient) handleServerRequest(raw map[string]json.RawMessage) {
 		c.respond(id, map[string]any{"decision": "accept"})
 	case "item/fileChange/requestApproval", "applyPatchApproval":
 		c.respond(id, map[string]any{"decision": "accept"})
+	case "item/permissions/requestApproval":
+		c.respond(id, codexPermissionsApprovalResponse(raw["params"], c.cfg.Logger))
 	case "mcpServer/elicitation/request":
 		c.respond(id, map[string]any{"action": "accept", "content": nil, "_meta": nil})
 	default:
+		msg := fmt.Sprintf("unsupported codex app-server request: %s", method)
 		c.cfg.Logger.Warn("codex: unhandled server request", "method", method, "id", id)
-		c.respondError(id, -32601, fmt.Sprintf("unhandled server request: %s", method))
+		c.setTurnError(msg)
+		c.respondError(id, -32601, msg)
+	}
+}
+
+// codexPermissionsApprovalResponse builds the auto-grant reply for a Codex
+// item/permissions/requestApproval server request. In daemon mode there is no
+// human to approve, so we echo back the requested network / fileSystem profile
+// and scope it to the current turn, mirroring the other auto-accept branches in
+// handleServerRequest.
+//
+// The grant is intentionally limited to the network / fileSystem keys we
+// understand. A parse failure and any dropped key are logged so that a future
+// app-server protocol that adds a new permission shape is visible in daemon
+// logs instead of being silently narrowed away.
+func codexPermissionsApprovalResponse(params json.RawMessage, logger *slog.Logger) map[string]any {
+	var payload struct {
+		Permissions map[string]any `json:"permissions"`
+	}
+	if err := json.Unmarshal(params, &payload); err != nil && logger != nil {
+		logger.Warn("codex: failed to parse permission approval request; granting empty turn-scoped profile", "error", err)
+	}
+
+	granted := map[string]any{}
+	var dropped []string
+	for key, value := range payload.Permissions {
+		switch key {
+		case "network", "fileSystem":
+			if value != nil {
+				granted[key] = value
+			}
+		default:
+			dropped = append(dropped, key)
+		}
+	}
+	if len(dropped) > 0 && logger != nil {
+		sort.Strings(dropped)
+		logger.Warn("codex: dropping unrecognized permission keys from approval request; add explicit handling if the app-server protocol expanded", "keys", dropped)
+	}
+
+	return map[string]any{
+		"permissions": granted,
+		"scope":       "turn",
 	}
 }
 

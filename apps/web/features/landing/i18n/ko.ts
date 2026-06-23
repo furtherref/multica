@@ -242,7 +242,6 @@ export function createKoDict(allowSignup: boolean): LandingDict {
           links: [
             { label: "문서", href: "/docs/ko" },
             { label: "API", href: githubUrl },
-            { label: "X (Twitter)", href: "https://x.com/MulticaAI" },
           ],
         },
         company: {
@@ -267,6 +266,28 @@ export function createKoDict(allowSignup: boolean): LandingDict {
         fixes: "버그 수정",
       },
       entries: [
+        {
+          version: "0.3.27",
+          date: "2026-06-22",
+          title: "Lark 스레드 답장과 팀 작업 흐름 개선",
+          changes: [],
+          features: [
+            "Lark 토픽에서 시작된 대화는 이제 원래 토픽 안에 답장되어 팀 논의를 더 쉽게 따라갈 수 있습니다.",
+            "스쿼드 리더가 멤버의 스킬을 명단에서 바로 확인할 수 있어 작업 위임이 더 정확해졌습니다.",
+          ],
+          improvements: [
+            "Issue 헤더의 에이전트 활동 상태가 hover로 열려 진행 중인 작업을 더 빠르게 확인할 수 있습니다.",
+            "데스크톱 사이드바와 고정 탐색이 더 부드럽고 명확해져 화면의 불필요한 시각 소음이 줄었습니다.",
+            "채팅 답변, 할당 시 댓글 확인, 기여자 안내가 정리되어 에이전트 작업이 올바른 위치에 머물기 쉬워졌습니다.",
+            "원격 CLI 설정과 사용자 지정 런타임 삭제 안내가 더 명확해졌습니다.",
+          ],
+          fixes: [
+            "부모 Issue가 백로그에 있을 때는 하위 작업이 완료되어도 원치 않는 후속 자동화가 시작되지 않습니다.",
+            "프로젝트 삭제는 소유자 또는 관리자만 할 수 있으며, 유효한 토큰이 있으면 private GitHub 저장소의 스킬 가져오기도 동작합니다.",
+            "로그인 인증 코드 입력칸에 자동으로 포커스되고, 상세 화면을 열 때 사이드바가 의도치 않게 움직이지 않습니다.",
+            "Codex 권한 처리와 데몬의 느린 작업 수신 진단이 더 신뢰할 수 있게 개선되었습니다.",
+          ],
+        },
         {
           version: "0.3.25",
           date: "2026-06-18",

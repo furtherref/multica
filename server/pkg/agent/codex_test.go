@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -203,6 +204,101 @@ func TestCodexHandleServerRequestMCPElicitation(t *testing.T) {
 	}
 }
 
+func TestCodexHandleServerRequestPermissionsApproval(t *testing.T) {
+	t.Parallel()
+
+	c, fs, _ := newTestCodexClient(t)
+
+	c.handleLine(`{"jsonrpc":"2.0","id":14,"method":"item/permissions/requestApproval","params":{"permissions":{"network":{"enabled":true},"fileSystem":{"read":["/tmp/repo"],"write":["/tmp/repo"]}}}}`)
+
+	lines := fs.Lines()
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(lines))
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp["id"] != float64(14) {
+		t.Fatalf("expected id=14, got %v", resp["id"])
+	}
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected result object, got response: %v", resp)
+	}
+	if result["scope"] != "turn" {
+		t.Fatalf("expected scope=turn, got %v", result["scope"])
+	}
+	permissions, ok := result["permissions"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected permissions object, got %v", result["permissions"])
+	}
+	network, ok := permissions["network"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected network permissions object, got %v", permissions["network"])
+	}
+	if network["enabled"] != true {
+		t.Fatalf("expected network.enabled=true, got %v", network["enabled"])
+	}
+	fileSystem, ok := permissions["fileSystem"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected fileSystem permissions object, got %v", permissions["fileSystem"])
+	}
+	if got := fileSystem["read"].([]any)[0]; got != "/tmp/repo" {
+		t.Fatalf("expected fileSystem.read to round-trip, got %v", got)
+	}
+}
+
+func TestCodexPermissionsApprovalResponseDropsUnknownKeysAndLogs(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	resp := codexPermissionsApprovalResponse(
+		json.RawMessage(`{"permissions":{"network":{"enabled":true},"gpu":{"enabled":true}}}`),
+		logger,
+	)
+
+	if resp["scope"] != "turn" {
+		t.Fatalf("expected scope=turn, got %v", resp["scope"])
+	}
+	perms, ok := resp["permissions"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected permissions object, got %v", resp["permissions"])
+	}
+	if _, ok := perms["network"]; !ok {
+		t.Fatalf("expected network permission to be granted, got %v", perms)
+	}
+	if _, ok := perms["gpu"]; ok {
+		t.Fatalf("expected unrecognized key gpu to be dropped, got %v", perms)
+	}
+	if !strings.Contains(buf.String(), "gpu") {
+		t.Fatalf("expected dropped key to be logged, got %q", buf.String())
+	}
+}
+
+func TestCodexPermissionsApprovalResponseMalformedParamsLogs(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	resp := codexPermissionsApprovalResponse(json.RawMessage(`{"permissions":"not-an-object"}`), logger)
+
+	if resp["scope"] != "turn" {
+		t.Fatalf("expected scope=turn, got %v", resp["scope"])
+	}
+	perms, ok := resp["permissions"].(map[string]any)
+	if !ok || len(perms) != 0 {
+		t.Fatalf("expected empty permissions on malformed params, got %v", resp["permissions"])
+	}
+	if !strings.Contains(buf.String(), "failed to parse") {
+		t.Fatalf("expected parse failure to be logged, got %q", buf.String())
+	}
+}
+
 func TestCodexHandleServerRequestUnknownReturnsError(t *testing.T) {
 	t.Parallel()
 
@@ -231,6 +327,9 @@ func TestCodexHandleServerRequestUnknownReturnsError(t *testing.T) {
 	}
 	if errObj["code"] != float64(-32601) {
 		t.Fatalf("expected error code -32601, got %v", errObj["code"])
+	}
+	if got := c.getTurnError(); !strings.Contains(got, "some/unknown/method") {
+		t.Fatalf("expected turn error to include unsupported request method, got %q", got)
 	}
 }
 
@@ -1766,6 +1865,37 @@ func TestCodexExecuteFailsWhenProcessExitsDuringActiveTurn(t *testing.T) {
 	}
 	if strings.Contains(result.Error, "timeout") {
 		t.Fatalf("process exit should fail fast instead of timeout, got %q", result.Error)
+	}
+}
+
+func TestCodexExecuteSurfacesUnsupportedServerRequestOnInterruptedTurn(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-request"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-request","turn":{"id":"turn-request"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":99,"method":"item/tool/call","params":{"threadId":"thr-request","turnId":"turn-request","callId":"call-1","namespace":null,"tool":"custom","arguments":{}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-request","turn":{"id":"turn-request","status":"interrupted"}}}'`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 5 * time.Second,
+	})
+	if result.Status != "aborted" {
+		t.Fatalf("expected aborted, got status=%q error=%q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "unsupported codex app-server request: item/tool/call") {
+		t.Fatalf("expected unsupported request error, got %q", result.Error)
 	}
 }
 

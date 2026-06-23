@@ -391,6 +391,7 @@ type Issue struct {
 	FirstExecutedAt    pgtype.Timestamptz `json:"first_executed_at"`
 	StartDate          pgtype.Date        `json:"start_date"`
 	Metadata           []byte             `json:"metadata"`
+	Stage              pgtype.Int4        `json:"stage"`
 }
 
 type IssueDependency struct {
@@ -464,12 +465,14 @@ type LarkBindingToken struct {
 }
 
 type LarkChatSessionBinding struct {
-	ID             pgtype.UUID        `json:"id"`
-	ChatSessionID  pgtype.UUID        `json:"chat_session_id"`
-	InstallationID pgtype.UUID        `json:"installation_id"`
-	LarkChatID     string             `json:"lark_chat_id"`
-	LarkChatType   string             `json:"lark_chat_type"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ID                pgtype.UUID        `json:"id"`
+	ChatSessionID     pgtype.UUID        `json:"chat_session_id"`
+	InstallationID    pgtype.UUID        `json:"installation_id"`
+	LarkChatID        string             `json:"lark_chat_id"`
+	LarkChatType      string             `json:"lark_chat_type"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	LastLarkMessageID pgtype.Text        `json:"last_lark_message_id"`
+	LastLarkThreadID  pgtype.Text        `json:"last_lark_thread_id"`
 }
 
 type LarkInboundAudit struct {
