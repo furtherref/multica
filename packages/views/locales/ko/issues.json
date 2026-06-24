@@ -372,6 +372,7 @@
     "trigger_autopilot": "오토파일럿 실행",
     "trigger_comment": "댓글 트리거",
     "trigger_initial": "초기 실행",
+    "trigger_handoff_prefix": "인계: ",
     "status_queued": "대기 중",
     "status_dispatched": "시작 중",
     "status_waiting_local_directory": "로컬 디렉터리 대기 중",
@@ -491,9 +492,6 @@
     "row_backlog_label": "백로그",
     "row_backlog_hint": "에이전트를 대기 상태로 유지",
     "row_todo_label": "할 일",
-    "row_todo_hint": "에이전트 시작",
-    "dont_show_again": "다시 보지 않기",
-    "keep_in_backlog": "백로그에 두기",
-    "move_to_todo": "할 일로 이동"
+    "row_todo_hint": "에이전트 시작"
   }
 }

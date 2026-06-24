@@ -15,8 +15,6 @@ import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { requiresIssueStatusConfirmation } from "./status-confirmation";
 
-const BACKLOG_HINT_LS_KEY = "multica:backlog-agent-hint-dismissed";
-
 export interface UseIssueActionsResult {
   isPinned: boolean;
   updateField: (updates: Partial<UpdateIssueRequest>) => void;
@@ -58,13 +56,14 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
   const openModal = useModalStore((s) => s.open);
 
   const issueId = issue?.id ?? null;
-  const issueStatus = issue?.status ?? null;
   const issueIdentifier = issue?.identifier ?? null;
   const issueProjectId = issue?.project_id ?? null;
+  const issueStatus = issue?.status ?? null;
 
   const updateField = useCallback(
     (updates: Partial<UpdateIssueRequest>) => {
       if (!issueId) return;
+
       const runUpdate = () => {
         updateIssue.mutate(
           { id: issueId, ...updates },
@@ -77,19 +76,31 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
               ),
           },
         );
-        // Hint: assigning an agent to a backlog issue won't trigger execution
-        // until the issue is moved to an active status.
-        if (
-          updates.assignee_type === "agent" &&
-          updates.assignee_id &&
-          issueStatus === "backlog" &&
-          typeof window !== "undefined" &&
-          localStorage.getItem(BACKLOG_HINT_LS_KEY) !== "true"
-        ) {
-          openModal("issue-backlog-agent-hint", { issueId });
-        }
       };
 
+      // Assigning to an agent/squad on a non-backlog issue may start a run.
+      // Route through the pre-trigger confirm modal (preview + optional handoff
+      // note + "暂不开始"), which applies the change itself — the entry points
+      // share this one backend-driven flow instead of guessing (MUL-3375).
+      // Backlog is the parking lot: assigning a backlog issue never starts a run
+      // (server/internal/service/issue_trigger.go), so it falls through and
+      // applies directly.
+      if (
+        (updates.assignee_type === "agent" || updates.assignee_type === "squad") &&
+        updates.assignee_id &&
+        issueStatus !== "backlog"
+      ) {
+        openModal("issue-run-confirm", {
+          issueIds: [issueId],
+          mode: "assign",
+          assigneeType: updates.assignee_type,
+          assigneeId: updates.assignee_id,
+        });
+        return;
+      }
+
+      // Destructive status changes (cancelled/archive) confirm first, then apply
+      // via runUpdate on confirm — a fork-only guard upstream does not have.
       if (requiresIssueStatusConfirmation(updates.status)) {
         openModal("issue-status-confirm", {
           status: updates.status,

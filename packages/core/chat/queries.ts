@@ -29,24 +29,6 @@ export function isTaskMessageTaskId(taskId: string | null | undefined): taskId i
   return typeof taskId === "string" && UUID_PATTERN.test(taskId);
 }
 
-/**
- * Union two task-message lists by `seq`, ascending. Used to reconcile an HTTP
- * catch-up read with WS-appended increments without dropping either side: a
- * query refetch would replace the whole `["task-messages", taskId]` cache, so a
- * `task:message` that arrived while the read was in flight would be clobbered.
- * Merging by seq keeps both; the fetched (authoritative, post-redaction DB)
- * copy wins on a seq collision.
- */
-export function mergeTaskMessagesBySeq(
-  current: TaskMessagePayload[],
-  fetched: TaskMessagePayload[],
-): TaskMessagePayload[] {
-  const bySeq = new Map<number, TaskMessagePayload>();
-  for (const m of current) bySeq.set(m.seq, m);
-  for (const m of fetched) bySeq.set(m.seq, m);
-  return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
-}
-
 export function chatSessionsOptions(wsId: string) {
   return queryOptions({
     queryKey: chatKeys.sessions(wsId),
@@ -112,6 +94,29 @@ export function taskMessagesOptions(taskId: string) {
     enabled: isTaskMessageTaskId(taskId),
     staleTime: Infinity,
   });
+}
+
+/**
+ * Merge task-message batches into one seq-ordered, seq-deduplicated list for
+ * the shared `["task-messages", taskId]` cache. Existing entries win on
+ * conflict, and the original array reference is preserved when nothing new
+ * arrives so React Query observers don't re-render on duplicate events.
+ *
+ * Both the realtime `task:message` handler (a single payload) and the
+ * transcript backfill (a full refetch) write this cache. Routing both through
+ * one helper keeps a forced backfill from blind-replacing a seq the WebSocket
+ * already delivered — and keeps a late WS event from being lost to an
+ * in-flight backfill.
+ */
+export function mergeTaskMessagesBySeq(
+  existing: readonly TaskMessagePayload[],
+  incoming: readonly TaskMessagePayload[],
+): TaskMessagePayload[] {
+  if (incoming.length === 0) return existing as TaskMessagePayload[];
+  const knownSeqs = new Set(existing.map((m) => m.seq));
+  const fresh = incoming.filter((m) => !knownSeqs.has(m.seq));
+  if (fresh.length === 0) return existing as TaskMessagePayload[];
+  return [...existing, ...fresh].sort((a, b) => a.seq - b.seq);
 }
 
 /**

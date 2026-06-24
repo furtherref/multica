@@ -82,17 +82,45 @@ export function BatchActionToolbar({
     }
   };
 
-  const handleBatchStatusUpdate = (updates: Partial<UpdateIssueRequest>) => {
-    if (!requiresIssueStatusConfirmation(updates.status)) {
-      void handleBatchUpdate(updates);
+  // Status changes mirror the single-issue path (use-issue-actions): only the
+  // destructive cancelled/archive transitions prompt (issue-status-confirm);
+  // every other status applies directly. Run previews are reserved for
+  // agent/squad assignment (handleBatchAssignee), matching single-issue, so a
+  // plain status move never opens the run-confirm modal.
+  const handleBatchStatus = (updates: Partial<UpdateIssueRequest>) => {
+    if (!updates.status) return;
+    if (requiresIssueStatusConfirmation(updates.status)) {
+      openModal("issue-status-confirm", {
+        status: updates.status,
+        count,
+        onConfirm: () => handleBatchUpdate(updates),
+      });
       return;
     }
+    void handleBatchUpdate(updates);
+  };
 
-    openModal("issue-status-confirm", {
-      status: updates.status,
-      count,
-      onConfirm: () => handleBatchUpdate(updates),
-    });
+  const handleBatchAssignee = (updates: Partial<UpdateIssueRequest>) => {
+    if ((updates.assignee_type === "agent" || updates.assignee_type === "squad") && updates.assignee_id) {
+      // Backlog never starts a run on assign (parking lot), so if every selected
+      // issue is in backlog the confirm modal would only render an empty "won't
+      // start" box — apply directly, matching handleBatchStatus's backlog short-
+      // circuit. A mixed selection still routes through the modal: the non-backlog
+      // issues will trigger and need confirmation. An empty intersection (selected
+      // ids not in `issues`) falls through to the modal — safer than skipping.
+      const selected = issues.filter((i) => selectedIds.has(i.id));
+      const allBacklog = selected.length > 0 && selected.every((i) => i.status === "backlog");
+      if (!allBacklog) {
+        openModal("issue-run-confirm", {
+          issueIds: ids,
+          mode: "assign",
+          assigneeType: updates.assignee_type,
+          assigneeId: updates.assignee_id,
+        });
+        return;
+      }
+    }
+    void handleBatchUpdate(updates);
   };
 
   const handleBatchDelete = async () => {
@@ -135,7 +163,7 @@ export function BatchActionToolbar({
         {/* Status */}
         <StatusPicker
           status={common.status}
-          onUpdate={handleBatchStatusUpdate}
+          onUpdate={handleBatchStatus}
           open={statusOpen}
           onOpenChange={setStatusOpen}
           triggerRender={<Button variant="ghost" size="sm" disabled={loading} />}
@@ -159,7 +187,7 @@ export function BatchActionToolbar({
           assigneeType={common.assignee?.type ?? null}
           assigneeId={common.assignee?.id ?? null}
           mixed={common.assignee === null}
-          onUpdate={handleBatchUpdate}
+          onUpdate={handleBatchAssignee}
           open={assigneeOpen}
           onOpenChange={setAssigneeOpen}
           triggerRender={<Button variant="ghost" size="sm" disabled={loading} />}

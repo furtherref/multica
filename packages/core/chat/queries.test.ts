@@ -7,9 +7,13 @@ import {
   taskMessagesOptions,
 } from "./queries";
 
-function tm(seq: number, content: string): TaskMessagePayload {
-  return { task_id: "t", issue_id: "i", seq, type: "text", content };
-}
+const msg = (seq: number): TaskMessagePayload => ({
+  task_id: "task-1",
+  issue_id: "issue-1",
+  seq,
+  type: "text",
+  content: `m${seq}`,
+});
 
 describe("taskMessagesOptions", () => {
   it("fetches task messages for persisted UUID task ids", () => {
@@ -28,28 +32,30 @@ describe("taskMessagesOptions", () => {
 });
 
 describe("mergeTaskMessagesBySeq", () => {
-  it("unions both sides by seq, ascending", () => {
-    const merged = mergeTaskMessagesBySeq(
-      [tm(1, "a"), tm(3, "c")],
-      [tm(2, "b"), tm(4, "d")],
-    );
+  it("backfills missing seqs and keeps the list seq-ordered", () => {
+    const existing = [msg(1), msg(3)];
+    const merged = mergeTaskMessagesBySeq(existing, [msg(2), msg(4)]);
 
     expect(merged.map((m) => m.seq)).toEqual([1, 2, 3, 4]);
   });
 
-  it("keeps messages present only in the current (WS-appended) side", () => {
-    // A `task:message` (seq 2) landed via WS while an HTTP catch-up that only
-    // saw seq 1 was in flight; merging must not drop it.
-    const merged = mergeTaskMessagesBySeq([tm(1, "a"), tm(2, "ws")], [tm(1, "a")]);
+  it("drops duplicate seqs and lets the existing entry win", () => {
+    const existing = [{ ...msg(1), content: "ws" }];
+    const merged = mergeTaskMessagesBySeq(existing, [
+      { ...msg(1), content: "refetch" },
+      msg(2),
+    ]);
 
     expect(merged.map((m) => m.seq)).toEqual([1, 2]);
-    expect(merged.find((m) => m.seq === 2)?.content).toBe("ws");
+    expect(merged.find((m) => m.seq === 1)?.content).toBe("ws");
   });
 
-  it("lets the fetched copy win on a seq collision", () => {
-    const merged = mergeTaskMessagesBySeq([tm(1, "stale")], [tm(1, "fresh")]);
+  it("preserves the array reference when nothing new arrives", () => {
+    const existing = [msg(1), msg(2)];
 
-    expect(merged).toHaveLength(1);
-    expect(merged[0]?.content).toBe("fresh");
+    // Empty incoming and fully-duplicate incoming must both no-op so React
+    // Query observers don't re-render on replayed events.
+    expect(mergeTaskMessagesBySeq(existing, [])).toBe(existing);
+    expect(mergeTaskMessagesBySeq(existing, [msg(1), msg(2)])).toBe(existing);
   });
 });
