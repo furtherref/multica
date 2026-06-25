@@ -907,6 +907,9 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if len(ack.PendingLocalSkillImports) > 0 {
 		resp["pending_local_skill_imports"] = ack.PendingLocalSkillImports
 	}
+	if ack.FeatureFlags != nil {
+		resp["feature_flags"] = ack.FeatureFlags
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1020,6 +1023,9 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 	ack := &protocol.DaemonHeartbeatAckPayload{
 		RuntimeID: runtimeID,
 		Status:    "ok",
+	}
+	if h.DaemonFeatureFlags != nil {
+		ack.FeatureFlags = h.DaemonFeatureFlags.EvaluateForRuntime(ctx, rt)
 	}
 
 	probeUpdateCtx, cancelProbeUpdate := context.WithTimeout(ctx, heartbeatHasPendingTimeout)
@@ -1434,9 +1440,10 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 						if row.ResourceType == "github_repo" {
 							var payload struct {
 								URL string `json:"url"`
+								Ref string `json:"ref,omitempty"`
 							}
 							if json.Unmarshal(row.ResourceRef, &payload) == nil && payload.URL != "" {
-								projectRepos = append(projectRepos, RepoData{URL: payload.URL})
+								projectRepos = append(projectRepos, RepoData{URL: payload.URL, Ref: strings.TrimSpace(payload.Ref)})
 							}
 						}
 					}
@@ -1711,9 +1718,10 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 							if row.ResourceType == "github_repo" {
 								var payload struct {
 									URL string `json:"url"`
+									Ref string `json:"ref,omitempty"`
 								}
 								if json.Unmarshal(row.ResourceRef, &payload) == nil && payload.URL != "" {
-									projectRepos = append(projectRepos, RepoData{URL: payload.URL})
+									projectRepos = append(projectRepos, RepoData{URL: payload.URL, Ref: strings.TrimSpace(payload.Ref)})
 								}
 							}
 						}

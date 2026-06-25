@@ -12,7 +12,7 @@ import (
 )
 
 // runtimeMarkerBegin and runtimeMarkerEnd delimit the Multica-managed brief
-// inside the runtime config file (CLAUDE.md / AGENTS.md / GEMINI.md). The
+// inside the runtime config file (CLAUDE.md / AGENTS.md). The
 // markers exist so writeRuntimeConfigFile can:
 //
 //   - preserve user-authored content in the same file (the user's repo may
@@ -122,11 +122,19 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 		var payload struct {
 			URL               string `json:"url"`
 			DefaultBranchHint string `json:"default_branch_hint,omitempty"`
+			Ref               string `json:"ref,omitempty"`
 		}
 		_ = json.Unmarshal(r.ResourceRef, &payload)
 		out := fmt.Sprintf("**GitHub repo**: %s", payload.URL)
+		details := make([]string, 0, 2)
+		if payload.Ref != "" {
+			details = append(details, fmt.Sprintf("checkout ref: `%s`", payload.Ref))
+		}
 		if payload.DefaultBranchHint != "" {
-			out += fmt.Sprintf(" (default branch: `%s`)", payload.DefaultBranchHint)
+			details = append(details, fmt.Sprintf("default branch hint: `%s`", payload.DefaultBranchHint))
+		}
+		if len(details) > 0 {
+			out += " (" + strings.Join(details, ", ") + ")"
 		}
 		if label != "" {
 			out += " — " + label
@@ -154,7 +162,6 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 // For OpenCode: writes {workDir}/AGENTS.md  (skills discovered natively from .opencode/skills/)
 // For OpenClaw: writes {workDir}/AGENTS.md  (skills discovered natively from {workDir}/skills/ via per-task openclaw-config.json that pins agents.defaults.workspace)
 // For Hermes:   writes {workDir}/AGENTS.md  (skills fall back to .agent_context/skills/; AGENTS.md points there)
-// For Gemini:   writes {workDir}/GEMINI.md  (discovered natively by the Gemini CLI)
 // For Pi:       writes {workDir}/AGENTS.md  (skills discovered natively from .pi/skills/)
 // For Cursor:   writes {workDir}/AGENTS.md  (skills discovered natively from .cursor/skills/)
 // For Kimi:        writes {workDir}/AGENTS.md  (Kimi Code CLI reads AGENTS.md natively; skills auto-discovered from project skills dirs)
@@ -182,8 +189,6 @@ func runtimeConfigPath(workDir, provider string) string {
 		return filepath.Join(workDir, "CLAUDE.md")
 	case "codex", "copilot", "opencode", "openclaw", "hermes", "pi", "cursor", "kimi", "kiro", "antigravity", "qoder":
 		return filepath.Join(workDir, "AGENTS.md")
-	case "gemini":
-		return filepath.Join(workDir, "GEMINI.md")
 	default:
 		return ""
 	}
@@ -208,7 +213,7 @@ func runtimeConfigPath(workDir, provider string) string {
 //     separator established by the first inject) is preserved verbatim.
 //
 // The previous implementation called os.WriteFile unconditionally, which
-// silently truncated a repository's CLAUDE.md / AGENTS.md / GEMINI.md the
+// silently truncated a repository's CLAUDE.md / AGENTS.md the
 // first time the agent was pointed at the user's own directory via the
 // local_directory project resource flow. See MUL-2753.
 func writeRuntimeConfigFile(path, brief string) error {
@@ -304,7 +309,7 @@ func locateMarkerBlock(content string) (start, end int, found bool) {
 //     PR #3438 review feedback.
 //
 // Required for the local_directory flow (WorkDir is the user's own repo):
-// without this pass, a manual `claude` / `codex` / `gemini` run started by
+// without this pass, a manual `claude` / `codex` run started by
 // the user inside the same directory after a Multica task would pick up
 // the stale brief and act on the previous task's issue id, trigger
 // comment id, and reply rules. Cloud workspace runs never trigger this
@@ -362,7 +367,27 @@ func CleanupRuntimeConfig(workDir, provider string) error {
 
 // buildMetaSkillContent generates the meta skill markdown that teaches the agent
 // about the Multica runtime environment and available CLI tools.
+//
+// Two paths live here, gated by the `runtime_brief_slim` feature flag:
+//
+//   - When the flag is OFF (default in production, the safe state per the
+//     standard "off = legacy" convention): the legacy verbose brief
+//     below ships unchanged. This is the same byte-for-byte content the
+//     daemon has emitted for ~2 years (modulo MUL-3555's fold-aware
+//     `--full` note, MUL-2538's parent-notification removal, etc.).
+//   - When the flag is ON (currently enabled in staging YAML only): the
+//     post-MUL-3560 slim brief is rendered instead by
+//     `buildMetaSkillContentSlim` (runtime_config_sections.go). Slim
+//     applies kind-driven section gating + per-section prose compression
+//     for ~-7k chars on a typical comment-triggered task.
+//
+// Production stays on the legacy brief until staging telemetry confirms
+// the slim brief does not regress agent behaviour. See MUL-3560 + the
+// `runtime_brief_slim` flag documentation in runtime_config_flag.go.
 func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
+	if useSlimBrief() {
+		return buildMetaSkillContentSlim(provider, ctx)
+	}
 	var b strings.Builder
 
 	b.WriteString("# Multica Agent Runtime\n\n")
@@ -548,10 +573,14 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 		b.WriteString("The following code repositories are available in this workspace.\n")
 		b.WriteString("Use `multica repo checkout <url>` to check out a repository into your working directory. Add `--ref <branch-or-sha>` when you need an exact branch, tag, or commit.\n\n")
 		for _, repo := range ctx.Repos {
+			refHint := ""
+			if repo.Ref != "" {
+				refHint = fmt.Sprintf(" (default ref: `%s`)", repo.Ref)
+			}
 			if repo.Description != "" {
-				fmt.Fprintf(&b, "- %s — %s\n", repo.URL, repo.Description)
+				fmt.Fprintf(&b, "- %s%s — %s\n", repo.URL, refHint, repo.Description)
 			} else {
-				fmt.Fprintf(&b, "- %s\n", repo.URL)
+				fmt.Fprintf(&b, "- %s%s\n", repo.URL, refHint)
 			}
 		}
 		b.WriteString("\nThe checkout command creates a git worktree with a dedicated branch. You can check out one or more repos as needed, and can pass `--ref` for review/QA on a non-default branch or commit.\n\n")
@@ -752,10 +781,9 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 			// Antigravity inherits Gemini CLI's workspace skill layout —
 			// {workDir}/.agents/skills/ — see resolveSkillsDir.
 			b.WriteString("You have the following skills installed (discovered automatically):\n\n")
-		case "gemini", "hermes":
-			// Gemini reads GEMINI.md directly. Hermes has no native skill
-			// discovery path wired up in resolveSkillsDir; both fall back to
-			// referencing the files explicitly under .agent_context/skills/.
+		case "hermes":
+			// Hermes has no native skill discovery path wired up in resolveSkillsDir;
+			// fall back to referencing the files explicitly under .agent_context/skills/.
 			b.WriteString("Detailed skill instructions are in `.agent_context/skills/`. Each subdirectory contains a `SKILL.md`.\n\n")
 		default:
 			b.WriteString("Detailed skill instructions are in `.agent_context/skills/`. Each subdirectory contains a `SKILL.md`.\n\n")
@@ -810,6 +838,7 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 		} else {
 			b.WriteString("⚠️ **Final results MUST be delivered via `multica issue comment add`.** The user does NOT see your terminal output, assistant chat text, or run logs — only comments on the issue. A task that finishes without a result comment is invisible to the user, even if the work itself was correct.\n\n")
 		}
+		b.WriteString("**Post exactly ONE comment per run — your final result, before this turn exits.** Do NOT post progress updates, plans, or \"here's what I'm about to do next\" as comments while you work; keep all planning and progress in your own reasoning.\n\n")
 		b.WriteString("Keep comments concise and natural — state the outcome, not the process.\n")
 		b.WriteString("Good: \"Fixed the login redirect. PR: https://...\"\n")
 		b.WriteString("Bad: \"1. Read the issue 2. Found the bug in auth.go 3. Created branch 4. ...\"\n")
