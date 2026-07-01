@@ -65,10 +65,11 @@ func TestCanManageSquad(t *testing.T) {
 	}
 }
 
-// createPlainMember inserts a new user and adds them to testWorkspaceID
-// as a workspace `member`. Returns the new user's UUID. Registers
-// cleanup that deletes the user (cascade removes the membership row).
-func createPlainMember(t *testing.T, label string) string {
+// createPlainMemberWithLabel inserts a new user and adds them to
+// testWorkspaceID as a workspace `member`. Returns the new user's UUID.
+// Registers cleanup that deletes the user (cascade removes the membership
+// row).
+func createPlainMemberWithLabel(t *testing.T, label string) string {
 	t.Helper()
 	ctx := context.Background()
 	email := label + "@multica.test"
@@ -95,7 +96,7 @@ func TestCreateSquad_MemberCanCreate(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	memberID := createPlainMember(t, "squad-creator-member")
+	memberID := createPlainMemberWithLabel(t, "squad-creator-member")
 	leaderID := createHandlerTestAgent(t, "squad-create-leader", []byte(`{}`))
 
 	body := map[string]any{"name": "MemberSquad", "leader_id": leaderID}
@@ -152,8 +153,8 @@ func TestCreateSquad_OwnerCanStillCreate(t *testing.T) {
 func memberOwnedSquadFixture(t *testing.T) (string, string, string, string) {
 	t.Helper()
 	ctx := context.Background()
-	creatorID := createPlainMember(t, "squad-owner-member")
-	otherID := createPlainMember(t, "squad-bystander-member")
+	creatorID := createPlainMemberWithLabel(t, "squad-owner-member")
+	otherID := createPlainMemberWithLabel(t, "squad-bystander-member")
 	leaderID := createHandlerTestAgent(t, "squad-fixture-leader", []byte(`{}`))
 
 	body := map[string]any{"name": "FixtureSquad", "leader_id": leaderID}

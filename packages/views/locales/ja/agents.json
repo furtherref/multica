@@ -71,7 +71,6 @@
     "fallback_runtime_cloud": "クラウド",
     "fallback_runtime_local": "ローカル",
     "actions_aria": "行の操作",
-    "task_count_one": "{{count}} 件のタスク",
     "task_count_other": "{{count}} 件のタスク"
   },
   "activity_tooltip": {
@@ -80,9 +79,7 @@
     "last_7_days": "過去7日",
     "no_activity": "アクティビティなし",
     "runs_other": "{{count}} 回実行",
-    "failed_suffix": " · {{count}} 回失敗（{{percent}}%）",
-    "created_days_ago_one": "Created {{count}} day ago",
-    "runs_one": "{{count}} run"
+    "failed_suffix": " · {{count}} 回失敗（{{percent}}%）"
   },
   "row_actions": {
     "cancel_all_tasks": "すべてのタスクをキャンセル",
@@ -98,8 +95,8 @@
     "cancel_failed_toast": "タスクをキャンセルできませんでした",
     "cancel_dialog_title": "\"{{name}}\" のすべてのタスクをキャンセルしますか？",
     "cancel_dialog_no_tasks": "キャンセルできるアクティブなタスクがありません。",
-    "cancel_dialog_running_one": "実行中 {{count}} 件",
-    "cancel_dialog_queued_one": "待機中 {{count}} 件",
+    "cancel_dialog_running_other": "実行中 {{count}} 件",
+    "cancel_dialog_queued_other": "待機中 {{count}} 件",
     "cancel_dialog_impact_other": "{{summary}} のタスクがキャンセルされます。",
     "cancel_dialog_running_note": " 実行中のタスクが完全に停止するまで最大5秒かかる場合があります。",
     "cancel_dialog_irreversible": " キャンセルしたタスクは再開できません。",
@@ -108,9 +105,7 @@
     "archive_dialog_title": "\"{{name}}\" をアーカイブしますか？",
     "archive_dialog_description": "このエージェントは割り当てやメンションができなくなり、アクティブなタスクはすべてキャンセルされます。履歴はすべて保持され、後で復元できます。",
     "archive_dialog_cancel": "キャンセル",
-    "archive_dialog_confirm": "アーカイブ",
-    "cancelled_tasks_toast_one": "Cancelled {{count}} task",
-    "cancel_dialog_impact_one": "This will cancel {{summary}} task."
+    "archive_dialog_confirm": "アーカイブ"
   },
   "detail": {
     "back_to_agents": "エージェント",
@@ -255,8 +250,7 @@
       "list_loading": "読み込み中...",
       "list_empty_default": "利用可能なスキルがありません。",
       "list_no_match": "一致するスキルがありません。",
-      "search_placeholder": "スキルを検索...",
-      "selected_one": "{{count}} selected — click to edit"
+      "search_placeholder": "スキルを検索..."
     },
     "avatar": {
       "change_aria": "アバターを変更",
@@ -288,7 +282,6 @@
       "duplicate_keys_toast": "環境変数のキーが重複しています",
       "saved_toast": "環境変数を保存しました",
       "save_failed_toast": "環境変数を保存できませんでした",
-      "not_revealed_title_one": "{{count}} variable configured",
       "not_revealed_title_other": "変数 {{count}} 件を設定済み",
       "not_revealed_empty": "設定された環境変数はありません。",
       "not_revealed_hint": "値は表示するまでマスクされます。すべての表示と編集はワークスペースの監査ログに記録されます。",
@@ -355,8 +348,7 @@
       "add_dialog_confirm_default": "追加",
       "add_dialog_confirm_other": "スキル {{count}} 件を追加",
       "add_dialog_cancel": "キャンセル",
-      "add_failed_toast": "スキルを追加できませんでした",
-      "add_dialog_confirm_one": "Add {{count}} skill"
+      "add_failed_toast": "スキルを追加できませんでした"
     },
     "integrations": {
       "intro": "このエージェントを外部のチャットプラットフォームに接続し、普段使っているツールから直接やり取りできるようにします。",
@@ -399,9 +391,7 @@
       "cancel_failed_toast": "タスクをキャンセルできませんでした",
       "started_prefix": "{{when}} に開始",
       "dispatched_prefix": "{{when}} にディスパッチ",
-      "queued_prefix": "{{when}} に待機開始",
-      "subtitle_active_one": "{{count}} active task",
-      "runs_one": "run"
+      "queued_prefix": "{{when}} に待機開始"
     }
   },
   "char_counter": {
@@ -456,8 +446,6 @@
     "sort_label": "並び替え",
     "sort_chronological": "古い順",
     "sort_newest_first": "新しい順",
-    "tool_calls_one": "{{count}} tool call",
-    "events_one": "{{count}} events",
     "copy_diff": "Copy diff",
     "copy_failed": "Copy failed",
     "file_changes": "File changes",
@@ -483,19 +471,16 @@
     "section_remote": "リモート",
     "section_cloud": "クラウド",
     "agent_count_other": "エージェント {{count}} 件",
-    "agent_count_one": "{{count}} agent",
     "empty": "まだマシンがありません"
   },
   "last_active": {
     "today": "今日",
-    "days_ago_one": "{{count}} 日前",
     "days_ago_other": "{{count}} 日前",
     "none": "30 日間アクティビティなし"
   },
   "toolbar": {
     "result_count_title": "該当エージェント / スコープ内全体",
     "filter_label": "フィルター",
-    "filter_active_count_one": "{{count}} 件のフィルター",
     "filter_active_count_other": "{{count}} 件のフィルター",
     "clear_filters": "フィルターをクリア",
     "section_availability": "可用性",
@@ -509,7 +494,6 @@
     "section_model": "モデル"
   },
   "actions": {
-    "selected_one": "{{count}} 件選択中",
     "selected_other": "{{count}} 件選択中",
     "clear_selection": "選択を解除"
   }

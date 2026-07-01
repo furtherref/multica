@@ -63,9 +63,7 @@
     "squads_group": "スクワッド",
     "issue_count_other": "イシュー {{count}} 件",
     "reset": "すべてのフィルターをリセット",
-    "active_count_other": "フィルター {{count}} 件",
-    "issue_count_one": "{{count}} issue",
-    "active_count_one": "{{count}} filter"
+    "active_count_other": "フィルター {{count}} 件"
   },
   "display": {
     "tooltip": "表示設定",
@@ -91,7 +89,8 @@
     "card_due_date": "期限",
     "card_project": "プロジェクト",
     "card_labels": "ラベル",
-    "card_child_progress": "サブイシューの進捗"
+    "card_child_progress": "サブイシューの進捗",
+    "show_sub_issues": "サブイシューを表示"
   },
   "view": {
     "tooltip_board": "ボード表示",
@@ -234,8 +233,7 @@
     "link_copy_failed": "リンクをコピーできませんでした",
     "workdir_path_copied": "作業ディレクトリのパスをコピーしました",
     "workdir_path_copy_failed": "作業ディレクトリのパスをコピーできませんでした",
-    "workdir_path_unavailable": "まだローカルの作業ディレクトリがありません。ローカルエージェントがこのイシューを実行していません",
-    "pull_request_card_files_count_one": "{{count}} file"
+    "workdir_path_unavailable": "まだローカルの作業ディレクトリがありません。ローカルエージェントがこのイシューを実行していません"
   },
   "timeline": {
     "loading": "読み込み中..."
@@ -265,11 +263,7 @@
     "squad_leader_failed_reason": "評価に失敗しました: {{reason}}",
     "coalesced_badge": "×{{count}}",
     "activity_count_other": "アクティビティ {{count}} 件",
-    "show_more_activities_other": "アクティビティをさらに {{count}} 件表示",
-    "task_completed_one": "completed the task",
-    "task_failed_one": "task failed",
-    "activity_count_one": "{{count}} activity",
-    "show_more_activities_one": "Show {{count}} more activity"
+    "show_more_activities_other": "アクティビティをさらに {{count}} 件表示"
   },
   "comment": {
     "delete_title": "コメントを削除",
@@ -319,25 +313,22 @@
       "fold_other": "{{authors}} のコメント {{count}} 件",
       "bar_authors_more_other": "{{names}} 他 {{count}} 名",
       "resolve_failed": "スレッドを解決できませんでした",
-      "unresolve_failed": "スレッドの解決を取り消せませんでした",
-      "bar_one": "{{count}} resolved comment from {{authors}}",
-      "bar_authors_more_one": "{{names}} and {{count}} other"
+      "unresolve_failed": "スレッドの解決を取り消せませんでした"
     },
-    "download_attachment": "Download {{filename}}",
-    "reply_count_one": "{{count}} reply"
+    "download_attachment": "Download {{filename}}"
   },
   "reply": {
     "placeholder": "返信を残す..."
   },
   "agent_activity": {
     "hover_header_other": "作業中のエージェント {{count}} 件",
+    "hover_header_tasks_other": "作業中のタスク {{count}} 件",
     "hover_header_queued_other": "待機中のエージェント {{count}} 件",
     "status_running": "作業中",
     "status_queued": "待機中",
     "chip_label": "作業中",
     "empty_hover": "現在作業中のエージェントはありません",
-    "filter_active_label": "作業中のエージェントのみ表示中",
-    "hover_header_one": "{{count}} agent working"
+    "filter_active_label": "作業中のエージェントのみ表示中"
   },
   "agent_live": {
     "is_working": "{{name}} が作業中",
@@ -349,8 +340,7 @@
     "transcript_button": "トランスクリプトを表示",
     "stop_button": "停止",
     "stop_tooltip": "エージェントを停止",
-    "cancel_failed": "タスクをキャンセルできませんでした",
-    "tool_count_one": "{{count}} tool"
+    "cancel_failed": "タスクをキャンセルできませんでした"
   },
   "execution_log": {
     "section": "実行ログ",
@@ -399,11 +389,7 @@
     "delete_dialog_title_other": "イシュー {{count}} 件を削除しますか？",
     "delete_dialog_desc_other": "この操作は元に戻せません。選択したイシューと関連データがすべて完全に削除されます。",
     "delete_dialog_warning": "ワークスペースのメンバーであれば誰でもイシューを削除できます。",
-    "cancel": "キャンセル",
-    "update_success_one": "Updated {{count}} issue",
-    "delete_success_one": "Deleted {{count}} issue",
-    "delete_dialog_title_one": "Delete {{count}} issue?",
-    "delete_dialog_desc_one": "This action cannot be undone. This will permanently delete the selected issue and all associated data."
+    "cancel": "キャンセル"
   },
   "card": {
     "update_failed": "イシューを更新できませんでした",

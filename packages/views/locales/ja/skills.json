@@ -71,6 +71,8 @@
     "my_agents": "自分のエージェント",
     "other_agents": "その他のエージェント",
     "no_agents": "利用可能なエージェントがありません",
+    "search_placeholder": "エージェントを検索…",
+    "no_agents_match": "一致するエージェントがありません。",
     "has_partial": "{{owned}}/{{total}} 追加済み",
     "added_toast": "{{name}} に追加しました",
     "add_failed_toast": "スキルの追加に失敗しました",
@@ -78,24 +80,19 @@
     "selected": "{{count}} 件選択中",
     "clear_selection": "選択を解除",
     "delete_no_permission": "作成者または管理者のみ削除できるスキルが含まれています",
-    "delete_dialog_title_one": "{{count}} 件のスキルを削除しますか？",
     "delete_dialog_title_other": "{{count}} 件のスキルを削除しますか？",
-    "delete_dialog_desc_one": "選択したスキルを完全に削除し、すべてのエージェントから取り外します。",
     "delete_dialog_desc_other": "選択した {{count}} 件のスキルを完全に削除し、すべてのエージェントから取り外します。",
-    "deleted_toast_one": "{{count}} 件のスキルを削除しました",
     "deleted_toast_other": "{{count}} 件のスキルを削除しました",
     "delete_failed_toast": "スキルの削除に失敗しました",
     "add_dialog_description": "選択したスキルを追加するエージェントを選んでください。",
     "cancel": "キャンセル",
     "add_confirm": "追加（{{num}}）",
     "adding": "追加中...",
-    "added_multi_toast_one": "{{count}} 件のエージェントに追加しました",
     "added_multi_toast_other": "{{count}} 件のエージェントに追加しました"
   },
   "toolbar": {
     "result_count_title": "該当スキル / 全スキル",
     "filter_label": "フィルター",
-    "filter_active_count_one": "{{count}} 件のフィルター",
     "filter_active_count_other": "{{count}} 件のフィルター",
     "clear_filters": "フィルターを解除",
     "section_usage": "使用状況",
@@ -153,8 +150,7 @@
       "permissions_owner": "このスキルを編集および削除できます。変更は次回のエージェント実行から有効になります。",
       "permissions_locked_creator": "このスキルを編集できるのは作成者（{{name}}）またはワークスペース管理者のみです。",
       "permissions_locked": "このスキルを編集できるのは作成者またはワークスペース管理者のみです。",
-      "used_by_empty": "まだどのエージェントにも割り当てられていません。エージェントのスキルタブを開いて割り当ててください。",
-      "used_by_one": "Used by {{count}} agent"
+      "used_by_empty": "まだどのエージェントにも割り当てられていません。エージェントのスキルタブを開いて割り当ててください。"
     },
     "origin_card": {
       "imported_runtime": "ローカルランタイムからインポート",
@@ -180,8 +176,7 @@
       "warning": "この操作は元に戻せません。",
       "cancel": "キャンセル",
       "confirm": "完全に削除",
-      "deleting": "削除中…",
-      "description_with_agents_one": "This will permanently delete \"{{name}}\" and remove it from {{count}} agent currently using it."
+      "deleting": "削除中…"
     },
     "add_file": {
       "placeholder": "templates/review.md",
@@ -336,7 +331,6 @@
     "bulk_summary_conflicts": "競合",
     "bulk_summary_skipped": "スキップ",
     "bulk_summary_failed": "失敗",
-    "skill_files_one": "{{count}} file",
     "conflict_single_title": "同じ名前のスキルがすでに存在します",
     "conflict_bulk_title": "{{count}} 個のスキルに判断が必要です",
     "conflict_hint": "既存のワークスペーススキルを上書きするか、新しい名前でインポートするか、スキップするかを選択してください。",

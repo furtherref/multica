@@ -99,8 +99,7 @@
     "submitting": "作成中...",
     "toast_created": "スクワッドを作成しました",
     "toast_failed": "スクワッドを作成できませんでした",
-    "toast_member_add_failed": "{{name}} を追加できませんでした: {{error}}",
-    "members_selected_count_one": "{{count}} selected"
+    "toast_member_add_failed": "{{name}} を追加できませんでした: {{error}}"
   },
   "create_project": {
     "title": "新規プロジェクト",
@@ -141,8 +140,7 @@
     "local_clear": "クリア",
     "local_pick_failed": "ディレクトリ選択画面を開けませんでした。",
     "local_invalid_dir": "このディレクトリは使用できません。別のものを選択してください。",
-    "local_hint": "他のマシンのエージェントはこのパスを参照できず、起動に失敗します。共有作業にはリポジトリを使用してください。",
-    "repos_pill_count_one": "{{count}} repo"
+    "local_hint": "他のマシンのエージェントはこのパスを参照できず、起動に失敗します。共有作業にはリポジトリを使用してください。"
   },
   "create_issue": {
     "sr_manual": "新規イシュー",

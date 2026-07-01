@@ -312,8 +312,9 @@ vi.mock("@multica/core/issues/stores", () => ({
 // scrollIntoView (it drives the timeline container's scrollTop directly to
 // avoid scrolling ancestor overflow:hidden boxes — see issue-detail.tsx). We
 // keep a no-op stub on the prototype so any stray scrollIntoView call from
-// other components doesn't throw; deep-link tests assert the highlight ring
-// instead, which is mechanism-independent and observable without layout.
+// other components doesn't throw; deep-link tests assert the highlight
+// background instead, which is mechanism-independent and observable without
+// layout.
 const scrollIntoViewSpy = vi.hoisted(() => vi.fn());
 
 vi.mock("react-virtuoso", () => ({
@@ -500,6 +501,21 @@ function renderIssueDetailWithHighlight(
     </I18nProvider>,
   );
   return { ...result, queryClient };
+}
+
+const highlightedCommentBackgroundClass =
+  "bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]";
+
+function hasHighlightedCommentBackground(root: ParentNode | null): boolean {
+  if (!root) return false;
+
+  const elements = root instanceof Element
+    ? [root, ...Array.from(root.querySelectorAll("[class]"))]
+    : Array.from(root.querySelectorAll("[class]"));
+
+  return elements.some(
+    (el) => typeof el.className === "string" && el.className.includes(highlightedCommentBackgroundClass),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1123,12 +1139,54 @@ describe("IssueDetail (shared)", () => {
       // The deep-link effect lands on AND highlights the target comment: it
       // drives the timeline container's scrollTop directly (jsdom has no
       // layout, so the scroll itself isn't observable here) and applies the
-      // brand highlight ring. Assert the user-facing highlight.
+      // brand highlight background. Assert the user-facing highlight.
       await waitFor(() => {
         expect(
-          document.getElementById("comment-comment-2")?.querySelector(".ring-2"),
-        ).not.toBeNull();
+          hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+        ).toBe(true);
       });
+    });
+
+    it("highlights only the target root comment, not the whole thread", async () => {
+      mockApiObj.listTimeline.mockResolvedValue([
+        {
+          type: "comment",
+          id: "comment-root",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "Root target",
+          parent_id: null,
+          created_at: "2026-01-18T00:00:00Z",
+          updated_at: "2026-01-18T00:00:00Z",
+          comment_type: "comment",
+        } as TimelineEntry,
+        {
+          type: "comment",
+          id: "reply-under-root",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "Reply should stay neutral",
+          parent_id: "comment-root",
+          created_at: "2026-01-18T01:00:00Z",
+          updated_at: "2026-01-18T01:00:00Z",
+          comment_type: "comment",
+        } as TimelineEntry,
+      ]);
+
+      renderIssueDetailWithHighlight("comment-root");
+
+      await waitFor(() => {
+        expect(document.getElementById("comment-comment-root")).not.toBeNull();
+      });
+      await waitFor(() => {
+        expect(
+          hasHighlightedCommentBackground(document.getElementById("comment-comment-root")),
+        ).toBe(true);
+      });
+
+      const reply = document.getElementById("comment-reply-under-root");
+      expect(reply).not.toBeNull();
+      expect(hasHighlightedCommentBackground(reply)).toBe(false);
     });
 
     it("still scrolls when the timeline is ready before the issue (regression for inbox click)", async () => {
@@ -1149,7 +1207,7 @@ describe("IssueDetail (shared)", () => {
         document.getElementById("comment-comment-2"),
       ).toBeNull();
       // Nothing highlighted while the loading skeleton is up.
-      expect(document.querySelector(".ring-2")).toBeNull();
+      expect(hasHighlightedCommentBackground(document)).toBe(false);
 
       resolveIssue(mockIssue);
 
@@ -1160,8 +1218,8 @@ describe("IssueDetail (shared)", () => {
       });
       await waitFor(() => {
         expect(
-          document.getElementById("comment-comment-2")?.querySelector(".ring-2"),
-        ).not.toBeNull();
+          hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+        ).toBe(true);
       });
     });
 
@@ -1178,11 +1236,11 @@ describe("IssueDetail (shared)", () => {
       });
       // The deep-link effect drives the timeline container's scrollTop directly
       // (no native scrollIntoView), so assert the mechanism-independent landing
-      // signal: the refetched target comment gets the highlight ring.
+      // signal: the refetched target comment gets the highlight background.
       await waitFor(() => {
         expect(
-          document.getElementById("comment-comment-2")?.querySelector(".ring-2"),
-        ).not.toBeNull();
+          hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+        ).toBe(true);
       });
     });
 
