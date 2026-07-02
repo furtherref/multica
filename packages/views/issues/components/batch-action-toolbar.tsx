@@ -15,7 +15,6 @@ import {
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
 import type { Issue, UpdateIssueRequest } from "@multica/core/types";
-import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-store";
 import { commonIssueFields } from "@multica/core/issues/batch";
 import { useBatchUpdateIssues, useBatchDeleteIssues } from "@multica/core/issues/mutations";
 import { useModalStore } from "@multica/core/modals";
@@ -23,6 +22,8 @@ import { StatusPicker, PriorityPicker, AssigneePicker } from "./pickers";
 import { requiresIssueStatusConfirmation } from "../actions/status-confirmation";
 import { useT } from "../../i18n";
 import { cn } from "@multica/ui/lib/utils";
+import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
+import { useIssueSurfaceSelection } from "../surface/selection-context";
 
 export function BatchActionToolbar({
   issues,
@@ -30,9 +31,9 @@ export function BatchActionToolbar({
 }: {
   /**
    * The universe of selectable issues at this call site (the same list the
-   * rows are rendered from). The toolbar filters it by the global selection to
-   * reflect the real common status / priority / assignee of the selected
-   * issues, mirroring how the skill list filters its rows by `selectedIds`.
+   * rows are rendered from). The toolbar filters it by the active surface
+   * selection to reflect the real common status / priority / assignee of the
+   * selected issues, mirroring how the skill list filters rows by `selectedIds`.
    */
   issues: Issue[];
   /**
@@ -44,8 +45,9 @@ export function BatchActionToolbar({
   placement?: "fixed-bottom" | "inline";
 }) {
   const { t } = useT("issues");
-  const selectedIds = useIssueSelectionStore((s) => s.selectedIds);
-  const clear = useIssueSelectionStore((s) => s.clear);
+  const selection = useIssueSurfaceSelection();
+  const selectedIds = selection.selectedIds;
+  const clear = selection.clear;
   const count = selectedIds.size;
 
   // Reflect the real shared value of the selected issues in each picker; fall
@@ -60,10 +62,12 @@ export function BatchActionToolbar({
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const surfaceActions = useIssueSurfaceActionsOptional();
   const batchUpdate = useBatchUpdateIssues();
   const batchDelete = useBatchDeleteIssues();
   const openModal = useModalStore((s) => s.open);
-  const loading = batchUpdate.isPending || batchDelete.isPending;
+  const loading =
+    surfaceActions?.isPending ?? (batchUpdate.isPending || batchDelete.isPending);
 
   if (count === 0) return null;
 
@@ -71,7 +75,11 @@ export function BatchActionToolbar({
 
   const handleBatchUpdate = async (updates: Partial<UpdateIssueRequest>) => {
     try {
-      await batchUpdate.mutateAsync({ ids, updates });
+      if (surfaceActions) {
+        await surfaceActions.batchUpdate(ids, updates);
+      } else {
+        await batchUpdate.mutateAsync({ ids, updates });
+      }
       toast.success(t(($) => $.batch.update_success, { count }));
     } catch (err) {
       toast.error(
@@ -125,7 +133,11 @@ export function BatchActionToolbar({
 
   const handleBatchDelete = async () => {
     try {
-      await batchDelete.mutateAsync(ids);
+      if (surfaceActions) {
+        await surfaceActions.batchDelete(ids);
+      } else {
+        await batchDelete.mutateAsync(ids);
+      }
       clear();
       toast.success(t(($) => $.batch.delete_success, { count }));
     } catch (err) {

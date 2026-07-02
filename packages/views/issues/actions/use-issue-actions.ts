@@ -14,6 +14,7 @@ import { copyText } from "@multica/ui/lib/clipboard";
 import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { requiresIssueStatusConfirmation } from "./status-confirmation";
+import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
 
 export interface UseIssueActionsResult {
   isPinned: boolean;
@@ -52,6 +53,7 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
     );
 
   const updateIssue = useUpdateIssue();
+  const surfaceActions = useIssueSurfaceActionsOptional();
   const createPin = useCreatePin();
   const deletePin = useDeletePin();
   const openModal = useModalStore((s) => s.open);
@@ -66,17 +68,23 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
       if (!issueId) return;
 
       const runUpdate = () => {
-        updateIssue.mutate(
-          { id: issueId, ...updates },
-          {
-            onError: (err) =>
-              toast.error(
-                err instanceof Error && err.message
-                  ? err.message
-                  : t(($) => $.detail.update_failed),
-              ),
-          },
-        );
+        if (surfaceActions) {
+          surfaceActions.updateIssue(issueId, updates, {
+            errorMessage: t(($) => $.detail.update_failed),
+          });
+        } else {
+          updateIssue.mutate(
+            { id: issueId, ...updates },
+            {
+              onError: (err) =>
+                toast.error(
+                  err instanceof Error && err.message
+                    ? err.message
+                    : t(($) => $.detail.update_failed),
+                ),
+            },
+          );
+        }
       };
 
       // Assigning to an agent/squad on a non-backlog issue may start a run.
@@ -113,7 +121,7 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
 
       runUpdate();
     },
-    [issueId, issueStatus, updateIssue, openModal, t],
+    [issueId, issueStatus, surfaceActions, updateIssue, openModal, t],
   );
 
   const togglePin = useCallback(() => {
@@ -159,20 +167,32 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
   // error toast and the optimistic rollback (false confirmation).
   const removeParent = useCallback(() => {
     if (!issueId) return;
-    updateIssue.mutate(
-      { id: issueId, parent_issue_id: null, stage: null },
-      {
-        onSuccess: () =>
-          toast.success(t(($) => $.actions.remove_parent_issue_success)),
-        onError: (err) =>
-          toast.error(
-            err instanceof Error && err.message
-              ? err.message
-              : t(($) => $.detail.update_failed),
-          ),
-      },
-    );
-  }, [issueId, updateIssue, t]);
+    if (surfaceActions) {
+      surfaceActions.updateIssue(
+        issueId,
+        { parent_issue_id: null, stage: null },
+        {
+          onSuccess: () =>
+            toast.success(t(($) => $.actions.remove_parent_issue_success)),
+          errorMessage: t(($) => $.detail.update_failed),
+        },
+      );
+    } else {
+      updateIssue.mutate(
+        { id: issueId, parent_issue_id: null, stage: null },
+        {
+          onSuccess: () =>
+            toast.success(t(($) => $.actions.remove_parent_issue_success)),
+          onError: (err) =>
+            toast.error(
+              err instanceof Error && err.message
+                ? err.message
+                : t(($) => $.detail.update_failed),
+            ),
+        },
+      );
+    }
+  }, [issueId, surfaceActions, updateIssue, t]);
 
   const openAddChild = useCallback(() => {
     if (!issueId) return;

@@ -27,6 +27,7 @@ import type {
   OfficeConfig,
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
+import type { CreateFeedbackResponse } from "../feedback/types";
 
 export interface AppConfigResponse {
   cdn_domain: string;
@@ -211,6 +212,16 @@ export const EMPTY_APP_CONFIG: AppConfigResponse = {
   daemon_app_url: "",
   workspace_creation_disabled: false,
   office_preview_enabled: false,
+};
+
+export const CreateFeedbackResponseSchema = z.object({
+  id: z.string(),
+  created_at: z.string(),
+}).loose();
+
+export const EMPTY_CREATE_FEEDBACK_RESPONSE: CreateFeedbackResponse = {
+  id: "",
+  created_at: "",
 };
 
 export const CommentSchema = z.object({
