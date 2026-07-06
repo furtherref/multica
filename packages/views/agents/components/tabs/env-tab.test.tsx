@@ -50,6 +50,8 @@ const agent = {
   updated_at: "2026-06-12T00:00:00Z",
   archived_at: null,
   archived_by: null,
+  permission_mode: "public_to",
+  invocation_targets: [],
 } as Agent;
 
 function envTabUi(canEdit: boolean | null) {

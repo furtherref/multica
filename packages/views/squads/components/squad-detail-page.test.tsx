@@ -99,6 +99,8 @@ const fakeAgents: Agent[] = [
     archived_at: null,
     archived_by: null,
     max_concurrent_tasks: 1,
+    permission_mode: "private",
+    invocation_targets: [],
   },
 ];
 

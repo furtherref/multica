@@ -3,6 +3,43 @@ import { mergeAttributes } from "@tiptap/core";
 import { ReactNodeViewRenderer } from "@tiptap/react";
 import { MentionView } from "./mention-view";
 
+const MENTION_LINK_MARKER = "](mention://";
+
+function isEscaped(text: string, index: number): boolean {
+  let slashCount = 0;
+  for (let i = index - 1; i >= 0 && text[i] === "\\"; i--) {
+    slashCount++;
+  }
+  return slashCount % 2 === 1;
+}
+
+function findUnescapedMentionMarker(src: string, from = 0): number {
+  let marker = src.indexOf(MENTION_LINK_MARKER, from);
+
+  while (marker !== -1) {
+    if (!isEscaped(src, marker)) return marker;
+    marker = src.indexOf(MENTION_LINK_MARKER, marker + MENTION_LINK_MARKER.length);
+  }
+
+  return -1;
+}
+
+function findMentionStart(src: string): number {
+  let marker = findUnescapedMentionMarker(src);
+
+  while (marker !== -1) {
+    for (let i = marker - 1; i >= 0; i--) {
+      const char = src[i];
+      if (char === "\n" || char === "\r") break;
+      if (char === "[" && !isEscaped(src, i)) return i;
+    }
+
+    marker = findUnescapedMentionMarker(src, marker + MENTION_LINK_MARKER.length);
+  }
+
+  return -1;
+}
+
 export const BaseMentionExtension = Mention.extend({
   addNodeView() {
     return ReactNodeViewRenderer(MentionView);
@@ -39,17 +76,18 @@ export const BaseMentionExtension = Mention.extend({
     name: "mention",
     level: "inline" as const,
     start(src: string) {
-      // Accept escaped brackets (\\[ \\]) and non-] chars in the label.
-      // This prevents matching ordinary Markdown links like [docs](url)
-      // that appear before a mention on the same line.
-      return src.search(/\[@?(?:\\.|[^\]])+\]\(mention:\/\//);
+      // Anchor on Multica's mention href first. Scanning forward from every
+      // "[" backtracks badly on escaped stacktrace markers like \~\[...\].
+      return findMentionStart(src);
     },
     tokenize(src: string) {
-      // Label accepts escaped chars (\\[ \\]) or any non-] character.
-      // This prevents the label from crossing a ]( Markdown link boundary
-      // while still supporting bracket-containing names like "David\[TF\]".
+      // Label accepts escaped chars (\\[ \\]) or any non-] non-backslash
+      // character. Excluding backslash from the char class keeps the two
+      // alternatives disjoint — otherwise "\x" runs backtrack in 2^n ways
+      // (ReDoS, GitHub #4881) — while still supporting bracket-containing
+      // names like "David\[TF\]".
       const match = src.match(
-        /^\[@?((?:\\.|[^\]])+)\]\(mention:\/\/(\w+)\/([^)]+)\)/,
+        /^\[@?((?:\\.|[^\]\\])+)\]\(mention:\/\/(\w+)\/([^)]+)\)/,
       );
       if (!match) return undefined;
       // Unescape backslash sequences produced by renderMarkdown / the Go
