@@ -89,15 +89,6 @@ func squadMemberToResponse(m db.SquadMember) SquadMemberResponse {
 
 // ── Authorization helpers ───────────────────────────────────────────────────
 
-// canManageSquad reports whether the caller may mutate this squad.
-// Workspace owner/admin always can; otherwise only the squad's creator.
-func canManageSquad(member db.Member, squad db.Squad) bool {
-	if roleAllowed(member.Role, "owner", "admin") {
-		return true
-	}
-	return member.UserID == squad.CreatorID
-}
-
 // requireSquadManager resolves the calling workspace member, loads the
 // target squad, and confirms the caller may manage it. On any failure it
 // writes the appropriate HTTP response and returns ok=false — callers
@@ -140,6 +131,36 @@ func applySquadMemberSummary(resp *SquadResponse, summary *squadMemberSummary) {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+// canManageSquad reports whether the member may mutate the squad. Workspace
+// owner/admin manage every squad; a regular member manages only the squads
+// they created. Squads stay creator-scoped for management while remaining
+// visible workspace-wide (ListSquads is unfiltered). Mirrors the front-end
+// per-squad `canManage` gate so the UI and API agree on who can rename / add
+// members / archive (MUL-4223).
+func canManageSquad(member db.Member, squad db.Squad) bool {
+	if roleAllowed(member.Role, "owner", "admin") {
+		return true
+	}
+	return uuidToString(squad.CreatorID) == uuidToString(member.UserID)
+}
+
+// memberCanWireAgent reports whether the acting member may attach the given
+// agent to a squad (as leader or worker). Workspace owner/admin may wire any
+// workspace agent — their management surface is unchanged. A regular member
+// (a creator managing their own squad) may only wire agents they can
+// @-trigger: canInvokeAgent judged as the member themselves, so public_to
+// agents on their allow-list and their own private agents pass, while other
+// members' private / non-allow-listed agents are rejected. This stops a
+// creator from smuggling an agent they cannot invoke into a squad and reaching
+// it through squad routing (MUL-4223).
+func (h *Handler) memberCanWireAgent(ctx context.Context, member db.Member, agent db.Agent, workspaceID string) bool {
+	if roleAllowed(member.Role, "owner", "admin") {
+		return true
+	}
+	uid := uuidToString(member.UserID)
+	return h.canInvokeAgent(ctx, agent, "member", uid, uid, workspaceID)
+}
 
 // loadSquadInWorkspace loads a squad scoped to the current workspace.
 func (h *Handler) loadSquadInWorkspace(w http.ResponseWriter, r *http.Request) (db.Squad, string, bool) {
@@ -226,6 +247,9 @@ func (h *Handler) ListSquads(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 	workspaceID := workspaceIDFromURL(r, "workspaceId")
+	// Any workspace member can create a squad and becomes its creator
+	// (CreatorID below). This aligns squads with agents/projects, which are
+	// also member-creatable; management stays creator-scoped (MUL-4223).
 	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
 	if !ok {
 		return
@@ -260,12 +284,18 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate leader is an agent in this workspace.
-	_, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+	leaderAgent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
 		ID:          leaderUUID,
 		WorkspaceID: wsUUID,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "leader must be a valid agent in this workspace")
+		return
+	}
+	// A non-admin creator may only lead their squad with an agent they can
+	// @-trigger; admins may wire any workspace agent (MUL-4223).
+	if !h.memberCanWireAgent(r.Context(), member, leaderAgent, workspaceID) {
+		writeError(w, http.StatusForbidden, "you can only use an agent you have access to as leader")
 		return
 	}
 
@@ -325,7 +355,7 @@ func (h *Handler) GetSquad(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	workspaceID := workspaceIDFromURL(r, "workspaceId")
-	squad, _, ok := h.requireSquadManager(w, r)
+	squad, member, ok := h.requireSquadManager(w, r)
 	if !ok {
 		return
 	}
@@ -365,10 +395,16 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Validate new leader is an agent in workspace.
-		if _, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+		newLeader, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
 			ID: lid, WorkspaceID: wsUUID,
-		}); err != nil {
+		})
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "leader must be a valid agent in this workspace")
+			return
+		}
+		// A non-admin creator may only promote an agent they can @-trigger.
+		if !h.memberCanWireAgent(r.Context(), member, newLeader, workspaceID) {
+			writeError(w, http.StatusForbidden, "you can only use an agent you have access to as leader")
 			return
 		}
 		// Ensure new leader is a squad member; auto-add if not.
@@ -658,7 +694,7 @@ func (h *Handler) ListSquadMemberStatus(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) AddSquadMember(w http.ResponseWriter, r *http.Request) {
 	workspaceID := workspaceIDFromURL(r, "workspaceId")
-	squad, _, ok := h.requireSquadManager(w, r)
+	squad, member, ok := h.requireSquadManager(w, r)
 	if !ok {
 		return
 	}
@@ -692,10 +728,18 @@ func (h *Handler) AddSquadMember(w http.ResponseWriter, r *http.Request) {
 
 	// Validate the member belongs to this workspace.
 	if req.MemberType == "agent" {
-		if _, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+		agent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
 			ID: memberUUID, WorkspaceID: wsUUID,
-		}); err != nil {
+		})
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "agent not found in this workspace")
+			return
+		}
+		// A non-admin creator may only add agents they can @-trigger (public
+		// or their own / allow-listed agents); admins may add any workspace
+		// agent (MUL-4223).
+		if !h.memberCanWireAgent(r.Context(), member, agent, workspaceID) {
+			writeError(w, http.StatusForbidden, "you can only add an agent you have access to")
 			return
 		}
 	} else {
