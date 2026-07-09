@@ -8,7 +8,7 @@ import type {
   ListIssuesParams,
   ListIssuesCache,
 } from "../types";
-import { BOARD_STATUSES } from "./config";
+import { DEFAULT_VISIBLE_STATUSES } from "./config";
 
 export interface IssueSortParam {
   sort_by?: ListIssuesParams["sort_by"];
@@ -131,8 +131,15 @@ export type AssigneeGroupedIssuesFilter = Omit<
 /** Page size per status column. */
 export const ISSUE_PAGE_SIZE = 50;
 
-/** Statuses the issues/my-issues pages paginate. Cancelled is intentionally excluded — it has never been surfaced in the list/board views. */
-export const PAGINATED_STATUSES: readonly IssueStatus[] = BOARD_STATUSES;
+/**
+ * Statuses fetched and paginated into the list/board cache — every default-
+ * visible lifecycle status, `cancelled` included. `cancelled` is a
+ * first-class default status (MUL-4290), so it lives in the cache and
+ * renders like any other column; there is no separate "visible board"
+ * subset. `archive` stays excluded — it is only ever fetched via an explicit
+ * status filter. This constant governs fetch/cache membership.
+ */
+export const PAGINATED_STATUSES: readonly IssueStatus[] = DEFAULT_VISIBLE_STATUSES;
 
 /** Flatten a bucketed response to a single Issue[] for consumers that want the whole list. */
 export function flattenIssueBuckets(data: ListIssuesCache) {

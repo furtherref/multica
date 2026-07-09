@@ -7,9 +7,11 @@ import (
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 )
 
-// This file holds the slim runtime brief — the post-MUL-3560 path that
-// `buildMetaSkillContent` routes to when the `runtime_brief_slim` feature
-// flag is enabled. The legacy path lives untouched in runtime_config.go.
+// This file holds the runtime brief assembler — the post-MUL-3560 path
+// that `buildMetaSkillContent` delegates to. It used to be one of two
+// paths gated by the `runtime_brief_slim` feature flag against a legacy
+// verbose brief; the flag was retired in MUL-4297 and this is now the
+// only brief.
 //
 // Layout:
 //
@@ -20,7 +22,7 @@ import (
 //   - Each section is its own writer so the matrix of "which kind gets
 //     which section" lives at a single dispatch site.
 //
-// The slim path applies two orthogonal optimisations:
+// The brief applies two orthogonal optimisations:
 //
 //  1. Section gating per task kind — quick-create / chat / autopilot
 //     skip sections they have no use for (Mentions, Comment Formatting,
@@ -31,10 +33,8 @@ import (
 //     Repositories, Output are all tightened. Every test-asserted phrase
 //     stays.
 //
-// Background Task Safety still lives in runtime_config.go because the
-// helper there (`writeBackgroundTaskSafetyInstructions`) is the legacy
-// implementation. The slim path emits its own compressed version via
-// `writeBackgroundTaskSafetySlim` below.
+// Background Task Safety is emitted by `writeBackgroundTaskSafetySlim`
+// below.
 
 // writeHeader emits the brief's leading title and one-line elevator pitch.
 func writeHeader(b *strings.Builder) {
@@ -42,9 +42,9 @@ func writeHeader(b *strings.Builder) {
 	b.WriteString("You are a coding agent in the Multica platform. Use the `multica` CLI to interact with the platform.\n\n")
 }
 
-// writeBackgroundTaskSafetySlim is the slim analogue of
-// writeBackgroundTaskSafetyInstructions (legacy). Drops the verbose
-// preamble but keeps the same hard behaviour pins the tests assert:
+// writeBackgroundTaskSafetySlim emits the Background Task Safety section.
+// Drops the verbose preamble but keeps the same hard behaviour pins the
+// tests assert:
 // "Do NOT end your turn while background tasks", "wait for a future
 // notification/reminder", "run the work synchronously instead", the
 // no-background-and-yield rule, and the no-"standing by" sign-off rule.
@@ -380,7 +380,11 @@ func writeWorkflowComment(b *strings.Builder, provider string, ctx TaskContextFo
 	} else {
 		b.WriteString("5. **Decide whether a reply is warranted.** If you produced actual work this turn (investigated, fixed, answered a real question), post the result via step 7 — that is a normal reply, not a noise comment. If the triggering comment was a pure acknowledgment / thanks / sign-off from another agent AND you produced no work this turn, do NOT post a reply — and do NOT post a comment saying 'No reply needed' or similar. Simply exit with no output. Silence is a valid and preferred way to end agent-to-agent conversations.\n")
 	}
-	b.WriteString("6. If a reply IS warranted: do any requested work first, then **decide whether to include any `@mention` link.** The default is NO mention. Only mention when you are escalating to a human owner who is not yet involved, delegating a concrete new sub-task to another agent for the first time, or the user explicitly asked you to loop someone in. Never @mention the agent you are replying to as a thank-you or sign-off.\n")
+	if len(ctx.AgentSkills) > 0 {
+		b.WriteString("6. If a reply IS warranted: do any requested work first — **if that work involves writing, modifying, or reviewing code, complete the Skills protocol in the `## Skills` section below before you start** (read the `SKILL.md` of every skill matching the task and comply with its required rules). Then **decide whether to include any `@mention` link.** The default is NO mention. Only mention when you are escalating to a human owner who is not yet involved, delegating a concrete new sub-task to another agent for the first time, or the user explicitly asked you to loop someone in. Never @mention the agent you are replying to as a thank-you or sign-off.\n")
+	} else {
+		b.WriteString("6. If a reply IS warranted: do any requested work first, then **decide whether to include any `@mention` link.** The default is NO mention. Only mention when you are escalating to a human owner who is not yet involved, delegating a concrete new sub-task to another agent for the first time, or the user explicitly asked you to loop someone in. Never @mention the agent you are replying to as a thank-you or sign-off.\n")
+	}
 	b.WriteString("7. **If you reply, post it as a comment — this step is mandatory when you reply.** Text in your terminal or run logs is NOT delivered to the user. ")
 	b.WriteString(buildCommentReplyInstructionsSlim(provider, ctx.IssueID, ctx.TriggerCommentID))
 	b.WriteString("8. Before exiting: only if this run produced a fact that clears the high bar (important AND likely to be re-read by future runs on this same issue, e.g. a new PR URL or deploy URL), or you noticed a metadata key from entry that is now stale, pin or clear it via `multica issue metadata set`/`delete`. Most runs write nothing here — that is the expected outcome, not a gap. When in doubt, do not write. See the `## Issue Metadata` section above for the full bar.\n")
@@ -394,7 +398,11 @@ func writeWorkflowAssignment(b *strings.Builder, ctx TaskContextForEnv) {
 	fmt.Fprintf(b, "2. Run `multica issue metadata list %s --output json` to see what prior agents pinned — best-effort, empty `{}` and CLI failures are normal. See the `## Issue Metadata` section above for what to look for.\n", ctx.IssueID)
 	fmt.Fprintf(b, "3. Run `multica issue comment list %s --recent 10 --output json` to catch up on recent active comment threads — this is mandatory, not optional. Earlier comments often carry context the issue body lacks (e.g. which repo to work in, the prior agent's findings, the reason the issue was reassigned to you). Skipping this step is the most common cause of agents acting on stale or incomplete instructions. Resolved threads come back folded — `--full` to expand. If the recent window shows that older context is needed, page older threads with the stderr `Next thread cursor:` values and the matching `--before` / `--before-id` flags until you have enough history.\n", ctx.IssueID)
 	fmt.Fprintf(b, "4. Run `multica issue status %s in_progress` unless your Agent Identity forbids issue status changes; if it does, skip this step.\n", ctx.IssueID)
-	b.WriteString("5. Complete the task within your Agent Identity boundaries. Do not investigate, implement, create issues, update issues, or delegate if your Agent Identity forbids that action; if your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
+	if len(ctx.AgentSkills) > 0 {
+		b.WriteString("5. **Before writing any code, complete the Skills protocol in the `## Skills` section below** — read the `SKILL.md` of every skill matching this task and comply with its required rules. Then complete the task within your Agent Identity boundaries. Do not investigate, implement, create issues, update issues, or delegate if your Agent Identity forbids that action; if your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
+	} else {
+		b.WriteString("5. Complete the task within your Agent Identity boundaries. Do not investigate, implement, create issues, update issues, or delegate if your Agent Identity forbids that action; if your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
+	}
 	if ctx.IsSquadLeader {
 		fmt.Fprintf(b, "6. **Post your final results as a comment** (unless your outcome is `no_action` — in that case, calling `multica squad activity %s no_action --reason \"...\"` alone is sufficient; you MUST exit without posting any comment. DO NOT post a comment announcing no_action or saying you are exiting silently): post it with `multica issue comment add %s` using the platform-correct non-inline mode from ## Comment Formatting (never inline `--content`). Your results are only visible to the user if posted via this CLI call; text in your terminal or run logs is NOT delivered.\n", ctx.IssueID, ctx.IssueID)
 	} else {
@@ -419,6 +427,19 @@ func writeSkills(b *strings.Builder, provider string, ctx TaskContextForEnv) {
 		return
 	}
 	b.WriteString("## Skills\n\n")
+	// Forcing function (TIG-510): the runtime physically installs the
+	// skill files and may auto-discover them, but discovery alone does
+	// not make an agent read or apply them — standards skills get
+	// silently skipped (a unit test landed with zero Javadoc despite the
+	// backend skill requiring it). Provider-agnostic: harmless
+	// reinforcement for runtimes that surface skills natively, essential
+	// for those that demote a forcing-function skill to "just another
+	// auto-discovered file".
+	b.WriteString("**Discovery is not application.** The skills below are installed for you, but installing them does NOT apply them. Before you write or modify any code, move an issue to `in_review`, or post a code review, you MUST complete this protocol — it is mandatory, not optional:\n\n")
+	b.WriteString("1. Read each skill's description below.\n")
+	b.WriteString("2. For every skill whose description matches your task (even a loose match), open its `SKILL.md` and read it in full.\n")
+	b.WriteString("3. Follow the references that `SKILL.md` points to that are relevant to your change. For any code-writing or code-review task this ALWAYS includes the applicable coding-standards reference (comments/Javadoc, naming, etc.), not only the task-type-specific reference (e.g. unit-test).\n")
+	b.WriteString("4. Comply with every required rule the skill states — rules marked Mandatory, must/required language, Principles, and checklist items alike (skills label requirements differently; do not assume a `Mandatory:` tag). If one cannot be met, state which one and why in your result comment.\n\n")
 	switch provider {
 	case "claude", "codebuddy":
 		b.WriteString("You have the following skills installed (discovered automatically):\n\n")
@@ -490,9 +511,9 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 	}
 }
 
-// buildMetaSkillContentSlim is the post-MUL-3560 slim brief assembler.
-// Gated by the `runtime_brief_slim` feature flag; only called from
-// buildMetaSkillContent (runtime_config.go) when the flag is on.
+// buildMetaSkillContentSlim is the post-MUL-3560 brief assembler.
+// Called from buildMetaSkillContent (runtime_config.go). The
+// `runtime_brief_slim` flag that once gated it was retired in MUL-4297.
 //
 // The Section × Kind matrix encoded below (skip = elide section, keep
 // = always emit, △ = data-driven inside the helper):

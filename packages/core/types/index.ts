@@ -86,6 +86,8 @@ export { attachmentDownloadPath, attachmentIdFromDownloadURL, contentReferencesA
 export type { OfficeConfig } from "./office";
 export type {
   ChatSession,
+  ChatLastMessage,
+  ChatPinnedAgent,
   ChatMessage,
   ChatMessagesPage,
   ChatPendingTask,

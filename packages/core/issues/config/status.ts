@@ -32,6 +32,13 @@ export const BOARD_STATUSES: IssueStatus[] = [
   "blocked",
 ];
 
+/**
+ * Default-visible lifecycle statuses (MUL-4290 made `cancelled` one of
+ * them). `archive` stays opt-in — it is only ever shown via an explicit
+ * status filter.
+ */
+export const DEFAULT_VISIBLE_STATUSES: IssueStatus[] = [...BOARD_STATUSES, "cancelled"];
+
 export const STATUS_CONFIG: Record<
   IssueStatus,
   {

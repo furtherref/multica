@@ -138,6 +138,7 @@ vi.mock("@multica/core/api", () => ({
 vi.mock("@multica/core/issues/config", () => ({
   ALL_STATUSES: ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled", "archive"],
   BOARD_STATUSES: ["backlog", "todo", "in_progress", "in_review", "done", "blocked"],
+  DEFAULT_VISIBLE_STATUSES: ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"],
   STATUS_ORDER: ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled", "archive"],
   STATUS_CONFIG: {
     backlog: { label: "Backlog", iconColor: "text-muted-foreground", hoverBg: "hover:bg-accent" },
@@ -570,7 +571,7 @@ describe("IssuesPage (shared)", () => {
         group_by: "assignee",
         limit: 50,
         offset: 0,
-        statuses: ["backlog", "todo", "in_progress", "in_review", "done", "blocked"],
+        statuses: ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"],
       }),
     );
     expect(mockListIssues).not.toHaveBeenCalled();
