@@ -1,7 +1,10 @@
 # Shared Runtime GitLab Agent Identity - Design
 
 Date: 2026-07-10
-Status: Approved (design), pending implementation plan
+Status: Approved
+
+Implementation plan:
+`docs/superpowers/plans/2026/07/10/shared-runtime-gitlab-agent-identity-plan.md`
 
 ## Goal
 
