@@ -92,9 +92,11 @@ export function BatchActionToolbar({
 
   // Status changes mirror the single-issue path (use-issue-actions): only the
   // destructive cancelled/archive transitions prompt (issue-status-confirm);
-  // every other status applies directly. Run previews are reserved for
-  // agent/squad assignment (handleBatchAssignee), matching single-issue, so a
-  // plain status move never opens the run-confirm modal.
+  // every other status applies directly, matching upstream's MUL-4155 removal
+  // of the run-confirm modal for status changes (done/cancelled can never
+  // start a run). Run previews are reserved for agent/squad assignment
+  // (handleBatchAssignee), matching single-issue, so a plain status move never
+  // opens the run-confirm modal.
   const handleBatchStatus = (updates: Partial<UpdateIssueRequest>) => {
     if (!updates.status) return;
     if (requiresIssueStatusConfirmation(updates.status)) {

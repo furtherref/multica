@@ -118,7 +118,7 @@ function IssueAssigneeAvatar({
     <ActorAvatar
       actorType={assigneeType}
       actorId={assigneeId}
-      size={20}
+      size="sm"
       profileLink={false}
       className="shrink-0"
     />
@@ -553,7 +553,7 @@ export function SearchCommand() {
                       name={member.name}
                       initials={memberInitials(member.name)}
                       avatarUrl={resolvePublicFileUrl(member.avatar_url)}
-                      size={22}
+                      size="md"
                     />
                     <div className="min-w-0 flex-1">
                       <div className="truncate">
