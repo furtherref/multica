@@ -6,6 +6,9 @@ import { BatchActionToolbar } from "./batch-action-toolbar";
 // MUL-4155: batch status changes must apply directly (no run-confirm modal),
 // while agent/squad assignment still confirms and delete still confirms. These
 // tests drive the pickers' onUpdate callbacks and assert which path is taken.
+// Destructive statuses (cancelled/archive) are a separate, fork-original gate
+// (requiresIssueStatusConfirmation) that still routes through its own
+// issue-status-confirm modal — see batch-action-toolbar.test.tsx.
 
 const selection = vi.hoisted(() => ({
   selectedIds: new Set<string>(),
@@ -99,8 +102,8 @@ beforeEach(() => {
 });
 
 describe("BatchActionToolbar status routing (MUL-4155)", () => {
-  it("applies every status target directly, never opening the run-confirm modal", () => {
-    for (const status of [...ACTIVE_STATUSES, ...TERMINAL_STATUSES, "backlog"]) {
+  it("applies every non-destructive status target directly, never opening the run-confirm modal", () => {
+    for (const status of [...ACTIVE_STATUSES, "done", "backlog"]) {
       batchUpdate.mockClear();
       openModal.mockClear();
       // A backlog issue in the selection is the case that historically could
@@ -111,6 +114,16 @@ describe("BatchActionToolbar status routing (MUL-4155)", () => {
       expect(batchUpdate).toHaveBeenCalledWith({ ids: ["a"], updates: { status } });
       unmount();
     }
+  });
+
+  it("routes the destructive cancelled status through issue-status-confirm, not the run-confirm modal", () => {
+    render(<BatchActionToolbar issues={[makeIssue({ status: "backlog" })]} />);
+    fireEvent.click(screen.getByTestId("status-cancelled"));
+    expect(openModal).toHaveBeenCalledWith(
+      "issue-status-confirm",
+      expect.objectContaining({ status: "cancelled" }),
+    );
+    expect(batchUpdate).not.toHaveBeenCalled();
   });
 
   it("still routes agent assignment through the run-confirm modal", () => {

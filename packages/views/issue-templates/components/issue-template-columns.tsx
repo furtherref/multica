@@ -115,7 +115,7 @@ function SourceCell({
             name={creator.name}
             initials={creator.name.slice(0, 2).toUpperCase()}
             avatarUrl={creator.avatar_url}
-            size={14}
+            size="xs"
           />
           <span className="truncate">
             {t(($) => $.table.by_creator, { name: creator.name })}

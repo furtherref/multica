@@ -361,7 +361,7 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
                         name={creator.name}
                         initials={creator.name.slice(0, 2).toUpperCase()}
                         avatarUrl={creator.avatar_url}
-                        size={14}
+                        size="xs"
                       />
                       <span className="truncate">{creator.name}</span>
                     </span>
