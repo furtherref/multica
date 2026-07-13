@@ -2658,8 +2658,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// was already in flight. No status change — not even → cancelled — cancels
 	// active tasks: a user clicking "cancel" on an issue has no expectation that
 	// it stops in-flight agent runs, so that implicit coupling is gone
-	// (MUL-4465). Deleting an issue still cancels its tasks (see DeleteIssue),
-	// because the tasks' owning issue ceases to exist.
+	// (MUL-4465). The fork-original `archive` status (#39) is the one
+	// exception, handled below: archiving retires the issue, so its in-flight
+	// tasks are cancelled with it. Deleting an issue still cancels its tasks
+	// (see DeleteIssue), because the tasks' owning issue ceases to exist.
 	if trigger, ok := h.IssueService.WillEnqueueRun(r.Context(),
 		service.IssueTriggerInput{
 			Issue:           issue,
@@ -2670,6 +2672,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		h.issueTriggerWriteProbe(r, actorType, issue),
 	); ok && !req.SuppressRun {
 		h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.HandoffNote)
+	}
+
+	// Archive is a fork-original terminal status (#39): archiving retires the
+	// issue, so in-flight tasks are cancelled with it. This deliberately
+	// survives MUL-4465, which removed only the cancelled/done coupling —
+	// upstream has no archive status.
+	if statusChanged && issue.Status == "archive" {
+		h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
 	}
 
 	// Platform-driven parent notification: when this issue transitions into
@@ -3170,8 +3180,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
 		}
 
-		// No status change — not even → cancelled — cancels active tasks here,
-		// mirroring UpdateIssue (MUL-4465). See that handler for the rationale.
+		// No status change cancels active tasks here except the fork-original
+		// `archive` status, mirroring UpdateIssue (MUL-4465 removed the
+		// cancelled coupling; see that handler for the rationale).
+		if statusChanged && issue.Status == "archive" {
+			h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
+		}
 
 		// Platform-driven parent notification, mirrored from UpdateIssue
 		// (MUL-2538) but DEFERRED to after the loop. Evaluating the stage
