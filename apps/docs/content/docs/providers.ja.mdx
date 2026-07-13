@@ -17,7 +17,7 @@ Multica は **14 個の AI コーディングツール**を標準でサポート
 | **Claude Code** | Anthropic | ✅ | ✅ | `.claude/skills/` | 静的 + flag |
 | **CodeBuddy** | Tencent | ✅ | ✅ | `.claude/skills/` | 動的探索 |
 | **Codex** | OpenAI | ✅ | ✅ | `$CODEX_HOME/skills/` | 静的 |
-| **Copilot** | GitHub | ✅ | ❌ | `.github/skills/` | 静的（アカウントの権限で決定） |
+| **Copilot** | GitHub | ✅ | ✅ | `.github/skills/` | 静的（アカウントの権限で決定） |
 | **Cursor** | Anysphere | ✅ | ✅ | `.cursor/skills/` | 動的探索 |
 | **Hermes** | Nous Research | ✅ | ✅ | `.agent_context/skills/`（フォールバック） | 動的探索 |
 | **Kimi** | Moonshot | ✅ | ✅ | `.kimi/skills/` | 動的探索 |
@@ -48,7 +48,7 @@ OpenAI が提供します。JSON-RPC 2.0 を使用し、ステートフルな能
 
 ### Copilot
 
-GitHub が提供します。モデルルーティングは GitHub アカウントの権限を経由します — ツールが直接モデルを選択するのではなく、GitHub がどのモデルを提供するかを決定します。`.github/skills/` にスキルを置くのは GitHub CLI のネイティブな探索メカニズムです。
+GitHub が提供します。モデルルーティングは GitHub アカウントの権限を経由します — ツールが直接モデルを選択するのではなく、GitHub がどのモデルを提供するかを決定します。`.github/skills/` にスキルを置くのは GitHub CLI のネイティブな探索メカニズムです。MCP 構成は `--additional-mcp-config` で渡されます — セッション中はホストの `~/.copilot/mcp-config.json` を置き換えるのではなく、そこに追加されます。
 
 ### Cursor
 
@@ -100,9 +100,9 @@ ByteDance 公式の TRAE CLI（`traecli`、Trae IDE と組み合わせて使う�
 
 ## MCP 構成: ツールごとの対応
 
-**14 個のツールのうち、`mcp_config` を実際に消費するのは 11 個です: Claude Code、CodeBuddy、Codex、Cursor、Hermes、Kimi、Kiro CLI、OpenCode、OpenClaw、Qoder、Trae CLI**。残りの 3 個はこのフィールドを受け取りますが、**無視します** — エラーも警告もなく、構成はただ効果を発揮しません。
+**14 個のツールのうち、`mcp_config` を実際に消費するのは 12 個です: Claude Code、CodeBuddy、Codex、Copilot、Cursor、Hermes、Kimi、Kiro CLI、OpenCode、OpenClaw、Qoder、Trae CLI**。残りの 2 個（Antigravity、Pi）はこのフィールドを受け取りますが、**無視します** — エラーも警告もなく、構成はただ効果を発揮しません。
 
-接続方式はツールごとに異なります: Claude Code と CodeBuddy は `--mcp-config` と `--strict-mcp-config` で受け取り、Codex は daemon 管理の `mcp_servers` ブロックをタスクごとの `$CODEX_HOME/config.toml` に書き込み、Cursor は `.cursor/mcp.json` とタスクごとの `CURSOR_DATA_DIR` 配下のプロジェクト approval を書き込みます。Hermes、Kimi、Kiro CLI、Qoder、Trae CLI は ACP `mcpServers` で受け取ります。OpenCode は `OPENCODE_CONFIG_CONTENT` 環境変数でインライン構成を受け取り、OpenClaw は Multica のタスクごとの config wrapper 経由で `mcp.servers` を受け取ります。OpenCode の経路はプロジェクトの `opencode.json` を書き換えません。
+接続方式はツールごとに異なります: Claude Code と CodeBuddy は `--mcp-config` と `--strict-mcp-config` で受け取り、Codex は daemon 管理の `mcp_servers` ブロックをタスクごとの `$CODEX_HOME/config.toml` に書き込み、Copilot はタスクごとの一時ファイルを `--additional-mcp-config` で受け取り（ホストの `~/.copilot/mcp-config.json` に追加されます）、Cursor は `.cursor/mcp.json` とタスクごとの `CURSOR_DATA_DIR` 配下のプロジェクト approval を書き込みます。Hermes、Kimi、Kiro CLI、Qoder、Trae CLI は ACP `mcpServers` で受け取ります。OpenCode は `OPENCODE_CONFIG_CONTENT` 環境変数でインライン構成を受け取り、OpenClaw は Multica のタスクごとの config wrapper 経由で `mcp.servers` を受け取ります。OpenCode の経路はプロジェクトの `opencode.json` を書き換えません。
 
 <Callout type="warning">
 エージェント構成で `mcp_config` を設定しても、MCP 列に ✅ がないツールを選んだ場合、MCP サーバーはそのエージェントに**何の効果**も及ぼしません。MCP 連携はツールごとに実装されています。
