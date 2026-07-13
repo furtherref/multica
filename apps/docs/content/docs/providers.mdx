@@ -17,7 +17,7 @@ For guidance on picking a tool when creating an agent, see [Creating and configu
 | **Claude Code** | Anthropic | ✅ | ✅ | `.claude/skills/` | Static + flag |
 | **CodeBuddy** | Tencent | ✅ | ✅ | `.claude/skills/` | Dynamic discovery |
 | **Codex** | OpenAI | ✅ | ✅ | `$CODEX_HOME/skills/` | Static |
-| **Copilot** | GitHub | ✅ | ❌ | `.github/skills/` | Static (determined by account entitlement) |
+| **Copilot** | GitHub | ✅ | ✅ | `.github/skills/` | Static (determined by account entitlement) |
 | **Cursor** | Anysphere | ✅ | ✅ | `.cursor/skills/` | Dynamic discovery |
 | **Hermes** | Nous Research | ✅ | ✅ | `.agent_context/skills/` (fallback) | Dynamic discovery |
 | **Kimi** | Moonshot | ✅ | ✅ | `.kimi/skills/` | Dynamic discovery |
@@ -48,7 +48,7 @@ From OpenAI. Uses JSON-RPC 2.0, has stronger statefulness, and a finer-grained a
 
 ### Copilot
 
-From GitHub. Model routing goes through your GitHub account entitlement — the tool doesn't select a model itself; GitHub decides which model you get. Placing skills in `.github/skills/` is GitHub CLI's native discovery mechanism.
+From GitHub. Model routing goes through your GitHub account entitlement — the tool doesn't select a model itself; GitHub decides which model you get. Placing skills in `.github/skills/` is GitHub CLI's native discovery mechanism. MCP config is passed with `--additional-mcp-config` — for the session it augments the daemon host's `~/.copilot/mcp-config.json` rather than replacing it.
 
 ### Cursor
 
@@ -109,9 +109,9 @@ The session resumption mechanism is covered in [Tasks](/tasks#can-a-task-continu
 
 ## MCP configuration: provider-specific support
 
-**Of the 14 tools, eleven consume `mcp_config`: Claude Code, CodeBuddy, Codex, Cursor, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Qoder, and Trae**. The other three (Antigravity, Copilot, Pi) accept the field but **ignore it** — no error, no warning, the config just has no effect.
+**Of the 14 tools, twelve consume `mcp_config`: Claude Code, CodeBuddy, Codex, Copilot, Cursor, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Qoder, and Trae**. The other two (Antigravity, Pi) accept the field but **ignore it** — no error, no warning, the config just has no effect.
 
-The runtime paths are provider-specific: Claude Code and CodeBuddy receive it through `--mcp-config` paired with `--strict-mcp-config`; Codex writes a daemon-managed `mcp_servers` block into the per-task `$CODEX_HOME/config.toml`; Cursor writes `.cursor/mcp.json` plus per-task project approvals under `CURSOR_DATA_DIR`; Hermes, Kimi, Kiro CLI, Qoder, and Trae receive ACP `mcpServers`; OpenCode receives inline config through `OPENCODE_CONFIG_CONTENT`; OpenClaw receives `mcp.servers` through Multica's per-task config wrapper. OpenCode's path does **not** rewrite the project's `opencode.json`.
+The runtime paths are provider-specific: Claude Code and CodeBuddy receive it through `--mcp-config` paired with `--strict-mcp-config`; Codex writes a daemon-managed `mcp_servers` block into the per-task `$CODEX_HOME/config.toml`; Copilot receives a per-task temp file through `--additional-mcp-config`, which augments the host's `~/.copilot/mcp-config.json`; Cursor writes `.cursor/mcp.json` plus per-task project approvals under `CURSOR_DATA_DIR`; Hermes, Kimi, Kiro CLI, Qoder, and Trae receive ACP `mcpServers`; OpenCode receives inline config through `OPENCODE_CONFIG_CONTENT`; OpenClaw receives `mcp.servers` through Multica's per-task config wrapper. OpenCode's path does **not** rewrite the project's `opencode.json`.
 
 <Callout type="warning">
 If you set `mcp_config` in an agent configuration but pick a tool not marked ✅ in the MCP column, your MCP servers have **no effect** on that agent. MCP integration is provider-specific.

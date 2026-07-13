@@ -9,6 +9,7 @@ const MCP_SUPPORTED_PROVIDERS = new Set([
   "claude",
   "codebuddy",
   "codex",
+  "copilot",
   "cursor",
   "hermes",
   "kimi",

@@ -7,6 +7,7 @@ describe("providerSupportsMcpConfig", () => {
     expect(providerSupportsMcpConfig("claude")).toBe(true);
     expect(providerSupportsMcpConfig("codebuddy")).toBe(true);
     expect(providerSupportsMcpConfig("codex")).toBe(true);
+    expect(providerSupportsMcpConfig("copilot")).toBe(true);
     expect(providerSupportsMcpConfig("cursor")).toBe(true);
     expect(providerSupportsMcpConfig("hermes")).toBe(true);
     expect(providerSupportsMcpConfig("kimi")).toBe(true);
@@ -19,7 +20,6 @@ describe("providerSupportsMcpConfig", () => {
 
   it("rejects providers whose runtime ignores mcp_config", () => {
     expect(providerSupportsMcpConfig("antigravity")).toBe(false);
-    expect(providerSupportsMcpConfig("copilot")).toBe(false);
     expect(providerSupportsMcpConfig("pi")).toBe(false);
     expect(providerSupportsMcpConfig(undefined)).toBe(false);
     expect(providerSupportsMcpConfig(null)).toBe(false);

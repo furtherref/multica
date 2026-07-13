@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -834,5 +836,147 @@ func TestBuildCopilotArgsBlocksResumeAndACP(t *testing.T) {
 		if a == "--yolo" {
 			t.Fatalf("blocked --yolo should have been filtered: %v", args)
 		}
+	}
+}
+
+// ── MCP config wiring ──
+
+// startCopilotMcpFixture writes a fake copilot CLI that dumps its argv (one
+// per line) to argsDump and, when it sees --additional-mcp-config, copies the
+// referenced config file to mcpDump before the temp file is cleaned up.
+func startCopilotMcpFixture(t *testing.T) (fakePath, argsDump, mcpDump string) {
+	t.Helper()
+	dir := t.TempDir()
+	fakePath = filepath.Join(dir, "copilot")
+	argsDump = filepath.Join(dir, "args.txt")
+	mcpDump = filepath.Join(dir, "mcp.json")
+	script := "#!/bin/sh\n" +
+		"prev=\"\"\n" +
+		"for a in \"$@\"; do\n" +
+		"  printf '%s\\n' \"$a\" >> \"" + argsDump + "\"\n" +
+		"  if [ \"$prev\" = \"--additional-mcp-config\" ]; then\n" +
+		"    cat \"${a#@}\" > \"" + mcpDump + "\"\n" +
+		"  fi\n" +
+		"  prev=\"$a\"\n" +
+		"done\n" +
+		"printf '%s\\n' '{\"type\":\"result\",\"sessionId\":\"sess-mcp\",\"exitCode\":0}'\n"
+	writeTestExecutable(t, fakePath, []byte(script))
+	return fakePath, argsDump, mcpDump
+}
+
+func runCopilotExecute(t *testing.T, fakePath string, opts ExecOptions) Result {
+	t.Helper()
+	backend, err := New("copilot", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new copilot backend: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt", opts)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+	select {
+	case result, ok := <-session.Result:
+		if !ok {
+			t.Fatal("result channel closed without a value")
+		}
+		return result
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+	return Result{}
+}
+
+func TestCopilotExecutePassesAdditionalMcpConfig(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath, argsDump, mcpDump := startCopilotMcpFixture(t)
+	mcpConfig := json.RawMessage(`{"mcpServers":{"fetch":{"command":"uvx","args":["mcp-server-fetch"]}}}`)
+
+	result := runCopilotExecute(t, fakePath, ExecOptions{
+		Timeout:   5 * time.Second,
+		McpConfig: mcpConfig,
+	})
+	if result.Status != "completed" {
+		t.Fatalf("expected status=completed, got %q (error=%q)", result.Status, result.Error)
+	}
+
+	rawArgs, err := os.ReadFile(argsDump)
+	if err != nil {
+		t.Fatalf("read args dump: %v", err)
+	}
+	args := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+	var configPath string
+	for i, a := range args {
+		if a == "--additional-mcp-config" {
+			if i+1 >= len(args) {
+				t.Fatalf("--additional-mcp-config has no value: %v", args)
+			}
+			val := args[i+1]
+			if !strings.HasPrefix(val, "@") {
+				t.Fatalf("expected @-prefixed file path after --additional-mcp-config, got %q", val)
+			}
+			configPath = strings.TrimPrefix(val, "@")
+		}
+	}
+	if configPath == "" {
+		t.Fatalf("expected --additional-mcp-config in args, got %v", args)
+	}
+
+	dumped, err := os.ReadFile(mcpDump)
+	if err != nil {
+		t.Fatalf("read mcp dump: %v", err)
+	}
+	var got, want map[string]any
+	if err := json.Unmarshal(dumped, &got); err != nil {
+		t.Fatalf("unmarshal dumped mcp config: %v", err)
+	}
+	if err := json.Unmarshal(mcpConfig, &want); err != nil {
+		t.Fatalf("unmarshal expected mcp config: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mcp config mismatch: got %v, want %v", got, want)
+	}
+
+	// The daemon owns the temp file; it must be removed once the run ends.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected temp mcp config %q to be cleaned up", configPath)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestCopilotExecuteOmitsAdditionalMcpConfigWhenUnset(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath, argsDump, _ := startCopilotMcpFixture(t)
+
+	result := runCopilotExecute(t, fakePath, ExecOptions{Timeout: 5 * time.Second})
+	if result.Status != "completed" {
+		t.Fatalf("expected status=completed, got %q (error=%q)", result.Status, result.Error)
+	}
+
+	rawArgs, err := os.ReadFile(argsDump)
+	if err != nil {
+		t.Fatalf("read args dump: %v", err)
+	}
+	if strings.Contains(string(rawArgs), "--additional-mcp-config") {
+		t.Fatalf("expected no --additional-mcp-config without McpConfig, got:\n%s", rawArgs)
 	}
 }

@@ -60,7 +60,7 @@ Skill 导入后需要**挂载到具体的智能体**才会生效。一个智能�
 - **Skill** = 结构化的**知识包**（静态内容 + 指令）。智能体读 Skill 来学"遇到 X 类问题该怎么想、怎么做"。
 - **MCP**（Model Context Protocol）= **工具通道**。智能体通过 MCP 连外部服务（数据库、文件系统、第三方 API）并**调用**它们。
 
-两者可以同时用。目前 Multica 的 MCP 支持是**按工具实现**的：Claude Code、Codex、Cursor、Hermes、Kimi、Kiro CLI、OpenCode、OpenClaw 会消费 `mcp_config`；其他工具会接收到这个字段但不会实际用。MCP 的专题会在后续版本展开。
+两者可以同时用。目前 Multica 的 MCP 支持是**按工具实现**的：除 Antigravity 和 Pi 之外的工具都会消费 `mcp_config`；这两款会接收到这个字段但不会实际用。MCP 的专题会在后续版本展开。
 
 ---
 

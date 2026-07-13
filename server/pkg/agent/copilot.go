@@ -206,6 +206,31 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	runCtx, cancel := runContext(ctx, timeout)
 
 	args := buildCopilotArgs(prompt, opts, b.cfg.Logger)
+
+	// If the caller provided an MCP config, write it to a temp file and pass
+	// --additional-mcp-config @<path>. Unlike Claude's --mcp-config, the flag
+	// augments (rather than replaces) the servers in the host's
+	// ~/.copilot/mcp-config.json — Copilot CLI has no strict-mode equivalent,
+	// so a saved empty set behaves like "no managed config".
+	var mcpConfigPath string
+	var mcpFileCleanup func() // non-nil while this function owns the temp file
+	if len(opts.McpConfig) > 0 {
+		path, err := writeMcpConfigToTemp(opts.McpConfig)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		mcpConfigPath = path
+		mcpFileCleanup = func() { cleanupMcpConfigTemp(mcpConfigPath) }
+		args = append(args, "--additional-mcp-config", "@"+mcpConfigPath)
+	}
+	// Clean up the temp file if we return before the goroutine takes ownership.
+	defer func() {
+		if mcpFileCleanup != nil {
+			mcpFileCleanup()
+		}
+	}()
+
 	argv0, cmdArgs := chooseCopilotInvocation(execName, lookedUp, args, b.cfg.Logger)
 
 	cmd := exec.CommandContext(runCtx, argv0, cmdArgs...)
@@ -239,6 +264,9 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		defer cancel()
 		defer close(msgCh)
 		defer close(resCh)
+		if mcpConfigPath != "" {
+			defer cleanupMcpConfigTemp(mcpConfigPath)
+		}
 
 		startTime := time.Now()
 		seedModel := opts.Model
@@ -303,6 +331,8 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 			Usage:      st.usage,
 		}
 	}()
+	// The goroutine owns the temp file from here on.
+	mcpFileCleanup = nil
 
 	return &Session{Messages: msgCh, Result: resCh}, nil
 }

@@ -316,7 +316,7 @@
       "save_failed_toast": "カスタム引数を保存できませんでした"
     },
     "mcp_config": {
-      "intro": "ランタイム CLI に転送される MCP server configuration です（Claude は --mcp-config、Codex は $CODEX_HOME/config.toml、Hermes/Kimi/Kiro は ACP mcpServers、OpenClaw はタスクごとの config wrapper 経由）。そのまま保存され、secret が含まれる場合があるため、エージェントのオーナーとワークスペースの admin のみが読み取れます。空のままにすると CLI 自身のデフォルトが使用されます。OpenClaw の HTTP/SSE エントリには、Claude の \"type\" の代わりに OpenClaw 独自のフィールド名（例: \"transport\": \"streamable-http\"）を使用してください。",
+      "intro": "ランタイム CLI に転送される MCP server configuration です（Claude は --mcp-config、Codex は $CODEX_HOME/config.toml、Copilot は --additional-mcp-config、Hermes/Kimi/Kiro は ACP mcpServers、OpenClaw はタスクごとの config wrapper 経由）。そのまま保存され、secret が含まれる場合があるため、エージェントのオーナーとワークスペースの admin のみが読み取れます。空のままにすると CLI 自身のデフォルトが使用されます。OpenClaw の HTTP/SSE エントリには、Claude の \"type\" の代わりに OpenClaw 独自のフィールド名（例: \"transport\": \"streamable-http\"）を使用してください。Copilot のエントリはホストの ~/.copilot/mcp-config.json を置き換えるのではなく、そこに追加されます。",
       "placeholder": "{\n  \"mcpServers\": {\n    \"fetch\": {\n      \"command\": \"uvx\",\n      \"args\": [\"mcp-server-fetch\"]\n    }\n  }\n}",
       "editor_aria": "MCP config JSON editor",
       "clear_action": "クリア",
