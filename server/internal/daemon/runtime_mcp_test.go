@@ -181,3 +181,89 @@ func TestMergeRuntimeAndAgentMcpConfigNullKeepsNativeInheritance(t *testing.T) {
 		}
 	}
 }
+
+func TestListRuntimeLocalMcpServersCopilotRedactsDetails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("COPILOT_HOME", "")
+	configDir := filepath.Join(home, ".copilot")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `{
+  "mcpServers": {
+    "fetch": {"command": "uvx", "args": ["mcp-server-fetch", "--token", "secret"], "tools": ["*"]},
+    "docs": {"type": "http", "url": "https://secret.example/mcp"}
+  }
+}`
+	if err := os.WriteFile(filepath.Join(configDir, "mcp-config.json"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	servers, supported, err := listRuntimeLocalMcpServers("copilot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !supported || len(servers) != 2 {
+		t.Fatalf("supported=%v servers=%#v", supported, servers)
+	}
+	if servers[0].Name != "docs" || servers[0].Transport != "http" || !servers[0].Enabled {
+		t.Fatalf("docs summary = %#v", servers[0])
+	}
+	if servers[1].Name != "fetch" || servers[1].Transport != "stdio" || !servers[1].Enabled {
+		t.Fatalf("fetch summary = %#v", servers[1])
+	}
+}
+
+func TestListRuntimeLocalMcpServersCopilotHonorsCopilotHome(t *testing.T) {
+	home := t.TempDir()
+	copilotHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("COPILOT_HOME", copilotHome)
+	config := `{"mcpServers":{"fetch":{"command":"uvx"}}}`
+	if err := os.WriteFile(filepath.Join(copilotHome, "mcp-config.json"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	servers, supported, err := listRuntimeLocalMcpServers("copilot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !supported || len(servers) != 1 || servers[0].Name != "fetch" {
+		t.Fatalf("supported=%v servers=%#v", supported, servers)
+	}
+}
+
+func TestMergeRuntimeAndAgentMcpConfigCopilotCombinesAndAgentWins(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("COPILOT_HOME", "")
+	configDir := filepath.Join(home, ".copilot")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtimeConfig := `{"mcpServers":{"runtime-only":{"command":"runtime-cmd","env":{"TOKEN":"local-secret"}},"shared":{"command":"runtime-shared"}}}`
+	if err := os.WriteFile(filepath.Join(configDir, "mcp-config.json"), []byte(runtimeConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	merged, err := mergeRuntimeAndAgentMcpConfig("copilot", json.RawMessage(`{"mcpServers":{"shared":{"command":"agent-shared"},"agent-only":{"url":"https://agent.example/mcp"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		McpServers map[string]map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(merged, &document); err != nil {
+		t.Fatal(err)
+	}
+	if len(document.McpServers) != 3 {
+		t.Fatalf("merged servers = %#v", document.McpServers)
+	}
+	if got := document.McpServers["shared"]["command"]; got != "agent-shared" {
+		t.Fatalf("shared command = %#v, want agent-shared", got)
+	}
+	if got := document.McpServers["runtime-only"]["env"].(map[string]any)["TOKEN"]; got != "local-secret" {
+		t.Fatalf("runtime secret was not preserved locally: %#v", got)
+	}
+}

@@ -97,6 +97,12 @@ func loadRuntimeMcpServerConfigs(provider string) (map[string]any, bool, error) 
 			codexHome = filepath.Join(home, ".codex")
 		}
 		path, key, format = filepath.Join(codexHome, "config.toml"), "mcp_servers", "toml"
+	case "copilot":
+		copilotHome := strings.TrimSpace(os.Getenv("COPILOT_HOME"))
+		if copilotHome == "" {
+			copilotHome = filepath.Join(home, ".copilot")
+		}
+		path, key, format = filepath.Join(copilotHome, "mcp-config.json"), "mcpServers", "json"
 	case "cursor":
 		path, key, format = filepath.Join(home, ".cursor", "mcp.json"), "mcpServers", "json"
 	case "opencode":
@@ -221,6 +227,12 @@ func listRuntimeLocalMcpServers(provider string) ([]runtimeLocalMcpServerSummary
 			codexHome = filepath.Join(home, ".codex")
 		}
 		path, key, source, format = filepath.Join(codexHome, "config.toml"), "mcp_servers", "User config", "toml"
+	case "copilot":
+		copilotHome := strings.TrimSpace(os.Getenv("COPILOT_HOME"))
+		if copilotHome == "" {
+			copilotHome = filepath.Join(home, ".copilot")
+		}
+		path, key, source, format = filepath.Join(copilotHome, "mcp-config.json"), "mcpServers", "User config", "json"
 	case "cursor":
 		path, key, source, format = filepath.Join(home, ".cursor", "mcp.json"), "mcpServers", "User config", "json"
 	case "opencode":
