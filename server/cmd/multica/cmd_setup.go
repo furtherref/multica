@@ -142,8 +142,8 @@ func runSetupCloud(cmd *cobra.Command, args []string) error {
 	profile := resolveProfile(cmd)
 
 	cfg := cli.CLIConfig{
-		ServerURL: "https://multica.furtherref.com",
-		AppURL:    "https://multica.furtherref.com",
+		ServerURL: defaultCloudServerURL,
+		AppURL:    defaultCloudAppURL,
 	}
 
 	ok, err := confirmOverwrite(profile, cfg.ServerURL, cfg.AppURL)

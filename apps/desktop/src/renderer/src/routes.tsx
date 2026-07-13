@@ -13,7 +13,10 @@ import { SkillDetailPage } from "./pages/skill-detail-page";
 import { IssueTemplateDetailPage } from "./pages/issue-template-detail-page";
 import { AgentDetailPage } from "./pages/agent-detail-page";
 import { MemberDetailPage } from "./pages/member-detail-page";
-import { RuntimeDetailPage } from "./pages/runtime-detail-page";
+import {
+  RuntimeDetailPage,
+  RuntimeSettingsPage,
+} from "./pages/runtime-detail-page";
 import { AttachmentPreviewRoute } from "./pages/attachment-preview-page";
 import { IssuesPage } from "@multica/views/issues/components";
 import { ProjectsPage } from "@multica/views/projects/components";
@@ -24,6 +27,7 @@ import { SkillsPage } from "@multica/views/skills";
 import { IssueTemplatesPage } from "@multica/views/issue-templates";
 import { DesktopRuntimesPage } from "./components/desktop-runtimes-page";
 import { DesktopAgentsPage } from "./components/desktop-agents-page";
+import { AgentCreationStudio } from "@multica/views/agents";
 import { SquadsPage, SquadDetailPage as SquadDetailPageView } from "@multica/views/squads/components";
 import { InboxPage } from "@multica/views/inbox";
 import { ChatPage } from "@multica/views/chat";
@@ -163,6 +167,11 @@ export const appRoutes: RouteObject[] = [
           {
             path: "runtimes/:id",
             element: <RuntimeDetailPage />,
+            handle: { title: "Machine" },
+          },
+          {
+            path: "runtimes/:id/runtime/:runtimeId",
+            element: <RuntimeSettingsPage />,
             handle: { title: "Runtime" },
           },
           { path: "skills", element: <SkillsPage />, handle: { title: "Skills" } },
@@ -172,6 +181,7 @@ export const appRoutes: RouteObject[] = [
             handle: { title: "Skill" },
           },
           { path: "agents", element: <DesktopAgentsPage />, handle: { title: "Agents" } },
+          { path: "agents/new", element: <AgentCreationStudio />, handle: { title: "Create Agent" } },
           {
             path: "agents/:id",
             element: <AgentDetailPage />,

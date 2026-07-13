@@ -42,6 +42,25 @@ fail()  { printf "${BOLD}${RED}✗ %s${RESET}\n" "$*" >&2; exit 1; }
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+running_in_ssh_session() {
+  [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_CLIENT:-}" ] || [ -n "${SSH_TTY:-}" ]
+}
+
+print_remote_server_token_hint() {
+  if ! running_in_ssh_session; then
+    return
+  fi
+
+  printf "  ${BOLD}Looks like a remote/SSH session.${RESET} Browser login may not be able to call back to this machine's localhost.\n"
+  printf "  Token login is usually simpler here:\n"
+  printf "     1. On your local computer, open ${CYAN}https://multica.furtherref.com/settings?tab=tokens${RESET}\n"
+  printf "        and create a token under ${BOLD}Settings > API Tokens${RESET}.\n"
+  printf "     2. On this server, run:\n"
+  printf "        ${CYAN}multica login --token <YOUR_TOKEN>${RESET}\n"
+  printf "        ${CYAN}multica daemon start${RESET}\n"
+  printf "\n"
+}
+
 env_file_value() {
   local file="$1"
   local key="$2"
@@ -431,6 +450,7 @@ run_default() {
   printf "     ${CYAN}multica setup${RESET}                # Connect to https://multica.furtherref.com\n"
   # printf "     ${CYAN}multica setup self-host${RESET}       # Connect to a self-hosted server\n"
   printf "\n"
+  print_remote_server_token_hint
   printf "  ${BOLD}Self-hosting?${RESET} Install the server first:\n"
   printf "     curl -fsSL https://raw.githubusercontent.com/furtherref/multica/main/scripts/install.sh | bash -s -- --with-server\n"
   printf "\n"

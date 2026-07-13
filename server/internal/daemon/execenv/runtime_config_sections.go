@@ -380,7 +380,10 @@ func writeWorkflowComment(b *strings.Builder, provider string, ctx TaskContextFo
 	} else {
 		b.WriteString("5. **Decide whether a reply is warranted.** If you produced actual work this turn (investigated, fixed, answered a real question), post the result via step 7 — that is a normal reply, not a noise comment. If the triggering comment was a pure acknowledgment / thanks / sign-off from another agent AND you produced no work this turn, do NOT post a reply — and do NOT post a comment saying 'No reply needed' or similar. Simply exit with no output. Silence is a valid and preferred way to end agent-to-agent conversations.\n")
 	}
-	if len(ctx.AgentSkills) > 0 {
+	// Gate on the model-visible set, not the full skill list: when every
+	// skill is disable-model-invocation the `## Skills` section is omitted,
+	// so the step text must not reference it (mirrors writeSkills).
+	if len(modelVisibleSkills(ctx.AgentSkills)) > 0 {
 		b.WriteString("6. If a reply IS warranted: do any requested work first — **if that work involves writing, modifying, or reviewing code, complete the Skills protocol in the `## Skills` section below before you start** (read the `SKILL.md` of every skill matching the task and comply with its required rules). Then **decide whether to include any `@mention` link.** The default is NO mention. Only mention when you are escalating to a human owner who is not yet involved, delegating a concrete new sub-task to another agent for the first time, or the user explicitly asked you to loop someone in. Never @mention the agent you are replying to as a thank-you or sign-off.\n")
 	} else {
 		b.WriteString("6. If a reply IS warranted: do any requested work first, then **decide whether to include any `@mention` link.** The default is NO mention. Only mention when you are escalating to a human owner who is not yet involved, delegating a concrete new sub-task to another agent for the first time, or the user explicitly asked you to loop someone in. Never @mention the agent you are replying to as a thank-you or sign-off.\n")
@@ -404,7 +407,8 @@ func writeWorkflowAssignment(b *strings.Builder, ctx TaskContextForEnv) {
 	fmt.Fprintf(b, "2. Run `multica issue metadata list %s --output json` to see what prior agents pinned — best-effort, empty `{}` and CLI failures are normal. See the `## Issue Metadata` section above for what to look for.\n", ctx.IssueID)
 	fmt.Fprintf(b, "3. Run `multica issue comment list %s --recent 10 --output json` to catch up on recent active comment threads — this is mandatory, not optional. Earlier comments often carry context the issue body lacks (e.g. which repo to work in, the prior agent's findings, the reason the issue was reassigned to you). Skipping this step is the most common cause of agents acting on stale or incomplete instructions. Resolved threads come back folded — `--full` to expand. If the recent window shows that older context is needed, page older threads with the stderr `Next thread cursor:` values and the matching `--before` / `--before-id` flags until you have enough history.\n", ctx.IssueID)
 	fmt.Fprintf(b, "4. Run `multica issue status %s in_progress` unless your Agent Identity forbids issue status changes; if it does, skip this step.\n", ctx.IssueID)
-	if len(ctx.AgentSkills) > 0 {
+	// Same model-visible gate as the comment flow above (see writeSkills).
+	if len(modelVisibleSkills(ctx.AgentSkills)) > 0 {
 		b.WriteString("5. **Before writing any code, complete the Skills protocol in the `## Skills` section below** — read the `SKILL.md` of every skill matching this task and comply with its required rules. Then complete the task within your Agent Identity boundaries. Do not investigate, implement, create issues, update issues, or delegate if your Agent Identity forbids that action; if your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
 	} else {
 		b.WriteString("5. Complete the task within your Agent Identity boundaries. Do not investigate, implement, create issues, update issues, or delegate if your Agent Identity forbids that action; if your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
@@ -429,7 +433,8 @@ func writeSubIssueCreation(b *strings.Builder) {
 
 // writeSkills emits the Skills section listing skill names + descriptions.
 func writeSkills(b *strings.Builder, provider string, ctx TaskContextForEnv) {
-	if len(ctx.AgentSkills) == 0 {
+	skills := modelVisibleSkills(ctx.AgentSkills)
+	if len(skills) == 0 {
 		return
 	}
 	b.WriteString("## Skills\n\n")
@@ -456,7 +461,7 @@ func writeSkills(b *strings.Builder, provider string, ctx TaskContextForEnv) {
 	default:
 		b.WriteString("Detailed skill instructions are in `.agent_context/skills/`. Each subdirectory contains a `SKILL.md`.\n\n")
 	}
-	for _, skill := range ctx.AgentSkills {
+	for _, skill := range skills {
 		if desc := strings.TrimSpace(skill.Description); desc != "" {
 			fmt.Fprintf(b, "- **%s** — %s\n", skill.Name, desc)
 		} else {

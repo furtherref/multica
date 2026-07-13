@@ -43,7 +43,11 @@ export function useAgentPermissions(
 } {
   const { userId, role, isLoading } = useCurrentMember(wsId);
   const ctx = { userId, role };
-  if (agent === null || isLoading) {
+  // While the member query is in flight, `role` is null and the rules below
+  // would misread a legitimate member as denied (e.g. `not_member` for a
+  // public_to+workspace agent). Callers with always-clickable affordances
+  // must treat `isLoading` as "undetermined", not as a deny.
+  if (agent === null) {
     return { canEdit: PENDING, canAssign: PENDING, isLoading };
   }
   return {

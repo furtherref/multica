@@ -9,6 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@multica/ui/components/ui/select";
+import { Switch } from "@multica/ui/components/ui/switch";
 import { useTheme } from "@multica/ui/components/common/theme-provider";
 import {
   DEFAULT_LOCALE,
@@ -17,6 +18,7 @@ import {
 } from "@multica/core/i18n";
 import { useLocaleAdapter } from "@multica/core/i18n/react";
 import { useAuthStore } from "@multica/core/auth";
+import { useCommentComposerStore } from "@multica/core/issues/stores";
 import { api } from "@multica/core/api";
 import { browserTimezone, timezoneOptions } from "../../common/timezone-select";
 import { useT } from "../../i18n";
@@ -96,7 +98,7 @@ export function PreferencesTab() {
         <SettingsCard>
           <SettingsRow
             label={t(($) => $.preferences.theme.title)}
-            controlClassName="sm:w-48"
+            size="select"
           >
             <Select
               value={theme}
@@ -129,7 +131,7 @@ export function PreferencesTab() {
 
           <SettingsRow
             label={t(($) => $.preferences.language.title)}
-            controlClassName="sm:w-48"
+            size="select"
           >
             <Select
               value={currentLocale}
@@ -157,9 +159,35 @@ export function PreferencesTab() {
           </SettingsRow>
 
           <TimezoneRow />
+
+          <StickyCommentBarRow />
         </SettingsCard>
       </SettingsSection>
     </SettingsTab>
+  );
+}
+
+function StickyCommentBarRow() {
+  const { t } = useT("settings");
+  const sticky = useCommentComposerStore((s) => s.sticky);
+  const toggleSticky = useCommentComposerStore((s) => s.toggleSticky);
+
+  return (
+    <SettingsRow
+      label={t(($) => $.preferences.sticky_comment_bar.title)}
+      description={t(($) => $.preferences.sticky_comment_bar.hint)}
+    >
+      <Switch
+        checked={sticky}
+        onCheckedChange={() => {
+          toggleSticky();
+          toast.success(t(($) => $.auto_save.toast_saved), {
+            id: "settings-auto-save",
+          });
+        }}
+        aria-label={t(($) => $.preferences.sticky_comment_bar.title)}
+      />
+    </SettingsRow>
   );
 }
 
@@ -212,7 +240,7 @@ function TimezoneRow() {
     <SettingsRow
       label={t(($) => $.preferences.timezone.title)}
       description={t(($) => $.preferences.timezone.hint)}
-      controlClassName="sm:w-72"
+      size="select-wide"
     >
       <Select
         value={value}
