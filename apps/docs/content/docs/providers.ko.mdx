@@ -1,11 +1,11 @@
 ---
 title: AI 코딩 도구 대조표
-description: Multica는 14개의 AI 코딩 도구를 지원합니다. 모두 동일한 인터페이스를 구현하지만, 기능 세부사항은 크게 다릅니다.
+description: Multica는 15개의 AI 코딩 도구를 지원합니다. 모두 동일한 인터페이스를 구현하지만, 기능 세부사항은 크게 다릅니다.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Multica는 **14개의 AI 코딩 도구**를 기본 지원합니다. 이들은 모두 동일한 인터페이스(대기열 적재, 디스패치, 실행, 결과 반환)를 구현하므로, 같은 Multica 보드에서 어느 것이든 구동할 수 있습니다. **하지만 기능 세부사항은 크게 다릅니다**: 세션 재개가 실제로 동작하는지, MCP를 지원하는지, 스킬 파일이 어디에 위치하는지, 모델을 어떻게 선택하는지. 이 페이지가 전체 대조표입니다.
+Multica는 **15개의 AI 코딩 도구**를 기본 지원합니다. 이들은 모두 동일한 인터페이스(대기열 적재, 디스패치, 실행, 결과 반환)를 구현하므로, 같은 Multica 보드에서 어느 것이든 구동할 수 있습니다. **하지만 기능 세부사항은 크게 다릅니다**: 세션 재개가 실제로 동작하는지, MCP를 지원하는지, 스킬 파일이 어디에 위치하는지, 모델을 어떻게 선택하는지. 이 페이지가 전체 대조표입니다.
 
 에이전트를 생성할 때 도구를 고르는 방법은 [에이전트 생성 및 구성](/agents-create)을 참고하세요.
 
@@ -19,10 +19,11 @@ Multica는 **14개의 AI 코딩 도구**를 기본 지원합니다. 이들은 �
 | **Codex** | OpenAI | ✅ | ✅ | `$CODEX_HOME/skills/` | 정적 |
 | **Copilot** | GitHub | ✅ | ✅ | `.github/skills/` | 정적 (계정 권한으로 결정) |
 | **Cursor** | Anysphere | ✅ | ✅ | `.cursor/skills/` | 동적 탐색 |
-| **Hermes** | Nous Research | ✅ | ✅ | `.agent_context/skills/` (fallback) | 동적 탐색 |
+| **Hermes** | Nous Research | ✅ | ✅ | `HERMES_HOME/skills/` (작업별 홈) | 동적 탐색 |
 | **Kimi** | Moonshot | ✅ | ✅ | `.kimi/skills/` | 동적 탐색 |
 | **Kiro CLI** | Amazon | ✅ | ✅ | `.kiro/skills/` | 동적 탐색 |
 | **OpenCode** | SST | ✅ | ✅ | `.opencode/skills/` | 동적 탐색 + variant |
+| **DevEco Code** | Huawei(화웨이) | ✅ | ❌ | `.deveco/skills/` | 동적 탐색(`deveco models`) |
 | **OpenClaw** | 오픈소스 | ✅ | ✅ | `.agent_context/skills/` (fallback) | 에이전트에 바인딩되어 작업마다 전환 불가 |
 | **Pi** | Inflection AI | ✅ (세션이 파일 경로) | ❌ | `.pi/skills/` | 동적 탐색 |
 | **Qoder** | Alibaba | ✅ | ✅ | `.qoder/skills/` | 동적 탐색 |
@@ -56,7 +57,7 @@ Anysphere에서 제공하며, Cursor 에디터에 대응하는 CLI입니다. **�
 
 ### Hermes
 
-Nous Research에서 제공합니다. ACP 프로토콜을 사용합니다(Kimi와 전송 계층을 공유합니다). 세션 재개가 동작하고, MCP 구성은 ACP `mcpServers`로 전달됩니다. 하지만 **스킬 주입 경로는 전용 경로가 아니라 범용 fallback**(`.agent_context/skills/`)입니다 — Hermes CLI 자체가 이 경로를 읽지 않으면 스킬이 적용되지 않을 수 있습니다. 테스트로 확인하세요.
+Nous Research에서 제공합니다. ACP 프로토콜을 사용합니다(Kimi와 전송 계층을 공유합니다). 세션 재개가 동작하고, MCP 구성은 ACP `mcpServers`로 전달됩니다. Hermes는 스킬을 자신의 홈 디렉터리(`~/.hermes/skills/`)와 설정된 `skills.external_dirs`에서만 탐색하며, 워크스페이스 상대 탐색은 하지 않습니다. 그래서 **에이전트에 스킬이 할당된 경우에만** Multica는 `HERMES_HOME`을 사용자 `~/.hermes/`의 작업별 오버레이로 향하게 합니다. 실제 홈은 심링크로 미러되고(auth/시크릿 포함, 토큰 갱신이 전파됨), 파생된 `config.yaml`이 기존 스킬을 읽기 전용 external root로 참조하며, 할당된 스킬만 그 `skills/` 디렉터리에 기록되어 우선합니다. 전역 스킬은 그대로 동작합니다. Multica는 공유 `~/.hermes/`를 직접 수정하지 않고 읽어서 링크만 하지만, Hermes가 미러된 심링크를 통해 쓰는 경우(토큰 갱신 등)는 전파됩니다. `custom_args`의 `-p`/`--profile` 선택은 존중됩니다. 오버레이는 그 profile의 홈에서 시드되고, 플래그는 실행 명령에서 소비되어 오버레이를 우회할 수 없습니다. 작업 메모리는 작업별로 격리됩니다. 새 `memories/` 디렉터리에 더해 파생 설정에서 외부 `memory.provider` 백엔드를 비활성화하므로, 디스크상의 메모도 공유 Supermemory/Hindsight 류의 뱅크도 작업 간에 공유되지 않습니다(관리형 agent 범위 메모리 백엔드는 향후 별도 과제입니다). 스킬이 할당되지 않은 Hermes 작업은 실제 홈 그대로 실행됩니다. 참고로 홈의 플랫폼 기본값은 네이티브 Windows에서 `%LOCALAPPDATA%\hermes`입니다.
 
 **Hermes profile 선택.** 특정 profile로 Hermes를 실행하려면 에이전트의 `custom_args`에 profile 플래그와 profile 이름을 두 개의 독립된 항목으로 설정하세요. 예를 들어 `research`라는 profile을 사용하려면:
 
@@ -77,6 +78,10 @@ Amazon에서 제공합니다. `kiro-cli acp`를 통해 stdio 위에서 ACP를 �
 ### OpenCode
 
 SST에서 제공하는 오픈소스입니다. 사용 가능한 모델과 모델 variant를 동적으로 탐색합니다(CLI의 구성 파일을 스캔). 세션 재개가 동작하고, 에이전트의 `mcp_config` 필드를 소비합니다. Multica는 `OPENCODE_CONFIG_CONTENT` 환경 변수를 통해 이를 인라인으로 주입하므로, 에이전트의 MCP 서버가 작업 디렉터리의 `opencode.json`(에이전트 또는 사용자가 소유하는 파일)을 건드리지 않고 OpenCode에 전달됩니다. 모델이 variant를 노출하면 Multica는 이를 에이전트 thinking selector로 표시하고 선택한 값을 `opencode run --variant`로 전달합니다. **자신의 모델 카탈로그를 커스터마이징하고 싶은, 만지작거리기 좋아하는 사용자에게 적합합니다.**
+
+### DevEco Code
+
+**DevEco Code**는 Huawei(화웨이)의 HarmonyOS 개발용 독립 코딩 에이전트(`deveco` CLI, [gitcode.com/openharmony-sig/deveco-code](https://gitcode.com/openharmony-sig/deveco-code))입니다. OpenCode 엔진을 기반으로 하면서도 자체적으로 완성된 성숙한 제품으로, 자체 모델 카탈로그와 provider(내장 `deveco/GLM-5.1`), Huawei 계정 인증, 전용 설정·스킬 체계(`~/.config/deveco/` 및 `.deveco/skills/`)를 갖추고 있습니다. Multica는 `deveco run --format json`으로 구동하며 NDJSON 이벤트 스트림을 파싱합니다. **세션 재개가 동작합니다**(`--session <id>` 경유). 모델은 `deveco models`에서 동적으로 탐색되고, 시스템 컨텍스트는 작업별 `AGENTS.md`로 전달됩니다. MCP 서버는 DevEco 네이티브 `DEVECO_CONFIG_CONTENT` 채널로 설정합니다. Multica 측 `mcp_config` 연동은 개발 중이며, 현재 DevEco 에이전트의 MCP 탭은 숨겨집니다. 인증은 `deveco auth login`(Huawei 계정)으로 수행합니다.
 
 ### OpenClaw
 
@@ -100,7 +105,7 @@ ByteDance의 공식 TRAE CLI(`traecli`, Trae IDE와 함께 쓰는 제품이며 �
 
 ## MCP 구성: 도구별 지원
 
-**14개 도구 중 `mcp_config`를 실제로 소비하는 것은 12개입니다: Claude Code, CodeBuddy, Codex, Copilot, Cursor, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Qoder, Trae CLI**. 나머지 2개(Antigravity, Pi)는 이 필드를 받아들이지만 **무시합니다** — 오류도, 경고도 없으며, 구성이 그저 효과를 내지 못합니다.
+**15개 도구 중 `mcp_config`를 실제로 소비하는 것은 12개입니다: Claude Code, CodeBuddy, Codex, Copilot, Cursor, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Qoder, Trae CLI**. 나머지 3개(Antigravity, DevEco Code, Pi)는 이 필드를 받아들이지만 **무시합니다** — 오류도, 경고도 없으며, 구성이 그저 효과를 내지 못합니다.
 
 각 도구의 연결 방식은 다릅니다: Claude Code와 CodeBuddy는 `--mcp-config`와 `--strict-mcp-config`로 받고, Codex는 데몬이 관리하는 `mcp_servers` 블록을 작업별 `$CODEX_HOME/config.toml`에 기록하며, Copilot은 작업별 임시 파일을 `--additional-mcp-config`로 받아 호스트의 `~/.copilot/mcp-config.json` 위에 추가하고, Cursor는 `.cursor/mcp.json`과 작업별 `CURSOR_DATA_DIR` 아래의 프로젝트 approval을 기록합니다. Hermes/Kimi/Kiro CLI/Qoder/Trae CLI는 ACP `mcpServers`로 받습니다. OpenCode는 `OPENCODE_CONFIG_CONTENT` 환경 변수로 인라인 구성을 받고, OpenClaw는 Multica의 작업별 config wrapper를 통해 `mcp.servers`를 받습니다. OpenCode 경로는 프로젝트의 `opencode.json`을 다시 쓰지 않습니다.
 
@@ -122,14 +127,15 @@ ByteDance의 공식 TRAE CLI(`traecli`, Trae IDE와 함께 쓰는 제품이며 �
 | Kimi | `.kimi/skills/` | ✅ 기본 |
 | Kiro CLI | `.kiro/skills/` | ✅ 기본 |
 | OpenCode | `.opencode/skills/` | ✅ 기본 |
+| DevEco Code | `.deveco/skills/` | ✅ 기본 |
 | Pi | `.pi/skills/` | ✅ 기본 |
 | Qoder | `.qoder/skills/` | ✅ 기본 |
 | Trae CLI | `.traecli/skills/` | ✅ 기본 |
 | Antigravity | `.agents/skills/` | ✅ 기본 (Gemini CLI의 워크스페이스 레이아웃을 따름 — [Antigravity 문서](https://antigravity.google/docs/gcli-migration) 참고) |
-| Hermes | `.agent_context/skills/` | ⚠️ 범용 fallback |
+| Hermes | `HERMES_HOME/skills/` (작업별 홈) | ✅ 기본 (작업별로 `~/.hermes/`에서 시드) |
 | OpenClaw | `.agent_context/skills/` | ⚠️ 범용 fallback |
 
-fallback 경로를 쓰는 도구가 실제로 이 디렉터리를 읽는지는 해당 도구 자체의 문서에 따라 달라지며 — 보장되지 않습니다. Hermes / OpenClaw에서 스킬이 적용되지 않는다면, 먼저 이 점을 확인하세요.
+fallback 경로를 쓰는 도구가 실제로 이 디렉터리를 읽는지는 해당 도구 자체의 문서에 따라 달라지며 — 보장되지 않습니다. OpenClaw에서 스킬이 적용되지 않는다면, 먼저 이 점을 확인하세요.
 
 기본 프로젝트 수준 경로에서는 저장소 범위 탐색이 의도된 동작입니다. 체크아웃된 저장소가 이미 해당 디렉터리를 포함하고 있으면, 기반 도구가 커밋된 스킬을 자체적으로 탐색할 수 있습니다. 해당 저장소에서 사용하기 위해 이러한 repo skills를 Multica로 먼저 가져올 필요는 없습니다. Multica는 이러한 저장소 파일을 그대로 둡니다. 워크스페이스 스킬의 자연 디렉터리 이름이 같으면 데몬은 `review-helper-multica` 같은 충돌 없는 형제 디렉터리에 워크스페이스 사본을 씁니다.
 
@@ -140,4 +146,4 @@ fallback 경로를 쓰는 도구가 실제로 이 디렉터리를 읽는지는 �
 - [에이전트 생성 및 구성](/agents-create) — 에이전트에 사용할 도구를 선택하세요
 - [작업](/tasks) — 작업 생명주기와 세션 재개 메커니즘
 - [데몬과 런타임](/daemon-runtimes) — 도구가 실행되는 곳과 Multica에 연결되는 방식
-- [에이전트 런타임 설치](/install-agent-runtime) — 지원되는 14개 도구 각각의 설치 및 인증
+- [에이전트 런타임 설치](/install-agent-runtime) — 지원되는 15개 도구 각각의 설치 및 인증

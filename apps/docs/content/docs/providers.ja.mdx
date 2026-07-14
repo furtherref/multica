@@ -1,11 +1,11 @@
 ---
 title: AI コーディングツール対応表
-description: Multica は 14 個の AI コーディングツールをサポートしています。すべて同じインターフェースを実装していますが、機能の詳細は大きく異なります。
+description: Multica は 15 個の AI コーディングツールをサポートしています。すべて同じインターフェースを実装していますが、機能の詳細は大きく異なります。
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Multica は **14 個の AI コーディングツール**を標準でサポートしています。これらはすべて同じインターフェース（キューへの投入、ディスパッチ、実行、結果の返却）を実装しているため、同じ Multica ボードからどれでも動かすことができます。**しかし機能の詳細は大きく異なります**: セッション再開が実際に動作するか、MCP をサポートするか、スキルファイルがどこに置かれるか、モデルをどう選択するか。このページがその完全な対応表です。
+Multica は **15 個の AI コーディングツール**を標準でサポートしています。これらはすべて同じインターフェース（キューへの投入、ディスパッチ、実行、結果の返却）を実装しているため、同じ Multica ボードからどれでも動かすことができます。**しかし機能の詳細は大きく異なります**: セッション再開が実際に動作するか、MCP をサポートするか、スキルファイルがどこに置かれるか、モデルをどう選択するか。このページがその完全な対応表です。
 
 エージェントを作成するときにツールを選ぶ際のガイダンスは、[エージェントの作成と構成](/agents-create)を参照してください。
 
@@ -19,10 +19,11 @@ Multica は **14 個の AI コーディングツール**を標準でサポート
 | **Codex** | OpenAI | ✅ | ✅ | `$CODEX_HOME/skills/` | 静的 |
 | **Copilot** | GitHub | ✅ | ✅ | `.github/skills/` | 静的（アカウントの権限で決定） |
 | **Cursor** | Anysphere | ✅ | ✅ | `.cursor/skills/` | 動的探索 |
-| **Hermes** | Nous Research | ✅ | ✅ | `.agent_context/skills/`（フォールバック） | 動的探索 |
+| **Hermes** | Nous Research | ✅ | ✅ | `HERMES_HOME/skills/`（タスクごとのホーム） | 動的探索 |
 | **Kimi** | Moonshot | ✅ | ✅ | `.kimi/skills/` | 動的探索 |
 | **Kiro CLI** | Amazon | ✅ | ✅ | `.kiro/skills/` | 動的探索 |
 | **OpenCode** | SST | ✅ | ✅ | `.opencode/skills/` | 動的探索 + variant |
+| **DevEco Code** | Huawei（ファーウェイ） | ✅ | ❌ | `.deveco/skills/` | 動的探索（`deveco models`） |
 | **OpenClaw** | オープンソース | ✅ | ✅ | `.agent_context/skills/`（フォールバック） | エージェントにバインドされ、タスクごとに切り替え不可 |
 | **Pi** | Inflection AI | ✅（セッションがファイルパス） | ❌ | `.pi/skills/` | 動的探索 |
 | **Qoder** | Alibaba | ✅ | ✅ | `.qoder/skills/` | 動的探索 |
@@ -56,7 +57,7 @@ Anysphere が提供し、Cursor エディターに対応する CLI です。**�
 
 ### Hermes
 
-Nous Research が提供します。ACP プロトコルを使用します（Kimi とトランスポート層を共有します）。セッション再開が動作し、MCP 構成は ACP `mcpServers` として渡されます。しかし**スキル注入パスは専用のものではなく汎用のフォールバック**（`.agent_context/skills/`）です — Hermes CLI 自体がこのパスを読み取らない場合、スキルが適用されないことがあります。テストで確認してください。
+Nous Research が提供します。ACP プロトコルを使用します（Kimi とトランスポート層を共有します）。セッション再開が動作し、MCP 構成は ACP `mcpServers` として渡されます。Hermes はスキルを自身のホームディレクトリ（`~/.hermes/skills/`）と設定済みの `skills.external_dirs` からのみ探索し、ワークスペース相対の探索は行いません。そのため、**エージェントにスキルが割り当てられている場合のみ**、Multica は `HERMES_HOME` をユーザーの `~/.hermes/` のタスクごとオーバーレイに向けます。実ホームはシンボリックリンクでミラーされ（auth／シークレットも含むためトークン更新が伝播します）、派生した `config.yaml` が既存スキルを読み取り専用の external root として参照し、割り当てられたスキルだけがその `skills/` ディレクトリに書き込まれて優先されます。グローバルスキルはそのまま機能します。Multica は共有の `~/.hermes/` を直接書き換えず、読み取ってリンクするだけですが、Hermes 自身がミラーされたシンボリックリンク経由で書き込む場合（トークン更新など）は伝播します。`custom_args` の `-p`/`--profile` 指定は尊重されます。オーバーレイはその profile のホームからシードされ、フラグは起動コマンドから消費されるため、オーバーレイを迂回できません。タスクの記憶はタスクごとに隔離されます。新しい `memories/` ディレクトリに加え、派生設定で外部 `memory.provider` バックエンドを無効化するので、ディスク上のメモも共有の Supermemory/Hindsight 的バンクもタスク間で共有されません（マネージドで agent スコープの記憶バックエンドは今後の別課題です）。スキルが割り当てられていない Hermes タスクは実ホームのまま変わりません。なお home のプラットフォーム既定はネイティブ Windows では `%LOCALAPPDATA%\hermes` です。
 
 **Hermes profile を選択する。** 特定の profile で Hermes を起動するには、エージェントの `custom_args` に profile フラグと profile 名を 2 つの独立したエントリとして設定します。たとえば `research` という profile を使う場合:
 
@@ -77,6 +78,10 @@ Amazon が提供します。`kiro-cli acp` を通じて stdio 上で ACP を使�
 ### OpenCode
 
 SST が提供するオープンソースです。利用可能なモデルと model variant を動的に探索します（CLI の構成ファイルをスキャン）。セッション再開が動作し、エージェントの `mcp_config` フィールドを消費します。Multica は `OPENCODE_CONFIG_CONTENT` 環境変数でインライン注入するため、エージェントの MCP server はタスク workdir の `opencode.json`（エージェントまたはユーザーが所有するファイル）を書き換えずに OpenCode に届きます。モデルが variant を公開している場合、Multica はそれをエージェントの thinking selector として表示し、選択値を `opencode run --variant` で OpenCode に渡します。**自分のモデルカタログをカスタマイズしたい、いじるのが好きなユーザーに適しています。**
+
+### DevEco Code
+
+**DevEco Code** は Huawei（ファーウェイ）の HarmonyOS 開発向け独立コーディングエージェント（`deveco` CLI、[gitcode.com/openharmony-sig/deveco-code](https://gitcode.com/openharmony-sig/deveco-code)）です。OpenCode エンジンをベースにしつつ、単体で完成した成熟製品として提供され、独自のモデルカタログと provider（内蔵 `deveco/GLM-5.1`）、Huawei アカウント認証、専用の設定・スキル体系（`~/.config/deveco/` と `.deveco/skills/`）を備えます。Multica は `deveco run --format json` で駆動し、NDJSON イベントストリームをパースします。**セッション再開が動作します**（`--session <id>` 経由）。モデルは `deveco models` から動的に探索され、システムコンテキストはタスクごとの `AGENTS.md` で渡されます。MCP サーバーは DevEco ネイティブの `DEVECO_CONFIG_CONTENT` チャネルで設定します。Multica 側の `mcp_config` 連携は開発中のため、現時点では DevEco エージェントの MCP タブは非表示になります。認証は `deveco auth login`（Huawei アカウント）で行います。
 
 ### OpenClaw
 
@@ -100,7 +105,7 @@ ByteDance 公式の TRAE CLI（`traecli`、Trae IDE と組み合わせて使う�
 
 ## MCP 構成: ツールごとの対応
 
-**14 個のツールのうち、`mcp_config` を実際に消費するのは 12 個です: Claude Code、CodeBuddy、Codex、Copilot、Cursor、Hermes、Kimi、Kiro CLI、OpenCode、OpenClaw、Qoder、Trae CLI**。残りの 2 個（Antigravity、Pi）はこのフィールドを受け取りますが、**無視します** — エラーも警告もなく、構成はただ効果を発揮しません。
+**15 個のツールのうち、`mcp_config` を実際に消費するのは 12 個です: Claude Code、CodeBuddy、Codex、Copilot、Cursor、Hermes、Kimi、Kiro CLI、OpenCode、OpenClaw、Qoder、Trae CLI**。残りの 3 個（Antigravity、DevEco Code、Pi）はこのフィールドを受け取りますが、**無視します** — エラーも警告もなく、構成はただ効果を発揮しません。
 
 接続方式はツールごとに異なります: Claude Code と CodeBuddy は `--mcp-config` と `--strict-mcp-config` で受け取り、Codex は daemon 管理の `mcp_servers` ブロックをタスクごとの `$CODEX_HOME/config.toml` に書き込み、Copilot はタスクごとの一時ファイルを `--additional-mcp-config` で受け取り（ホストの `~/.copilot/mcp-config.json` に追加されます）、Cursor は `.cursor/mcp.json` とタスクごとの `CURSOR_DATA_DIR` 配下のプロジェクト approval を書き込みます。Hermes、Kimi、Kiro CLI、Qoder、Trae CLI は ACP `mcpServers` で受け取ります。OpenCode は `OPENCODE_CONFIG_CONTENT` 環境変数でインライン構成を受け取り、OpenClaw は Multica のタスクごとの config wrapper 経由で `mcp.servers` を受け取ります。OpenCode の経路はプロジェクトの `opencode.json` を書き換えません。
 
@@ -122,14 +127,15 @@ ByteDance 公式の TRAE CLI（`traecli`、Trae IDE と組み合わせて使う�
 | Kimi | `.kimi/skills/` | ✅ ネイティブ |
 | Kiro CLI | `.kiro/skills/` | ✅ ネイティブ |
 | OpenCode | `.opencode/skills/` | ✅ ネイティブ |
+| DevEco Code | `.deveco/skills/` | ✅ ネイティブ |
 | Pi | `.pi/skills/` | ✅ ネイティブ |
 | Qoder | `.qoder/skills/` | ✅ ネイティブ |
 | Trae CLI | `.traecli/skills/` | ✅ ネイティブ |
 | Antigravity | `.agents/skills/` | ✅ ネイティブ（Gemini CLI のワークスペースレイアウトを継承 — [Antigravity ドキュメント](https://antigravity.google/docs/gcli-migration)を参照） |
-| Hermes | `.agent_context/skills/` | ⚠️ 汎用フォールバック |
+| Hermes | `HERMES_HOME/skills/`（タスクごとのホーム） | ✅ ネイティブ（タスクごとに `~/.hermes/` からシード） |
 | OpenClaw | `.agent_context/skills/` | ⚠️ 汎用フォールバック |
 
-フォールバックパスを使うツールが実際にこのディレクトリを読み取るかどうかは、そのツール自体のドキュメントによって異なり、保証されません。Hermes / OpenClaw でスキルが適用されない場合は、まずこの点を確認してください。
+フォールバックパスを使うツールが実際にこのディレクトリを読み取るかどうかは、そのツール自体のドキュメントによって異なり、保証されません。OpenClaw でスキルが適用されない場合は、まずこの点を確認してください。
 
 ネイティブなプロジェクトレベルのパスでは、リポジトリスコープの探索は想定された挙動です。チェックアウトされたリポジトリが対応するディレクトリをすでに含んでいる場合、基盤となるツールはそのコミット済みスキルを自分で検出できます。そのリポジトリで使うためだけに、これらの repo skills を Multica へインポートする必要はありません。Multica はそれらのリポジトリファイルをそのまま保持します。ワークスペーススキルの自然なディレクトリ名が同じ場合、デーモンは `review-helper-multica` のような衝突しない兄弟ディレクトリへワークスペースコピーを書き込みます。
 
@@ -140,4 +146,4 @@ ByteDance 公式の TRAE CLI（`traecli`、Trae IDE と組み合わせて使う�
 - [エージェントの作成と構成](/agents-create) — エージェントに使うツールを選ぶ
 - [タスク](/tasks) — タスクのライフサイクルとセッション再開のメカニズム
 - [デーモンとランタイム](/daemon-runtimes) — ツールが実行される場所と Multica への接続方法
-- [エージェントランタイムのインストール](/install-agent-runtime) — サポートされる 14 個のツールそれぞれのインストールと認証
+- [エージェントランタイムのインストール](/install-agent-runtime) — サポートされる 15 個のツールそれぞれのインストールと認証

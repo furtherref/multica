@@ -63,6 +63,8 @@ beforeEach(() => {
     }),
     downloadUpdate: vi.fn(() => Promise.resolve()),
     installUpdate: vi.fn(() => Promise.resolve()),
+    getPreferences: vi.fn(() => Promise.resolve({ automaticUpdates: true })),
+    setAutomaticUpdates: vi.fn((enabled: boolean) => Promise.resolve({ automaticUpdates: enabled })),
     checkForUpdates: vi.fn(() =>
       Promise.resolve({
         ok: true,
