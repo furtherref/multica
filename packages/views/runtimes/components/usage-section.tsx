@@ -10,7 +10,7 @@ import {
   CurrencyNumberFlow,
 } from "@multica/ui/components/ui/number-flow";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { agentListOptions } from "@multica/core/workspace/queries";
+import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
 import type { RuntimeUsage, AgentRuntime } from "@multica/core/types";
 import {
   runtimeUsageOptions,
@@ -26,13 +26,16 @@ import {
   aggregateByWeek,
   aggregateCostByAgent,
   aggregateCostByModel,
+  aggregateCostByOwner,
   collectUnmappedModels,
   pctChange,
   sliceWindow,
+  NO_OWNER_KEY,
   type CostByKey,
 } from "../utils";
 import { KpiCard } from "./shared";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { ActorAvatar as ActorAvatarBase } from "@multica/ui/components/common/actor-avatar";
 import {
   DailyCostChart,
   DailyTokensChart,
@@ -631,21 +634,29 @@ function CostByBlock({
   tz: string;
 }) {
   const { t } = useT("runtimes");
-  const [tab, setTab] = useState<"agent" | "model">("agent");
-  // Memo dep — same reason as WhenChart: aggregateCostBy{Agent,Model} call
-  // estimateCost, which now reads the override store.
+  const [tab, setTab] = useState<"owner" | "agent" | "model">("owner");
+  // Memo dep — same reason as WhenChart: aggregateCostBy{Owner,Agent,Model}
+  // call estimateCost, which now reads the override store.
   const pricings = useCustomPricingStore((s) => s.pricings);
 
-  // by-agent is server-side aggregation (fetched lazily on tab activation).
+  // by-agent is server-side aggregation feeding both the By-owner and
+  // By-agent tabs (owner is a client-side fold of the same per-agent rows).
   // by-model derives from the daily cache the parent already has — free.
   const { data: byAgentRows = [] } = useQuery({
     ...runtimeUsageByAgentOptions(runtimeId, days, tz),
-    enabled: tab === "agent",
+    enabled: tab === "owner" || tab === "agent",
   });
 
   const wsId = useWorkspaceId();
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  // Owner name/avatar resolution; same cache entry useActorName reads inside
+  // each ActorAvatar, so this adds no extra request.
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
 
+  const byOwner = useMemo(
+    () => aggregateCostByOwner(byAgentRows, agents),
+    [byAgentRows, agents, pricings],
+  );
   const byAgent = useMemo(
     () => aggregateCostByAgent(byAgentRows),
     [byAgentRows, pricings],
@@ -656,24 +667,29 @@ function CostByBlock({
   );
 
   const caption =
-    tab === "agent"
-      ? t(($) => $.usage.cost_by_caption_agent, { count: byAgent.length })
-      : t(($) => $.usage.cost_by_caption_model, { count: byModel.length });
+    tab === "owner"
+      ? t(($) => $.usage.cost_by_caption_owner, { count: byOwner.length })
+      : tab === "agent"
+        ? t(($) => $.usage.cost_by_caption_agent, { count: byAgent.length })
+        : t(($) => $.usage.cost_by_caption_model, { count: byModel.length });
 
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
         <div className="flex items-center gap-3">
           <h4 className="text-sm font-semibold">
-            {tab === "agent"
-              ? t(($) => $.usage.cost_by_title_agent)
-              : t(($) => $.usage.cost_by_title_model)}
+            {tab === "owner"
+              ? t(($) => $.usage.cost_by_title_owner)
+              : tab === "agent"
+                ? t(($) => $.usage.cost_by_title_agent)
+                : t(($) => $.usage.cost_by_title_model)}
           </h4>
           <Segmented
             value={tab}
             onChange={setTab}
             options={
               [
+                { label: t(($) => $.usage.cost_by_tab_owner), value: "owner" },
                 { label: t(($) => $.usage.cost_by_tab_agent), value: "agent" },
                 { label: t(($) => $.usage.cost_by_tab_model), value: "model" },
               ] as const
@@ -683,6 +699,38 @@ function CostByBlock({
         <span className="text-xs text-muted-foreground">{caption}</span>
       </div>
       <div className="pt-4">
+        {tab === "owner" && (
+          <CostByList
+            rows={byOwner}
+            renderKey={(key) => {
+              if (key === NO_OWNER_KEY) {
+                // Ownerless agents + usage from since-deleted agents. No
+                // member behind the row, so no hover card / profile link.
+                return (
+                  <div className="flex min-w-0 items-center gap-2">
+                    <ActorAvatarBase
+                      name={t(($) => $.usage.cost_by_owner_none)}
+                      initials="—"
+                      size="md"
+                    />
+                    <span className="truncate text-sm font-medium text-muted-foreground">
+                      {t(($) => $.usage.cost_by_owner_none)}
+                    </span>
+                  </div>
+                );
+              }
+              const member = members.find((m) => m.user_id === key);
+              return (
+                <div className="flex min-w-0 items-center gap-2">
+                  <ActorAvatar actorType="member" actorId={key} size="md" enableHoverCard />
+                  <span className="cursor-pointer truncate text-sm font-medium">
+                    {member?.name ?? t(($) => $.usage.cost_by_owner_former)}
+                  </span>
+                </div>
+              );
+            }}
+          />
+        )}
         {tab === "agent" && (
           <CostByList
             rows={byAgent}

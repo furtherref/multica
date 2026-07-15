@@ -1,4 +1,5 @@
 import type {
+  Agent,
   AgentRuntime,
   RuntimeUsage,
   RuntimeUsageByAgent,
@@ -176,6 +177,16 @@ const MODEL_PRICING: Record<
   "claude-opus-4-6":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
   "claude-opus-4-7":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
   "claude-opus-4-8":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
+
+  // -- Anthropic: fast mode (research preview). Same model at a per-model
+  //    premium multiplier (fast-mode doc): Opus 4.8 fast is 2x standard,
+  //    Opus 4.7 fast is 6x and deprecated upstream (removal 2026-07-24) but
+  //    historical usage rows still need pricing. Cache multipliers stack on
+  //    the fast base rate (0.1x read / 1.25x write). Copilot reports these
+  //    as dotted ids (`claude-opus-4.8-fast`); the resolver's dot->dash
+  //    canonicalization lands them on these dashed keys. --
+  "claude-opus-4-8-fast": { input: 10, output: 50,  cacheRead: 1.00, cacheWrite: 12.50 },
+  "claude-opus-4-7-fast": { input: 30, output: 150, cacheRead: 3.00, cacheWrite: 37.50 },
 
   // -- Anthropic: pre-4.5 Opus (legacy, still served at original price tier) --
   "claude-opus-4-1":    { input: 15,   output: 75,   cacheRead: 1.50, cacheWrite: 18.75 },
@@ -918,6 +929,35 @@ export function aggregateCostByAgent(rows: RuntimeUsageByAgent[]): CostByKey[] {
     entry.cost += estimateCost(r);
     entry.taskCount += r.task_count;
     map.set(r.agent_id, entry);
+  }
+  return Array.from(map.values()).toSorted((a, b) => b.cost - a.cost);
+}
+
+// Bucket for usage that can't be attributed to a member: agents with no
+// owner_id, plus rows whose agent no longer exists in the workspace agent
+// list (deleted agents — their usage must not vanish from the breakdown).
+export const NO_OWNER_KEY = "__no_owner__";
+
+// Per-(agent, model) rows → per-owner totals. Reuses the by-agent server
+// aggregation and folds agent_id → agent.owner_id client-side, so the tab
+// needs no extra endpoint.
+export function aggregateCostByOwner(
+  rows: RuntimeUsageByAgent[],
+  agents: readonly Pick<Agent, "id" | "owner_id">[],
+): CostByKey[] {
+  const ownerByAgent = new Map<string, string | null>();
+  for (const a of agents) ownerByAgent.set(a.id, a.owner_id);
+  const map = new Map<string, CostByKey>();
+  for (const r of rows) {
+    // `||` (not `??`): listAgents is not zod-parsed, so an empty-string
+    // owner_id must fold into the bucket rather than mint a "" member key.
+    const key = ownerByAgent.get(r.agent_id) || NO_OWNER_KEY;
+    const entry = map.get(key) ?? { key, tokens: 0, cost: 0, taskCount: 0 };
+    entry.tokens +=
+      r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_write_tokens;
+    entry.cost += estimateCost(r);
+    entry.taskCount += r.task_count;
+    map.set(key, entry);
   }
   return Array.from(map.values()).toSorted((a, b) => b.cost - a.cost);
 }

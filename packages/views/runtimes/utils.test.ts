@@ -6,6 +6,8 @@ import {
   addDaysIso,
   aggregateByWeek,
   aggregateCostByModel,
+  aggregateCostByOwner,
+  NO_OWNER_KEY,
   collectUnmappedModels,
   computeCostInWindow,
   estimateCost,
@@ -152,6 +154,47 @@ describe("estimateCost", () => {
       cache_write_tokens: 1_000_000,
     });
     expect(cost).toBeCloseTo(2 + 10 + 0.2 + 2.5, 5);
+  });
+
+  it("prices Copilot-reported Opus 4.8 fast mode at the official 2x premium tier", () => {
+    // GitHub Copilot reports fast-mode usage as `claude-opus-4.8-fast`
+    // (dotted, provider "copilot"). Fast mode is the same model at premium
+    // pricing — $10/$50 per MTok per the official fast-mode doc — with the
+    // standard cache multipliers (0.1x read / 1.25x write) stacking on the
+    // fast base rate.
+    const cost = estimateCost({
+      ...zeroUsage,
+      model: "claude-opus-4.8-fast",
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 1_000_000,
+      cache_write_tokens: 1_000_000,
+    });
+    expect(cost).toBeCloseTo(10 + 50 + 1 + 12.5, 5);
+    expect(isModelPriced("claude-opus-4.8-fast", "copilot")).toBe(true);
+    // Priced bare id → self-resolving, so the by-model row and the unmapped
+    // banner stop showing the provider-qualified `copilot/…` key.
+    expect(
+      collectUnmappedModels([
+        {
+          ...zeroUsage,
+          model: "claude-opus-4.8-fast",
+          provider: "copilot",
+        } as unknown as RuntimeUsage,
+      ]),
+    ).toEqual([]);
+  });
+
+  it("prices Opus 4.7 fast mode at its own 6x premium tier, not the 4.8 rate", () => {
+    // Deprecated upstream (removal 2026-07-24) but historical usage rows
+    // keep flowing through the dashboard; $30/$150 per MTok officially.
+    const cost = estimateCost({
+      ...zeroUsage,
+      model: "claude-opus-4.7-fast",
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+    });
+    expect(cost).toBeCloseTo(30 + 150, 5);
   });
 
   it("prices the provider-prefixed Anthropic form (anthropic/claude-sonnet-4.6)", () => {
@@ -691,6 +734,82 @@ describe("user-supplied custom pricing", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const after = aggregateCostByModel(rows as any);
     expect(after[0]?.cost).toBeCloseTo(2, 5);
+  });
+});
+
+describe("aggregateCostByOwner", () => {
+  // Owner resolution only needs id + owner_id from the agent list; the
+  // aggregate function's param is typed on that Pick so the fixtures stay
+  // honest about what the fold actually reads.
+  const agents = [
+    { id: "a-1", owner_id: "u-1" },
+    { id: "a-2", owner_id: "u-1" },
+    { id: "a-3", owner_id: null },
+  ];
+
+  function byAgentRow(agentId: string, inputTokens: number) {
+    return {
+      agent_id: agentId,
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      ...zeroUsage,
+      input_tokens: inputTokens,
+      task_count: 1,
+    };
+  }
+
+  it("returns an empty list for no rows", () => {
+    expect(aggregateCostByOwner([], agents)).toEqual([]);
+  });
+
+  it("folds rows from multiple agents of the same owner into one row", () => {
+    const rows = [byAgentRow("a-1", 1_000_000), byAgentRow("a-2", 1_000_000)];
+    const byOwner = aggregateCostByOwner(rows, agents);
+    expect(byOwner).toHaveLength(1);
+    expect(byOwner[0]?.key).toBe("u-1");
+    expect(byOwner[0]?.tokens).toBe(2_000_000);
+    // claude-sonnet-4-6 input is $3/M → two 1M-input agents = $6.
+    expect(byOwner[0]?.cost).toBeCloseTo(6, 5);
+    expect(byOwner[0]?.taskCount).toBe(2);
+  });
+
+  it("buckets ownerless agents under NO_OWNER_KEY", () => {
+    const rows = [byAgentRow("a-3", 1_000_000)];
+    const byOwner = aggregateCostByOwner(rows, agents);
+    expect(byOwner).toHaveLength(1);
+    expect(byOwner[0]?.key).toBe(NO_OWNER_KEY);
+    expect(byOwner[0]?.cost).toBeCloseTo(3, 5);
+  });
+
+  it("treats an empty-string owner_id as ownerless", () => {
+    // listAgents is not zod-parsed, so defend against "" arriving where the
+    // Go server would normally send null — it must not mint a phantom
+    // member bucket keyed on "".
+    const rows = [byAgentRow("a-empty", 1_000_000)];
+    const byOwner = aggregateCostByOwner(
+        rows,
+      [{ id: "a-empty", owner_id: "" }],
+    );
+    expect(byOwner).toHaveLength(1);
+    expect(byOwner[0]?.key).toBe(NO_OWNER_KEY);
+  });
+
+  it("buckets rows from deleted agents under NO_OWNER_KEY instead of dropping them", () => {
+    // The server keeps usage rows for agents that were later deleted; those
+    // rows have no match in the workspace agent list and must not vanish
+    // from the cost breakdown (the #4640 lesson upstream).
+    const rows = [byAgentRow("a-gone", 1_000_000), byAgentRow("a-3", 1_000_000)];
+    const byOwner = aggregateCostByOwner(rows, agents);
+    expect(byOwner).toHaveLength(1);
+    expect(byOwner[0]?.key).toBe(NO_OWNER_KEY);
+    expect(byOwner[0]?.tokens).toBe(2_000_000);
+    expect(byOwner[0]?.taskCount).toBe(2);
+  });
+
+  it("sorts owners by cost desc", () => {
+    const rows = [byAgentRow("a-3", 1_000_000), byAgentRow("a-1", 3_000_000)];
+    const byOwner = aggregateCostByOwner(rows, agents);
+    expect(byOwner.map((r) => r.key)).toEqual(["u-1", NO_OWNER_KEY]);
   });
 });
 
