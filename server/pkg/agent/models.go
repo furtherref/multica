@@ -84,10 +84,11 @@ const modelCacheTTL = 60 * time.Second
 // pi, openclaw) it shells out with caching and falls back where the
 // provider has a safe static catalog.
 //
-// For claude, codex, and opencode, the catalog is augmented with per-model
-// thinking-level options discovered from the local CLI. Codex discovery
-// failures fall back to a model + thinking snapshot; providers without a safe
-// fallback leave Thinking nil, which makes the UI hide the thinking picker.
+// For claude, codex, opencode, codebuddy, and copilot, the catalog is
+// augmented with per-model thinking-level options discovered from the local
+// CLI. Codex discovery failures fall back to a model + thinking snapshot;
+// providers without a safe fallback leave Thinking nil, which makes the UI
+// hide the thinking picker.
 //
 // executablePath lets the caller point at a non-default binary; pass
 // "" to use the provider's default name on PATH.
@@ -121,7 +122,12 @@ func ListModels(ctx context.Context, providerType, executablePath string) ([]Mod
 		})
 	case "copilot":
 		return cachedDiscovery(providerType, func() ([]Model, error) {
-			return discoverCopilotModels(ctx, executablePath)
+			models, err := discoverCopilotModels(ctx, executablePath)
+			if err != nil {
+				return nil, err
+			}
+			annotateCopilotThinking(ctx, models, executablePath)
+			return models, nil
 		})
 	case "hermes":
 		return cachedDiscovery(providerType, func() ([]Model, error) {

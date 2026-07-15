@@ -461,12 +461,16 @@ var copilotBlockedArgs = map[string]blockedArgMode{
 	"--no-ask-user":     blockedStandalone,
 	"--resume":          blockedWithValue,  // managed via ExecOptions.ResumeSessionID
 	"--acp":             blockedStandalone, // prevent switching to ACP mode
+	// Both aliases are owned by the per-agent thinking_level picker so a
+	// custom-arg duplicate can't fight the injected value.
+	"--effort":           blockedWithValue,
+	"--reasoning-effort": blockedWithValue,
 }
 
 // buildCopilotArgs assembles the argv for a one-shot copilot invocation.
 //
 //	copilot -p "<prompt>" --output-format json --allow-all --no-ask-user
-//	        [--resume <session-id>] [--model <model>]
+//	        [--model <model>] [--reasoning-effort <level>] [--resume <session-id>]
 func buildCopilotArgs(prompt string, opts ExecOptions, logger *slog.Logger) []string {
 	args := []string{
 		"-p", prompt,
@@ -476,6 +480,12 @@ func buildCopilotArgs(prompt string, opts ExecOptions, logger *slog.Logger) []st
 	}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
+	}
+	if opts.ThinkingLevel != "" {
+		// `--reasoning-effort` rather than the shorter `--effort` alias:
+		// it's the original public spelling, so older CLI versions that
+		// predate the alias still accept it.
+		args = append(args, "--reasoning-effort", opts.ThinkingLevel)
 	}
 	if opts.ResumeSessionID != "" {
 		args = append(args, "--resume", opts.ResumeSessionID)
