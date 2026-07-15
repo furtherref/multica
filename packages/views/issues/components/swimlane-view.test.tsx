@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SwimLaneView } from "./swimlane-view";
+import { IssueContextMenuProvider } from "../actions";
+import { ScrollRestorationProvider } from "../../platform";
 import type { Issue } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -165,6 +167,8 @@ const mockViewState: {
   projectFilters?: string[];
   includeNoProject?: boolean;
   labelFilters?: string[];
+  propertyFilters?: Record<string, string[]>;
+  cardPropertyIds?: string[];
   agentRunningFilter?: boolean;
 } = {
   sortBy: "position",
@@ -185,6 +189,8 @@ const mockViewState: {
   projectFilters: [],
   includeNoProject: false,
   labelFilters: [],
+  propertyFilters: {},
+  cardPropertyIds: [],
   agentRunningFilter: false,
 };
 const mockSetSwimlaneOrder = mockViewState.setSwimlaneOrder as ReturnType<typeof vi.fn>;
@@ -250,6 +256,21 @@ vi.mock("@dnd-kit/utilities", () => ({
   CSS: { Transform: { toString: () => undefined } },
 }));
 
+// Mock react-virtuoso: jsdom has no layout, so the real Virtuoso renders
+// nothing (and throws on its resize plumbing). Render every lane inline so the
+// virtualized swimlane exposes its lanes/cells/cards to the DOM, matching the
+// non-virtualized behavior these tests assert.
+vi.mock("react-virtuoso", () => ({
+  Virtuoso: ({ data, itemContent, components }: any) => (
+    <div data-testid="virtuoso-mock">
+      {(data ?? []).map((item: any, i: number) => (
+        <div key={i}>{itemContent(i, item)}</div>
+      ))}
+      {components?.Footer ? <components.Footer /> : null}
+    </div>
+  ),
+}));
+
 const mockIssues: Issue[] = [
   {
     id: "parent-1",
@@ -271,6 +292,7 @@ const mockIssues: Issue[] = [
     start_date: null,
     due_date: null,
     metadata: {},
+    properties: {},
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   },
@@ -294,6 +316,7 @@ const mockIssues: Issue[] = [
     start_date: null,
     due_date: null,
     metadata: {},
+    properties: {},
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   },
@@ -317,6 +340,7 @@ const mockIssues: Issue[] = [
     start_date: null,
     due_date: null,
     metadata: {},
+    properties: {},
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   },
@@ -329,7 +353,9 @@ function renderWithI18n(ui: React.ReactNode) {
   return render(
     <QueryClientProvider client={qc}>
       <I18nProvider resources={TEST_RESOURCES} locale="en">
-        {ui}
+        {/* Cards delegate their right-click menu to this surface-level
+            provider; IssueSurface mounts it in production. */}
+        <IssueContextMenuProvider>{ui}</IssueContextMenuProvider>
       </I18nProvider>
     </QueryClientProvider>,
   );
@@ -397,6 +423,7 @@ describe("SwimLaneView", () => {
     start_date: null,
     due_date: null,
     metadata: {},
+    properties: {},
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   };
@@ -544,6 +571,7 @@ describe("SwimLaneView", () => {
     start_date: null,
     due_date: null,
     metadata: {},
+    properties: {},
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   };
@@ -842,6 +870,7 @@ describe("SwimLaneView", () => {
       start_date: null,
       due_date: null,
       metadata: {},
+      properties: {},
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
     },
@@ -865,6 +894,7 @@ describe("SwimLaneView", () => {
       start_date: null,
       due_date: null,
       metadata: {},
+      properties: {},
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
     },
@@ -888,6 +918,7 @@ describe("SwimLaneView", () => {
       start_date: null,
       due_date: null,
       metadata: {},
+      properties: {},
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
     },
@@ -911,6 +942,7 @@ describe("SwimLaneView", () => {
       start_date: null,
       due_date: null,
       metadata: {},
+      properties: {},
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
     },
@@ -1367,6 +1399,7 @@ describe("SwimLaneView", () => {
       start_date: null,
       due_date: null,
       metadata: {},
+      properties: {},
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
     };
@@ -1441,6 +1474,7 @@ describe("SwimLaneView", () => {
       start_date: null,
       due_date: null,
       metadata: {},
+      properties: {},
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
     };
@@ -1522,6 +1556,7 @@ describe("SwimLaneView", () => {
       start_date: null,
       due_date: null,
       metadata: {},
+      properties: {},
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
     };
@@ -1616,6 +1651,7 @@ describe("SwimLaneView", () => {
       start_date: null,
       due_date: null,
       metadata: {},
+      properties: {},
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
     };
@@ -1712,6 +1748,7 @@ describe("SwimLaneView", () => {
       start_date: null,
       due_date: null,
       metadata: {},
+      properties: {},
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
     };
@@ -1773,5 +1810,38 @@ describe("SwimLaneView", () => {
     // Give the merge effect a chance to run, then assert the sub-issue stays hidden.
     await act(async () => {});
     expect(screen.queryByText("Batch Sub-issue")).toBeNull();
+  });
+});
+
+describe("SwimLaneView tab-session scroll restoration (MUL-4741)", () => {
+  it("registers the outer scroller for memento capture and restores the saved offset at attach", () => {
+    const adapter = {
+      get: (key: string) =>
+        key === "swimlane" ? { top: 240, height: 2000 } : undefined,
+    };
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    const { container } = render(
+      <QueryClientProvider client={qc}>
+        <I18nProvider resources={TEST_RESOURCES} locale="en">
+          <IssueContextMenuProvider>
+            <ScrollRestorationProvider adapter={adapter}>
+              <SwimLaneView issues={mockIssues} onMoveIssue={vi.fn()} />
+            </ScrollRestorationProvider>
+          </IssueContextMenuProvider>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+
+    const scroller = container.querySelector<HTMLElement>(
+      '[data-tab-scroll-root="swimlane"]',
+    );
+    // Capture side: the coordinator scans [data-tab-scroll-root] — without
+    // the marker, leaving the tab never saves the swimlane offset.
+    expect(scroller).not.toBeNull();
+    // Restore side: the ref-attach assignment applies the saved offset
+    // before first paint (jsdom has no layout, so no clamping applies).
+    expect(scroller!.scrollTop).toBe(240);
   });
 });

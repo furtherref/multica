@@ -47,6 +47,28 @@ var defaultOrigins = []string{
 	"http://localhost:5174", // electron-vite dev (fallback port)
 }
 
+// corsAllowedHeaders must list every header the browser clients send. A header
+// missing here fails the preflight, so the request never reaches the handler at
+// all — the failure looks nothing like "the server ignored my header".
+// X-Client-Capabilities in particular was daemon-only (a Go client, never
+// preflighted) until the web app started advertising chat-draft-restore-v1 on
+// cancel.
+var corsAllowedHeaders = []string{
+	"Accept",
+	"Authorization",
+	"Content-Type",
+	"X-Workspace-ID",
+	"X-Workspace-Slug",
+	"X-Request-ID",
+	"X-Agent-ID",
+	"X-Task-ID",
+	"X-CSRF-Token",
+	"X-Client-Platform",
+	"X-Client-Version",
+	"X-Client-OS",
+	"X-Client-Capabilities",
+}
+
 func allowedOrigins() []string {
 	raw := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
 	if raw == "" {
@@ -106,6 +128,20 @@ func parseTrustedProxies(raw string) []netip.Prefix {
 		out = append(out, p)
 	}
 	return out
+}
+
+// normalizeServerVersion maps the unstamped "dev" default (main.go's
+// `version` var, unchanged when the binary wasn't built with
+// -X main.version=<tag>) to an empty string. handler.Config.ServerVersion
+// feeds /api/config's server_version field with omitempty, so an empty
+// string hides the Help popover's version row instead of rendering
+// "Server version dev" for a local `go build`/`go run` or a self-hosted
+// `docker build` without --build-arg VERSION.
+func normalizeServerVersion(v string) string {
+	if v == "dev" {
+		return ""
+	}
+	return v
 }
 
 // NewRouter creates the fully-configured Chi router with all middleware and routes.
@@ -184,6 +220,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		LLMAPIKey:                         strings.TrimSpace(os.Getenv("MULTICA_LLM_API_KEY")),
 		LLMBaseURL:                        strings.TrimSpace(os.Getenv("MULTICA_LLM_BASE_URL")),
 		LLMDefaultModel:                   strings.TrimSpace(os.Getenv("MULTICA_LLM_DEFAULT_MODEL")),
+		ServerVersion:                     normalizeServerVersion(version),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	h.Metrics = opts.BusinessMetrics
@@ -639,7 +676,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   origins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Workspace-ID", "X-Workspace-Slug", "X-Request-ID", "X-Agent-ID", "X-Task-ID", "X-CSRF-Token", "X-Client-Platform", "X-Client-Version", "X-Client-OS"},
+		AllowedHeaders:   corsAllowedHeaders,
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
@@ -767,6 +804,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
 		r.Post("/tasks/{taskId}/activity", h.ReportTaskActivity)
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
+		r.Post("/tasks/{taskId}/cancel-ack", h.AckTaskCancelled)
 
 		r.Get("/issues/{issueId}/gc-check", h.GetIssueGCCheck)
 		r.Get("/chat-sessions/{sessionId}/gc-check", h.GetChatSessionGCCheck)
@@ -1042,12 +1080,24 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/metadata", h.ListIssueMetadata)
 					r.Put("/metadata/{key}", h.SetIssueMetadataKey)
 					r.Delete("/metadata/{key}", h.DeleteIssueMetadataKey)
+					r.Put("/properties/{propertyId}", h.SetIssueProperty)
+					r.Delete("/properties/{propertyId}", h.DeleteIssueProperty)
 					r.Get("/pull-requests", h.ListPullRequestsForIssue)
 				})
 			})
 
 			// Task messages (user-facing, not daemon auth)
 			r.Get("/api/tasks/{taskId}/messages", h.ListTaskMessagesByUser)
+
+			// Custom issue properties (definitions; values live under /api/issues/{id}/properties)
+			r.Route("/api/properties", func(r chi.Router) {
+				r.Get("/", h.ListProperties)
+				r.Post("/", h.CreateProperty)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", h.GetProperty)
+					r.Patch("/", h.UpdateProperty)
+				})
+			})
 
 			// Labels
 			r.Route("/api/labels", func(r chi.Router) {
@@ -1305,6 +1355,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/messages/page", h.ListChatMessagesPage)
 					r.Get("/pending-task", h.GetPendingChatTask)
 					r.Post("/read", h.MarkChatSessionRead)
+					// Deferred-cancellation draft restores (#5219):
+					// creator-only fetch + idempotent consume.
+					r.Get("/draft-restores", h.ListChatDraftRestores)
+					r.Delete("/draft-restores/{restoreId}", h.ConsumeChatDraftRestore)
 				})
 			})
 			r.Get("/api/chat/pending-tasks", h.ListPendingChatTasks)
@@ -1341,6 +1395,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Notification preferences
 			r.Route("/api/notification-preferences", func(r chi.Router) {
 				r.Get("/", h.GetNotificationPreferences)
+				r.Patch("/", h.PatchNotificationPreferences)
 				r.Put("/", h.UpdateNotificationPreferences)
 			})
 		})

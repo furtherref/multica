@@ -41,6 +41,11 @@ const {
   mockGetPersistedCreateMode,
   mockToastSuccess,
   mockClipboardWrite,
+  mockTimeline,
+  mockCommentCollapseAll,
+  mockCommentExpandAll,
+  mockResolvedCollapseAll,
+  mockResolvedExpandAll,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
   mockSearchIssues: vi.fn(),
@@ -81,6 +86,11 @@ const {
   mockGetPersistedCreateMode: vi.fn(),
   mockToastSuccess: vi.fn(),
   mockClipboardWrite: vi.fn(() => Promise.resolve()),
+  mockTimeline: { current: [] as Array<Record<string, unknown>> },
+  mockCommentCollapseAll: vi.fn(),
+  mockCommentExpandAll: vi.fn(),
+  mockResolvedCollapseAll: vi.fn(),
+  mockResolvedExpandAll: vi.fn(),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -134,6 +144,18 @@ vi.mock("@multica/core/issues/stores", () => {
         wsId ? (state.byWorkspace[wsId] ?? EMPTY) : EMPTY,
     openCreateIssueWithPreference: (data?: Record<string, unknown> | null) =>
       mockOpenModal("quick-create-issue", data ?? null),
+    useCommentCollapseStore: Object.assign(vi.fn(), {
+      getState: () => ({
+        collapseAll: mockCommentCollapseAll,
+        expandAll: mockCommentExpandAll,
+      }),
+    }),
+    useResolvedExpandStore: Object.assign(vi.fn(), {
+      getState: () => ({
+        collapseAll: mockResolvedCollapseAll,
+        expandAll: mockResolvedExpandAll,
+      }),
+    }),
   };
 });
 
@@ -163,6 +185,9 @@ vi.mock("@multica/core/paths", () => ({
 vi.mock("@multica/core/issues/queries", () => ({
   issueDetailOptions: (_wsId: string, id: string) => ({
     queryKey: ["issues", "ws-test", "detail", id],
+  }),
+  issueTimelineOptions: (id: string) => ({
+    queryKey: ["issues", "timeline", id],
   }),
 }));
 
@@ -204,6 +229,12 @@ vi.mock("@tanstack/react-query", () => ({
   },
   useQueries: (opts: { queries: Array<{ queryKey: readonly unknown[] }> }) =>
     opts.queries.map((q) => ({ data: resolveIssue(q.queryKey) })),
+  useQueryClient: () => ({
+    ensureQueryData: (opts: { queryKey: readonly unknown[] }) =>
+      opts.queryKey[1] === "timeline"
+        ? Promise.resolve(mockTimeline.current)
+        : Promise.reject(new Error(`unexpected key ${String(opts.queryKey)}`)),
+  }),
 }));
 
 vi.mock("../navigation", () => ({
@@ -240,6 +271,11 @@ describe("SearchCommand", () => {
     mockGetPersistedCreateMode.mockReset().mockReturnValue("manual");
     mockToastSuccess.mockReset();
     mockClipboardWrite.mockReset().mockResolvedValue(undefined);
+    mockTimeline.current = [];
+    mockCommentCollapseAll.mockReset();
+    mockCommentExpandAll.mockReset();
+    mockResolvedCollapseAll.mockReset();
+    mockResolvedExpandAll.mockReset();
 
     // cmdk calls scrollIntoView on the first selected item, which jsdom doesn't implement
     Element.prototype.scrollIntoView = vi.fn();
@@ -457,6 +493,81 @@ describe("SearchCommand", () => {
     expect(mockToastSuccess).toHaveBeenCalledWith("Copied MUL-42");
 
     writeSpy.mockRestore();
+  });
+
+  it("hides fold/unfold-all-comments commands off issue detail routes", async () => {
+    const user = userEvent.setup();
+    mockPathname.current = "/ws-test/projects";
+    renderSearch();
+
+    const input = screen.getByPlaceholderText("Type a command or search...");
+    await user.type(input, "fold");
+
+    expect(screen.queryByText("Fold All Comments")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unfold All Comments")).not.toBeInTheDocument();
+  });
+
+  it("folds all comments on the current issue, including expanded resolved threads", async () => {
+    const user = userEvent.setup();
+    mockPathname.current = "/ws-test/issues/issue-1";
+    mockAllIssues.current = [
+      { id: "issue-1", identifier: "MUL-42", title: "Demo", status: "todo" },
+    ];
+    mockTimeline.current = [
+      { type: "activity", id: "act-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T00:00:00Z", action: "status_changed" },
+      { type: "comment", id: "root-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T01:00:00Z", parent_id: null },
+      { type: "comment", id: "reply-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T02:00:00Z", parent_id: "root-1" },
+      { type: "comment", id: "root-2", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T03:00:00Z", parent_id: null, resolved_at: "2026-01-02T00:00:00Z" },
+    ];
+    renderSearch();
+
+    const input = screen.getByPlaceholderText("Type a command or search...");
+    await user.type(input, "fold");
+
+    const foldItem = await screen.findByText(
+      (_, el) => el?.textContent === "Fold All Comments" && el?.tagName === "SPAN",
+    );
+    await user.click(foldItem);
+
+    await waitFor(() => {
+      // Root comments only — replies fold with their thread, activities are not comments.
+      expect(mockCommentCollapseAll).toHaveBeenCalledWith("issue-1", ["root-1", "root-2"]);
+    });
+    expect(mockResolvedCollapseAll).toHaveBeenCalledWith("issue-1");
+    expect(mockCommentExpandAll).not.toHaveBeenCalled();
+    expect(useSearchStore.getState().open).toBe(false);
+  });
+
+  it("unfolds all comments and expands resolved threads", async () => {
+    const user = userEvent.setup();
+    mockPathname.current = "/ws-test/issues/issue-1";
+    mockAllIssues.current = [
+      { id: "issue-1", identifier: "MUL-42", title: "Demo", status: "todo" },
+    ];
+    mockTimeline.current = [
+      { type: "comment", id: "root-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T01:00:00Z", parent_id: null },
+      { type: "comment", id: "root-2", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T03:00:00Z", parent_id: null, resolved_at: "2026-01-02T00:00:00Z" },
+      // root-3 is reply-resolved: the resolution lives on the reply.
+      { type: "comment", id: "root-3", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T04:00:00Z", parent_id: null },
+      { type: "comment", id: "reply-3", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T05:00:00Z", parent_id: "root-3", resolved_at: "2026-01-02T01:00:00Z" },
+    ];
+    renderSearch();
+
+    const input = screen.getByPlaceholderText("Type a command or search...");
+    await user.type(input, "unfold");
+
+    const unfoldItem = await screen.findByText(
+      (_, el) => el?.textContent === "Unfold All Comments" && el?.tagName === "SPAN",
+    );
+    await user.click(unfoldItem);
+
+    await waitFor(() => {
+      expect(mockCommentExpandAll).toHaveBeenCalledWith("issue-1");
+    });
+    // Only threads carrying a resolution get seeded into the expand set.
+    expect(mockResolvedExpandAll).toHaveBeenCalledWith("issue-1", ["root-2", "root-3"]);
+    expect(mockCommentCollapseAll).not.toHaveBeenCalled();
+    expect(useSearchStore.getState().open).toBe(false);
   });
 
   it("filters theme commands by query keywords", async () => {

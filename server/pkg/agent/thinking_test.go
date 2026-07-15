@@ -458,6 +458,15 @@ func TestIsKnownThinkingValue(t *testing.T) {
 		{"copilot", "bad value", false},
 		{"hermes", "", true},
 		{"hermes", "low", false}, // hermes has no thinking concept
+		{"grok", "", true},
+		{"grok", "low", true},
+		{"grok", "medium", true},
+		{"grok", "high", true},
+		{"grok", "none", false},
+		{"grok", "minimal", false},
+		{"grok", "xhigh", false},
+		{"grok", "max", false},
+		{"grok", "bogus", false},
 	}
 	for _, tc := range tests {
 		if got := IsKnownThinkingValue(tc.provider, tc.value); got != tc.want {

@@ -1,11 +1,11 @@
 ---
 title: AI 코딩 도구 대조표
-description: Multica는 15개의 AI 코딩 도구를 지원합니다. 모두 동일한 인터페이스를 구현하지만, 기능 세부사항은 크게 다릅니다.
+description: Multica는 16개의 AI 코딩 도구를 지원합니다. 모두 동일한 인터페이스를 구현하지만, 기능 세부사항은 크게 다릅니다.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Multica는 **15개의 AI 코딩 도구**를 기본 지원합니다. 이들은 모두 동일한 인터페이스(대기열 적재, 디스패치, 실행, 결과 반환)를 구현하므로, 같은 Multica 보드에서 어느 것이든 구동할 수 있습니다. **하지만 기능 세부사항은 크게 다릅니다**: 세션 재개가 실제로 동작하는지, MCP를 지원하는지, 스킬 파일이 어디에 위치하는지, 모델을 어떻게 선택하는지. 이 페이지가 전체 대조표입니다.
+Multica는 **16개의 AI 코딩 도구**를 기본 지원합니다. 이들은 모두 동일한 인터페이스(대기열 적재, 디스패치, 실행, 결과 반환)를 구현하므로, 같은 Multica 보드에서 어느 것이든 구동할 수 있습니다. **하지만 기능 세부사항은 크게 다릅니다**: 세션 재개가 실제로 동작하는지, MCP를 지원하는지, 스킬 파일이 어디에 위치하는지, 모델을 어떻게 선택하는지. 이 페이지가 전체 대조표입니다.
 
 에이전트를 생성할 때 도구를 고르는 방법은 [에이전트 생성 및 구성](/agents-create)을 참고하세요.
 
@@ -15,7 +15,7 @@ Multica는 **15개의 AI 코딩 도구**를 기본 지원합니다. 이들은 �
 |---|---|---|---|---|---|
 | **Antigravity** | Google | ✅ (`--conversation <id>`) | ❌ | `.agents/skills/` | 동적 탐색(`agy models`) |
 | **Claude Code** | Anthropic | ✅ | ✅ | `.claude/skills/` | 정적 + flag |
-| **CodeBuddy** | Tencent | ✅ | ✅ | `.claude/skills/` | 동적 탐색 |
+| **CodeBuddy** | Tencent | ✅ | ✅ | `.codebuddy/skills/` | 동적 탐색 |
 | **Codex** | OpenAI | ✅ | ✅ | `$CODEX_HOME/skills/` | 정적 |
 | **Copilot** | GitHub | ✅ | ✅ | `.github/skills/` | 정적 (계정 권한으로 결정) |
 | **Cursor** | Anysphere | ✅ | ✅ | `.cursor/skills/` | 동적 탐색 |
@@ -28,6 +28,7 @@ Multica는 **15개의 AI 코딩 도구**를 기본 지원합니다. 이들은 �
 | **Pi** | Inflection AI | ✅ (세션이 파일 경로) | ❌ | `.pi/skills/` | 동적 탐색 |
 | **Qoder** | Alibaba | ✅ | ✅ | `.qoder/skills/` | 동적 탐색 |
 | **Trae CLI** | ByteDance | ✅ (ACP `session/load`) | ✅ | `.traecli/skills/` | 동적 탐색 |
+| **Grok** | xAI | ✅ (ACP `session/load`) | ✅ | `.grok/skills/` | 동적 탐색(ACP `session/new`) |
 
 ## 각 도구의 용도
 
@@ -41,7 +42,7 @@ Anthropic에서 제공합니다. **신규 사용자에게 첫 번째 선택지**
 
 ### CodeBuddy
 
-Tencent에서 제공합니다. Claude Code 호환 CLI 에이전트입니다 — Multica는 Claude Code와 동일한 stream-json 프로토콜로 구동하므로 세션 재개가 동작하고(`--resume` 경유), MCP 구성은 `--mcp-config`로 전달되며, 스킬은 Claude Code의 `.claude/skills/` 레이아웃을 사용합니다. 모델은 동적으로 탐색됩니다.
+Tencent에서 제공합니다. Claude Code 호환 CLI 에이전트입니다 — Multica는 Claude Code와 동일한 stream-json 프로토콜로 구동하므로 세션 재개가 동작하고(`--resume` 경유), MCP 구성은 `--mcp-config`로 전달됩니다. CodeBuddy는 Claude의 디렉터리를 재사용하지 않고 자체 설정 디렉터리를 사용하므로, 스킬은 `.codebuddy/skills/`에 배치되고 런타임 브리핑은 `CODEBUDDY.md`에 기록됩니다. 모델은 동적으로 탐색됩니다.
 
 ### Codex
 
@@ -99,15 +100,19 @@ Alibaba에서 제공합니다. 에이전트형 코딩 CLI입니다. stdio 위에
 
 ByteDance의 공식 TRAE CLI(`traecli`, Trae IDE와 함께 쓰는 제품이며 오픈소스 `bytedance/trae-agent`가 아닙니다)입니다. ACP 네이티브라서 Multica는 `traecli acp serve --yolo`로 stdio 위에서 구동하며, Kiro 및 Qoder와 같은 전송 계층을 사용합니다. 세션 재개는 ACP `session/load`로 동작하고, MCP 구성은 ACP `mcpServers`로 전달되며, 모델은 동적으로 탐색되어 작업별로 `session/set_model`로 전환됩니다. 스킬은 `.traecli/skills/`로 복사됩니다.
 
+### Grok
+
+xAI의 Grok Build CLI(`grok`)입니다. Multica는 `grok --no-auto-update agent --always-approve stdio`로 ACP에 연결합니다. `initialize` 응답 후 CLI가 광고한 방식 중 `xai.api_key`(`XAI_API_KEY`가 설정된 경우 우선) 또는 `cached_token`을 선택하고, `authenticate`가 성공한 뒤에만 세션을 만들거나 불러옵니다. 사용할 수 있는 방식이 없으면 명시적으로 실패합니다. 세션 재개는 ACP `session/load`, 모델은 `session/new`에서 동적으로 탐색하고 `session/set_model`로 전환합니다. `grok-4.5`의 reasoning effort는 공식 지원 값인 `low`, `medium`, `high`만 제공합니다. MCP 구성은 ACP `mcpServers`로 전달됩니다. 스킬은 `.grok/skills/`에 기록되며, 사용자 스킬은 `$GROK_HOME/skills/`(기본값 `~/.grok/skills/`)과 공용 `~/.agents/skills/`에서 탐색됩니다.
+
 ## 세션 재개: 실제로 지원하는 도구
 
 세션 재개 메커니즘은 [작업](/tasks#can-a-task-continue-from-the-previous-context)에서 다룹니다. **지원되는 모든 도구가 세션을 재개합니다** — 재개 id를 전달하면 작업이 이전 컨텍스트에서 이어집니다. 유일한 예외는 Pi로, 재개 id가 문자열 ID가 아니라 디스크상의 세션 파일 경로입니다(위의 [Pi](#pi) 참고).
 
 ## MCP 구성: 도구별 지원
 
-**15개 도구 중 `mcp_config`를 실제로 소비하는 것은 12개입니다: Claude Code, CodeBuddy, Codex, Copilot, Cursor, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Qoder, Trae CLI**. 나머지 3개(Antigravity, DevEco Code, Pi)는 이 필드를 받아들이지만 **무시합니다** — 오류도, 경고도 없으며, 구성이 그저 효과를 내지 못합니다.
+**16개 도구 중 `mcp_config`를 실제로 소비하는 것은 13개입니다: Claude Code, CodeBuddy, Codex, Copilot, Cursor, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Qoder, Trae CLI, Grok**. 나머지 3개(Antigravity, DevEco Code, Pi)는 이 필드를 받아들이지만 **무시합니다** — 오류도, 경고도 없으며, 구성이 그저 효과를 내지 못합니다.
 
-각 도구의 연결 방식은 다릅니다: Claude Code와 CodeBuddy는 `--mcp-config`와 `--strict-mcp-config`로 받고, Codex는 데몬이 관리하는 `mcp_servers` 블록을 작업별 `$CODEX_HOME/config.toml`에 기록하며, Copilot은 작업별 임시 파일을 `--additional-mcp-config`로 받아 호스트의 `~/.copilot/mcp-config.json` 위에 추가하고, Cursor는 `.cursor/mcp.json`과 작업별 `CURSOR_DATA_DIR` 아래의 프로젝트 approval을 기록합니다. Hermes/Kimi/Kiro CLI/Qoder/Trae CLI는 ACP `mcpServers`로 받습니다. OpenCode는 `OPENCODE_CONFIG_CONTENT` 환경 변수로 인라인 구성을 받고, OpenClaw는 Multica의 작업별 config wrapper를 통해 `mcp.servers`를 받습니다. OpenCode 경로는 프로젝트의 `opencode.json`을 다시 쓰지 않습니다.
+각 도구의 연결 방식은 다릅니다: Claude Code와 CodeBuddy는 `--mcp-config`와 `--strict-mcp-config`로 받고, Codex는 데몬이 관리하는 `mcp_servers` 블록을 작업별 `$CODEX_HOME/config.toml`에 기록하며, Copilot은 작업별 임시 파일을 `--additional-mcp-config`로 받아 호스트의 `~/.copilot/mcp-config.json` 위에 추가하고, Cursor는 `.cursor/mcp.json`과 작업별 `CURSOR_DATA_DIR` 아래의 프로젝트 approval을 기록합니다. Hermes/Kimi/Kiro CLI/Qoder/Trae CLI/Grok은 ACP `mcpServers`로 받습니다. OpenCode는 `OPENCODE_CONFIG_CONTENT` 환경 변수로 인라인 구성을 받고, OpenClaw는 Multica의 작업별 config wrapper를 통해 `mcp.servers`를 받습니다. OpenCode 경로는 프로젝트의 `opencode.json`을 다시 쓰지 않습니다.
 
 <Callout type="warning">
 에이전트 구성에서 `mcp_config`를 설정했더라도 MCP 열에 ✅가 없는 도구를 선택하면, MCP 서버가 해당 에이전트에 **아무런 효과**도 미치지 않습니다. MCP 연동은 도구별로 구현됩니다.
@@ -120,7 +125,7 @@ ByteDance의 공식 TRAE CLI(`traecli`, Trae IDE와 함께 쓰는 제품이며 �
 | 도구 | 경로 | 기본 탐색 여부 |
 |---|---|---|
 | Claude Code | `.claude/skills/` | ✅ 기본 |
-| CodeBuddy | `.claude/skills/` | ✅ 기본 |
+| CodeBuddy | `.codebuddy/skills/` | ✅ 기본 |
 | Codex | `$CODEX_HOME/skills/` | ✅ 기본 |
 | Copilot | `.github/skills/` | ✅ 기본 |
 | Cursor | `.cursor/skills/` | ✅ 기본 |
@@ -131,6 +136,7 @@ ByteDance의 공식 TRAE CLI(`traecli`, Trae IDE와 함께 쓰는 제품이며 �
 | Pi | `.pi/skills/` | ✅ 기본 |
 | Qoder | `.qoder/skills/` | ✅ 기본 |
 | Trae CLI | `.traecli/skills/` | ✅ 기본 |
+| Grok | `.grok/skills/` | ✅ 기본 |
 | Antigravity | `.agents/skills/` | ✅ 기본 (Gemini CLI의 워크스페이스 레이아웃을 따름 — [Antigravity 문서](https://antigravity.google/docs/gcli-migration) 참고) |
 | Hermes | `HERMES_HOME/skills/` (작업별 홈) | ✅ 기본 (작업별로 `~/.hermes/`에서 시드) |
 | OpenClaw | `.agent_context/skills/` | ⚠️ 범용 fallback |
@@ -146,4 +152,4 @@ fallback 경로를 쓰는 도구가 실제로 이 디렉터리를 읽는지는 �
 - [에이전트 생성 및 구성](/agents-create) — 에이전트에 사용할 도구를 선택하세요
 - [작업](/tasks) — 작업 생명주기와 세션 재개 메커니즘
 - [데몬과 런타임](/daemon-runtimes) — 도구가 실행되는 곳과 Multica에 연결되는 방식
-- [에이전트 런타임 설치](/install-agent-runtime) — 지원되는 15개 도구 각각의 설치 및 인증
+- [에이전트 런타임 설치](/install-agent-runtime) — 지원되는 16개 도구 각각의 설치 및 인증
