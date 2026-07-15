@@ -11,8 +11,9 @@ import (
 )
 
 // thinking.go discovers per-model reasoning/effort catalogs for the
-// claude, codex, and opencode backends so the daemon can advertise them to the
-// UI without hard-coding (and getting wrong) what's installed locally.
+// claude, codex, opencode, codebuddy, and copilot backends so the daemon can
+// advertise them to the UI without hard-coding (and getting wrong) what's
+// installed locally.
 //
 // MUL-2339: we deliberately do not flatten Claude's `low|medium|high|
 // xhigh|max` and Codex's `none|minimal|low|medium|high|xhigh|max|ultra`
@@ -542,6 +543,146 @@ func parseCodebuddyEffortHelp(helpText string) []string {
 	return out
 }
 
+// ── Copilot ──────────────────────────────────────────────────────────
+//
+// GitHub Copilot CLI exposes `--effort, --reasoning-effort <level>`;
+// `copilot --help` prints the accepted tokens as a quoted, line-wrapped
+// `(choices: ...)` list. We parse that so the daemon advertises exactly
+// what the installed CLI accepts — the vocabulary tracks CLI releases
+// (1.0.60 added `max` for Anthropic models), so no fixed server enum.
+// All models get the same catalog: the ACP `availableModels` payload
+// carries no per-model reasoning data, and the CLI filters unsupported
+// levels per model itself (its own picker does since 1.0.64), so
+// per-model projection is left to the CLI.
+
+// copilotEffortRe matches the help line emitted by `copilot --help`:
+//
+//	--effort, --reasoning-effort <level>  Set the reasoning effort level (choices:
+//	                                      "none", "minimal", "low", "medium",
+//	                                      "high", "xhigh", "max")
+//
+// Anchored on `--reasoning-effort` (the exact flag the daemon injects)
+// and on `(choices:` so a paren in the description text can't shift the
+// capture. `[^)]+` spans the newlines the help formatter wraps in.
+var copilotEffortRe = regexp.MustCompile(`--reasoning-effort\s*(?:<[^>]+>)?[^(]*\(choices:\s*([^)]+)\)`)
+
+var copilotEffortLabel = map[string]string{
+	"none":    "None",
+	"minimal": "Minimal",
+	"low":     "Low",
+	"medium":  "Medium",
+	"high":    "High",
+	"xhigh":   "Extra high",
+	"max":     "Max",
+}
+
+// copilotStaticEffortFallback is the conservative subset used when
+// `copilot --help` can't be captured at all (binary missing or broken).
+// These three tokens have been in the choices list since the flag
+// shipped.
+var copilotStaticEffortFallback = []string{"low", "medium", "high"}
+
+// copilotStaticEffortFullSuperset is what `copilot --help` listed on
+// 1.0.70. Used when `--reasoning-effort` is advertised but the choices
+// list didn't parse — we'd rather over-offer and let the CLI reject
+// than artificially block valid combinations.
+var copilotStaticEffortFullSuperset = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// copilotThinkingWildcard keys the shared catalog entry in the thinking
+// cache. Copilot's model list is per-account and comes from live ACP
+// discovery, so caching per model ID could leave a newly appearing
+// model unannotated for a full TTL; the catalog is uniform anyway.
+const copilotThinkingWildcard = "*"
+
+func annotateCopilotThinking(ctx context.Context, models []Model, executablePath string) {
+	if executablePath == "" {
+		executablePath = "copilot"
+	}
+	version, _ := DetectVersion(ctx, executablePath)
+	key := thinkingCacheKey{provider: "copilot", executablePath: executablePath, cliVersion: version}
+	cached, ok := thinkingCacheGet(key)
+	if !ok {
+		cached = map[string]*ModelThinking{}
+		if levels := copilotThinkingLevels(ctx, executablePath); len(levels) > 0 {
+			// DefaultLevel stays empty: Copilot's effective default varies
+			// per model and plan, and an empty value makes the UI render
+			// the generic "Default" option.
+			cached[copilotThinkingWildcard] = &ModelThinking{SupportedLevels: levels}
+		}
+		thinkingCachePut(key, cached)
+	}
+	t := cached[copilotThinkingWildcard]
+	if t == nil {
+		return
+	}
+	for i := range models {
+		models[i].Thinking = t
+	}
+}
+
+func copilotThinkingLevels(ctx context.Context, executablePath string) []ThinkingLevel {
+	values := copilotEffortSuperset(ctx, executablePath)
+	out := make([]ThinkingLevel, 0, len(values))
+	for _, value := range values {
+		label, ok := copilotEffortLabel[value]
+		if !ok {
+			// New value the daemon hasn't been taught yet — surface it
+			// raw so power users can still pick it.
+			label = strings.Title(value) //nolint:staticcheck
+		}
+		out = append(out, ThinkingLevel{Value: value, Label: label})
+	}
+	return out
+}
+
+func copilotEffortSuperset(ctx context.Context, executablePath string) []string {
+	cmd := exec.CommandContext(ctx, executablePath, "--help")
+	hideAgentWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return append([]string(nil), copilotStaticEffortFallback...)
+	}
+	return copilotEffortLevelsFromHelp(string(out))
+}
+
+// copilotEffortLevelsFromHelp decides the effort superset from a
+// successfully captured `copilot --help`. Same three cases as the
+// claude variant: parsed list → verbatim; flag advertised but list
+// unparseable → full-superset fallback; flag absent → no levels, so a
+// pre-flag CLI never gets `--reasoning-effort` injected (which it would
+// reject, hard-failing every task with a persisted thinking_level).
+func copilotEffortLevelsFromHelp(helpText string) []string {
+	parsed := parseCopilotEffortHelp(helpText)
+	if len(parsed) > 0 {
+		return parsed
+	}
+	if strings.Contains(helpText, "--reasoning-effort") {
+		return append([]string(nil), copilotStaticEffortFullSuperset...)
+	}
+	return nil
+}
+
+// parseCopilotEffortHelp extracts the choices list from the
+// `--reasoning-effort` help line. Tokens are quoted (`"low"`) in the
+// CLI's help output, so quotes are stripped after the comma split.
+// Returns nil if the line is missing or captures nothing so callers can
+// pick a fallback path.
+func parseCopilotEffortHelp(helpText string) []string {
+	match := copilotEffortRe.FindStringSubmatch(helpText)
+	if len(match) < 2 {
+		return nil
+	}
+	var out []string
+	for _, raw := range strings.Split(match[1], ",") {
+		token := strings.Trim(strings.TrimSpace(raw), `"`)
+		if token == "" {
+			continue
+		}
+		out = append(out, token)
+	}
+	return out
+}
+
 // ── Shared validation ────────────────────────────────────────────────
 
 // ValidateThinkingLevel reports whether `value` is in the supported
@@ -640,9 +781,9 @@ func anyModelSupportsThinkingValue(models []Model, value string) bool {
 }
 
 // providerThinkingEnums is the server-side accept-list for runtimes with a
-// fixed reasoning-effort vocabulary. Codex and OpenCode are deliberately
-// absent because their values come from daemon-local model catalogs, which can
-// gain new tokens without a Multica release.
+// fixed reasoning-effort vocabulary. Codex, OpenCode, and Copilot are
+// deliberately absent because their values come from daemon-local model
+// catalogs, which can gain new tokens without a Multica release.
 //
 // The server doesn't have local CLI binaries, so it cannot do per-model
 // discovery the way the daemon can. Fixed-catalog providers use this enum;
@@ -671,8 +812,9 @@ var providerThinkingEnums = map[string]map[string]bool{
 // IsKnownThinkingValue reports whether `value` is a recognised effort
 // token for the given provider. Empty string is always accepted (means
 // "use runtime default"). Unknown providers (no thinking concept) accept
-// only empty; Codex and OpenCode accept well-formed tokens here because their
-// daemon-local catalogs perform the exact per-model check before execution.
+// only empty; Codex, OpenCode, and Copilot accept well-formed tokens here
+// because their daemon-local catalogs perform the exact check before
+// execution.
 //
 // This is the cheap synchronous gate the server uses on CreateAgent /
 // UpdateAgent. Unlike ValidateThinkingLevel it does NOT consult the live
@@ -681,7 +823,7 @@ func IsKnownThinkingValue(providerType, value string) bool {
 	if value == "" {
 		return true
 	}
-	if providerType == "codex" || providerType == "opencode" {
+	if providerType == "codex" || providerType == "opencode" || providerType == "copilot" {
 		return isValidDynamicThinkingValue(value)
 	}
 	enum, ok := providerThinkingEnums[providerType]

@@ -448,6 +448,14 @@ func TestIsKnownThinkingValue(t *testing.T) {
 		{"opencode", "fast-mode", true},  // custom opencode.json variant names are valid
 		{"opencode", ".hidden", false},   // reject suspicious / malformed names server-side
 		{"opencode", "bad value", false}, // spaces are not valid variant names
+		{"copilot", "", true},
+		{"copilot", "none", true},
+		{"copilot", "minimal", true},
+		{"copilot", "xhigh", true},
+		{"copilot", "max", true},
+		{"copilot", "future-level", true}, // vocabulary tracks the local CLI's --help choices
+		{"copilot", ".hidden", false},
+		{"copilot", "bad value", false},
 		{"hermes", "", true},
 		{"hermes", "low", false}, // hermes has no thinking concept
 	}

@@ -980,3 +980,195 @@ func TestCopilotExecuteOmitsAdditionalMcpConfigWhenUnset(t *testing.T) {
 		t.Fatalf("expected no --additional-mcp-config without McpConfig, got:\n%s", rawArgs)
 	}
 }
+
+// ── Reasoning-effort tests ──
+
+// copilotHelpFixture mirrors the real `copilot --help` output of CLI
+// 1.0.70: the choices list is quoted and wrapped across lines by the
+// help formatter.
+const copilotHelpFixture = `Usage: copilot [options]
+
+Options:
+  --model <model>                       Set the AI model to use
+  --effort, --reasoning-effort <level>  Set the reasoning effort level (choices:
+                                        "none", "minimal", "low", "medium",
+                                        "high", "xhigh", "max")
+  --enable-reasoning-summaries          Request reasoning summaries for OpenAI
+                                        models
+`
+
+func TestBuildCopilotArgsInjectsEffort(t *testing.T) {
+	t.Parallel()
+
+	args := buildCopilotArgs("hi", ExecOptions{ThinkingLevel: "high"}, slog.Default())
+
+	var found bool
+	for i, a := range args {
+		if a == "--reasoning-effort" {
+			if i+1 >= len(args) || args[i+1] != "high" {
+				t.Fatalf("expected --reasoning-effort followed by high, got %v", args)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected --reasoning-effort flag when ThinkingLevel is set, got args=%v", args)
+	}
+}
+
+func TestBuildCopilotArgsOmitsEffortWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	args := buildCopilotArgs("hi", ExecOptions{}, slog.Default())
+	for _, a := range args {
+		if a == "--reasoning-effort" || a == "--effort" {
+			t.Fatalf("expected no effort flag when ThinkingLevel is empty, got args=%v", args)
+		}
+	}
+}
+
+func TestBuildCopilotArgsBlocksUserEffortOverride(t *testing.T) {
+	t.Parallel()
+
+	args := buildCopilotArgs("hi", ExecOptions{
+		ThinkingLevel: "high",
+		CustomArgs:    []string{"--effort", "low", "--reasoning-effort", "minimal"},
+	}, slog.Default())
+
+	for _, a := range args {
+		if a == "--effort" {
+			t.Fatalf("custom-arg --effort should have been filtered: %v", args)
+		}
+		if a == "low" || a == "minimal" {
+			t.Fatalf("custom-arg effort value should have been filtered: %v", args)
+		}
+	}
+	count := 0
+	for _, a := range args {
+		if a == "--reasoning-effort" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one --reasoning-effort (the injected one), got %d in %v", count, args)
+	}
+}
+
+func TestParseCopilotEffortHelp(t *testing.T) {
+	t.Parallel()
+
+	levels := parseCopilotEffortHelp(copilotHelpFixture)
+	expected := []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+	if len(levels) != len(expected) {
+		t.Fatalf("expected %d levels, got %d: %v", len(expected), len(levels), levels)
+	}
+	for i, l := range levels {
+		if l != expected[i] {
+			t.Errorf("level[%d]: expected %q, got %q", i, expected[i], l)
+		}
+	}
+}
+
+func TestParseCopilotEffortHelp_Missing(t *testing.T) {
+	t.Parallel()
+
+	levels := parseCopilotEffortHelp("no effort line here")
+	if len(levels) != 0 {
+		t.Fatalf("expected nil for missing effort line, got %v", levels)
+	}
+}
+
+func TestCopilotEffortLevelsFromHelp_DriftedFormatFallsBackToFullSuperset(t *testing.T) {
+	t.Parallel()
+
+	// Flag advertised but the choices list no longer parses — the help
+	// format drifted. Offer the last known good superset rather than
+	// hiding the picker.
+	drifted := "Options:\n  --effort, --reasoning-effort <level>  Set the reasoning effort level\n"
+	levels := copilotEffortLevelsFromHelp(drifted)
+	expected := []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+	if len(levels) != len(expected) {
+		t.Fatalf("expected full superset %v, got %v", expected, levels)
+	}
+	for i, l := range levels {
+		if l != expected[i] {
+			t.Errorf("level[%d]: expected %q, got %q", i, expected[i], l)
+		}
+	}
+}
+
+func TestCopilotEffortLevelsFromHelp_PreEffortCLIReturnsNoLevels(t *testing.T) {
+	t.Parallel()
+
+	// A CLI that predates --reasoning-effort must advertise no levels:
+	// otherwise the daemon would inject a flag the binary rejects,
+	// hard-failing every task for an agent with a persisted level.
+	levels := copilotEffortLevelsFromHelp("Options:\n  --model <model>  Set the AI model to use\n")
+	if len(levels) != 0 {
+		t.Fatalf("expected no levels for pre-effort CLI, got %v", levels)
+	}
+}
+
+func TestAnnotateCopilotThinking(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary requires a POSIX shell")
+	}
+
+	fake := writeFakeCopilotHelpBinary(t)
+	resetThinkingCacheForTests()
+	defer resetThinkingCacheForTests()
+
+	models := []Model{
+		{ID: "gpt-5.5", Provider: "openai"},
+		{ID: "claude-opus-4.7", Provider: "anthropic"},
+	}
+	annotateCopilotThinking(context.Background(), models, fake)
+
+	for _, m := range models {
+		if m.Thinking == nil {
+			t.Fatalf("model %s: expected Thinking to be populated", m.ID)
+		}
+		if got := len(m.Thinking.SupportedLevels); got != 7 {
+			t.Fatalf("model %s: expected 7 levels, got %d: %v", m.ID, got, m.Thinking.SupportedLevels)
+		}
+		if m.Thinking.SupportedLevels[6].Value != "max" || m.Thinking.SupportedLevels[6].Label != "Max" {
+			t.Errorf("model %s: expected last level max/Max, got %+v", m.ID, m.Thinking.SupportedLevels[6])
+		}
+		if m.Thinking.SupportedLevels[6-2].Value != "high" {
+			t.Errorf("model %s: expected level order preserved, got %+v", m.ID, m.Thinking.SupportedLevels)
+		}
+		// Copilot's effective default varies per model and plan; an empty
+		// DefaultLevel makes the UI render the generic "Default" option.
+		if m.Thinking.DefaultLevel != "" {
+			t.Errorf("model %s: expected empty DefaultLevel, got %q", m.ID, m.Thinking.DefaultLevel)
+		}
+	}
+}
+
+// TestCopilotAdvertisedLevelsArePersistable pins the catalog → API
+// contract: every effort token copilot discovery can label must pass the
+// server's Create/Update gate, otherwise the picker offers a level the
+// server 400s on save.
+func TestCopilotAdvertisedLevelsArePersistable(t *testing.T) {
+	t.Parallel()
+	for effort := range copilotEffortLabel {
+		if !IsKnownThinkingValue("copilot", effort) {
+			t.Errorf("Copilot advertises effort %q but IsKnownThinkingValue rejects it", effort)
+		}
+	}
+}
+
+// writeFakeCopilotHelpBinary writes a small shell script that mimics
+// `copilot --help` with the wrapped, quoted choices list of CLI 1.0.70.
+func writeFakeCopilotHelpBinary(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "copilot")
+	script := "#!/bin/sh\n" +
+		"cat <<'EOF'\n" +
+		copilotHelpFixture +
+		"EOF\n"
+	writeTestExecutable(t, path, []byte(script))
+	return path
+}
