@@ -1,4 +1,5 @@
 import type {
+  Agent,
   AgentRuntime,
   RuntimeUsage,
   RuntimeUsageByAgent,
@@ -918,6 +919,35 @@ export function aggregateCostByAgent(rows: RuntimeUsageByAgent[]): CostByKey[] {
     entry.cost += estimateCost(r);
     entry.taskCount += r.task_count;
     map.set(r.agent_id, entry);
+  }
+  return Array.from(map.values()).toSorted((a, b) => b.cost - a.cost);
+}
+
+// Bucket for usage that can't be attributed to a member: agents with no
+// owner_id, plus rows whose agent no longer exists in the workspace agent
+// list (deleted agents — their usage must not vanish from the breakdown).
+export const NO_OWNER_KEY = "__no_owner__";
+
+// Per-(agent, model) rows → per-owner totals. Reuses the by-agent server
+// aggregation and folds agent_id → agent.owner_id client-side, so the tab
+// needs no extra endpoint.
+export function aggregateCostByOwner(
+  rows: RuntimeUsageByAgent[],
+  agents: readonly Pick<Agent, "id" | "owner_id">[],
+): CostByKey[] {
+  const ownerByAgent = new Map<string, string | null>();
+  for (const a of agents) ownerByAgent.set(a.id, a.owner_id);
+  const map = new Map<string, CostByKey>();
+  for (const r of rows) {
+    // `||` (not `??`): listAgents is not zod-parsed, so an empty-string
+    // owner_id must fold into the bucket rather than mint a "" member key.
+    const key = ownerByAgent.get(r.agent_id) || NO_OWNER_KEY;
+    const entry = map.get(key) ?? { key, tokens: 0, cost: 0, taskCount: 0 };
+    entry.tokens +=
+      r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_write_tokens;
+    entry.cost += estimateCost(r);
+    entry.taskCount += r.task_count;
+    map.set(key, entry);
   }
   return Array.from(map.values()).toSorted((a, b) => b.cost - a.cost);
 }

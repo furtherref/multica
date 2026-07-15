@@ -33,6 +33,15 @@ vi.mock("@multica/core/runtimes/queries", () => ({
 
 vi.mock("@multica/core/workspace/queries", () => ({
   agentListOptions: () => ({ kind: "agents" as const }),
+  memberListOptions: () => ({ kind: "members" as const }),
+}));
+
+// The real ActorAvatar pulls navigation/paths providers the usage section
+// doesn't otherwise need; stub it to an inspectable marker.
+vi.mock("../../common/actor-avatar", () => ({
+  ActorAvatar: ({ actorType, actorId }: { actorType: string; actorId: string }) => (
+    <div data-testid={`avatar-${actorType}-${actorId}`} />
+  ),
 }));
 
 vi.mock("@multica/core/hooks", () => ({
@@ -85,10 +94,42 @@ vi.mock("@tanstack/react-query", async () => {
       cache_write_tokens: 0,
     },
   ];
+  const byAgentTokens = {
+    provider: "anthropic",
+    model: "claude-sonnet-4-6",
+    input_tokens: 1_000_000,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    task_count: 1,
+  };
+  // a-1/a-2 share owner u-1, a-3 is ownerless, a-gone is a deleted agent
+  // (absent from the agent list) — together they exercise the fold, the
+  // no-owner bucket, and the deleted-agent bucket.
+  const byAgentRows = [
+    { agent_id: "a-1", ...byAgentTokens },
+    { agent_id: "a-2", ...byAgentTokens },
+    { agent_id: "a-3", ...byAgentTokens },
+    { agent_id: "a-gone", ...byAgentTokens },
+  ];
+  const agents = [
+    { id: "a-1", name: "Agent One", owner_id: "u-1" },
+    { id: "a-2", name: "Agent Two", owner_id: "u-1" },
+    { id: "a-3", name: "Agent Three", owner_id: null },
+  ];
+  const members = [
+    { user_id: "u-1", role: "member", name: "Alice Zhang", email: "", avatar_url: null },
+  ];
+  const dataByKind: Record<string, unknown> = {
+    usage: usageRows,
+    "by-agent": byAgentRows,
+    agents,
+    members,
+  };
   return {
     ...actual,
     useQuery: (opts: { kind?: string }) => ({
-      data: opts?.kind === "usage" ? usageRows : [],
+      data: (opts?.kind && dataByKind[opts.kind]) || [],
       isLoading: false,
     }),
   };
@@ -179,5 +220,45 @@ describe("UsageSection — Viewing timezone wiring", () => {
     fireEvent.click(screen.getByRole("button", { name: "7d" }));
 
     expect(flows.at(-1)).toHaveAttribute("aria-label", "1K");
+  });
+});
+
+describe("CostByBlock — By owner tab", () => {
+  it("defaults to By owner and orders the tabs owner → agent → model", () => {
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Cost by owner")).toBeInTheDocument();
+
+    const owner = screen.getByRole("button", { name: "By owner" });
+    const agent = screen.getByRole("button", { name: "By agent" });
+    const model = screen.getByRole("button", { name: "By model" });
+    expect(
+      owner.compareDocumentPosition(agent) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      agent.compareDocumentPosition(model) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("renders owner rows with member identity and a No-owner bucket", () => {
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    // u-1 owns two agents → a single folded row with the member avatar + name.
+    expect(screen.getByTestId("avatar-member-u-1")).toBeInTheDocument();
+    expect(screen.getByText("Alice Zhang")).toBeInTheDocument();
+    // The ownerless agent and the deleted agent fold into one bucket row.
+    expect(screen.getByText("No owner")).toBeInTheDocument();
+    // Caption counts owner buckets: Alice + No owner.
+    expect(screen.getByText("2 owners on this runtime")).toBeInTheDocument();
+  });
+
+  it("switches to the By agent tab on click", () => {
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    fireEvent.click(screen.getByRole("button", { name: "By agent" }));
+
+    expect(screen.getByText("Cost by agent")).toBeInTheDocument();
+    expect(screen.getByText("4 agents on this runtime")).toBeInTheDocument();
+    expect(screen.getByTestId("avatar-agent-a-1")).toBeInTheDocument();
   });
 });
