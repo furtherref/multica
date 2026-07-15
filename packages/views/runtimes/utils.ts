@@ -178,6 +178,16 @@ const MODEL_PRICING: Record<
   "claude-opus-4-7":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
   "claude-opus-4-8":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
 
+  // -- Anthropic: fast mode (research preview). Same model at a per-model
+  //    premium multiplier (fast-mode doc): Opus 4.8 fast is 2x standard,
+  //    Opus 4.7 fast is 6x and deprecated upstream (removal 2026-07-24) but
+  //    historical usage rows still need pricing. Cache multipliers stack on
+  //    the fast base rate (0.1x read / 1.25x write). Copilot reports these
+  //    as dotted ids (`claude-opus-4.8-fast`); the resolver's dot->dash
+  //    canonicalization lands them on these dashed keys. --
+  "claude-opus-4-8-fast": { input: 10, output: 50,  cacheRead: 1.00, cacheWrite: 12.50 },
+  "claude-opus-4-7-fast": { input: 30, output: 150, cacheRead: 3.00, cacheWrite: 37.50 },
+
   // -- Anthropic: pre-4.5 Opus (legacy, still served at original price tier) --
   "claude-opus-4-1":    { input: 15,   output: 75,   cacheRead: 1.50, cacheWrite: 18.75 },
   "claude-opus-4":      { input: 15,   output: 75,   cacheRead: 1.50, cacheWrite: 18.75 },
