@@ -120,7 +120,10 @@ and is hidden from the PR list.
 | Backlog → non-backlog (not done/cancelled) enqueues on update | `server/internal/handler/issue.go:2537-2540` | `:2523` |
 | Same contract in batch update | `server/internal/handler/issue.go:3021-3024` | new citation |
 | Child → `done` notifies + wakes the parent, gated by the stage barrier | `server/internal/handler/issue_child_done.go:66` (`notifyParentOfChildDone`; doc comment at `:15`; barrier gate at `:115`) | func def `:51` |
-| Status change (incl. → `cancelled`) does NOT cancel in-flight tasks; only issue deletion does (MUL-4465) | no-cancel note in `server/internal/handler/issue.go:2652-2658` (`UpdateIssue`) and `:3170-3171` (`BatchUpdateIssues`); deletion still cancels at `:2863` (`DeleteIssue`) / `:3239` (`BatchDeleteIssues`) via `CancelTasksForIssue` (`server/internal/service/task.go:1229`) | new citation |
+| Status change to non-archive statuses (incl. → `cancelled`) does NOT cancel in-flight tasks; only issue deletion does (MUL-4465) | no-cancel note in `server/internal/handler/issue.go:2652-2658` (`UpdateIssue`) and `:3170-3171` (`BatchUpdateIssues`); deletion still cancels at `:2863` (`DeleteIssue`) / `:3239` (`BatchDeleteIssues`) via `CancelTasksForIssue` (`server/internal/service/task.go:1229`) | new citation |
+| `archive` (fork status #39) is the one status change that DOES cancel in-flight tasks | `server/internal/handler/issue.go:2761-2769` (`UpdateIssue`) and `:3283-3291` (`BatchUpdateIssues`), both via `CancelTasksForIssue` | new citation, fix wave 2 |
+| Assigning/promoting into `archive` never enqueues a run | `server/internal/service/issue_trigger.go:105` (assign source) and `:110` (status source), inside `WillEnqueueRun` | new citation, fix wave 2 |
+| Restoring from `archive` sweeps straggler tasks (does not itself enqueue) | `server/internal/handler/issue.go:2771-2780` (`UpdateIssue`) and `:3297-3302` (`BatchUpdateIssues`), both via `CancelTasksForIssue` | new citation, fix wave 2 |
 
 Creation with `--status todo` (or any non-backlog status) on an agent-assigned
 issue fires the agent immediately; `--status backlog` parks it with the assignee
@@ -129,10 +132,14 @@ line 2537).
 
 Moving an issue to `cancelled` used to call `CancelTasksForIssue` and stop every
 active task on it (the old #940 behavior). MUL-4465 removed that from both
-`UpdateIssue` and `BatchUpdateIssues`: a status flip — `cancelled` included —
-never cancels tasks now. `CancelTasksForIssue` fires only from the issue-deletion
-paths (`DeleteIssue` / `BatchDeleteIssues`), where the owning issue row is going
-away, so no task is left orphaned.
+`UpdateIssue` and `BatchUpdateIssues`: a status flip to a non-archive status —
+`cancelled` included — never cancels tasks now. The fork-original `archive`
+status (#39) is the one exception, re-adding a `CancelTasksForIssue` call on
+the archive transition (and on the archive → active restore transition, to
+sweep stragglers) — see the two rows above. Outside archive,
+`CancelTasksForIssue` fires only from the issue-deletion paths (`DeleteIssue` /
+`BatchDeleteIssues`), where the owning issue row is going away, so no task is
+left orphaned.
 
 ## Sub-issue stages (barrier wake)
 
