@@ -91,5 +91,6 @@ appear**. Concretely, and unlike `done`/`cancelled`:
 - Archive is terminal for stage barriers and parent wake (single and batch
   paths), and a merged close-intent PR does not resurrect an archived issue.
 
-Restoring from archive re-enables all of the above but never auto-enqueues by
+Restoring from archive re-enables all of the above, cancels any straggler
+tasks that raced past the archive-time cancel, and never auto-enqueues by
 itself; runs start again via the normal assign/promote/mention actions.

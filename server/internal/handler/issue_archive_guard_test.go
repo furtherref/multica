@@ -185,7 +185,10 @@ func TestClaimSkipsTasksOnArchivedIssue(t *testing.T) {
 		t.Fatalf("claim must skip the archived issue's task, got err=%v", err)
 	}
 
-	// Restoring the issue makes the same task claimable again.
+	// Direct-SQL restore (bypassing the handler's straggler sweep) proves the
+	// claim predicate is status-driven, not task-poisoning. Product-level
+	// restore goes through the handler and cancels stragglers instead — see
+	// TestRestoreFromArchiveCancelsStragglerTasks.
 	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'todo' WHERE id = $1`, issueID); err != nil {
 		t.Fatalf("restore issue: %v", err)
 	}
@@ -478,5 +481,31 @@ func TestAdvanceIssueToDoneAdvancesActiveIssue(t *testing.T) {
 	}
 	if status != "done" {
 		t.Fatalf("active issue must advance to done, got %q", status)
+	}
+}
+
+// Fix wave 2: restoring from archive must cancel straggler tasks that raced
+// past the archive-time cancel — they were inert under the claim/reclaim
+// guards and must not become runnable again.
+func TestRestoreFromArchiveCancelsStragglerTasks(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "ArchiveRestoreSweep", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92169, "restore-sweeps-stragglers")
+	updateChildStatus(t, issueID, "archive")
+	// Straggler: inserted AFTER the archive-time cancel ran (simulates the
+	// enqueue/retry race).
+	taskID := insertQueuedIssueTask(t, agentID, issueID)
+
+	updateChildStatus(t, issueID, "todo")
+
+	var status string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status); err != nil {
+		t.Fatalf("read task status: %v", err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("restore must cancel straggler tasks, got %q", status)
 	}
 }

@@ -2768,6 +2768,17 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Restoring from archive (fork status #39) sweeps stragglers: tasks that
+	// raced past the archive-time cancel were kept inert by the claim/reclaim
+	// guards, and must not wake up now that the issue is active again.
+	// Restore itself never starts new runs (see the design addendum).
+	if statusChanged && prevIssue.Status == "archive" && issue.Status != "archive" {
+		if err := h.TaskService.CancelTasksForIssue(r.Context(), issue.ID); err != nil {
+			slog.Error("restore: cancel straggler tasks failed",
+				"issue_id", uuidToString(issue.ID), "error", err)
+		}
+	}
+
 	// Platform-driven parent notification: when this issue transitions into
 	// `done` and has a parent, post a top-level system comment on the parent
 	// (MUL-2538 — replaces the agent-prompt rule that caused self-mention
@@ -3275,6 +3286,17 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				// un-cancelled queued/dispatched tasks inert, but a running task
 				// survives until completion — surface the failure, never swallow it.
 				slog.Error("archive: cancel tasks failed",
+					"issue_id", uuidToString(issue.ID), "error", err)
+			}
+		}
+
+		// Restoring from archive (fork status #39) sweeps stragglers: tasks that
+		// raced past the archive-time cancel were kept inert by the claim/reclaim
+		// guards, and must not wake up now that the issue is active again.
+		// Restore itself never starts new runs (see the design addendum).
+		if statusChanged && prevIssue.Status == "archive" && issue.Status != "archive" {
+			if err := h.TaskService.CancelTasksForIssue(r.Context(), issue.ID); err != nil {
+				slog.Error("restore: cancel straggler tasks failed",
 					"issue_id", uuidToString(issue.ID), "error", err)
 			}
 		}
