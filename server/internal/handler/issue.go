@@ -2738,10 +2738,28 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// was already in flight. No status change — not even → cancelled — cancels
 	// active tasks: a user clicking "cancel" on an issue has no expectation that
 	// it stops in-flight agent runs, so that implicit coupling is gone
-	// (MUL-4465). The fork-original `archive` status (#39) is the one
-	// exception, handled below: archiving retires the issue, so its in-flight
-	// tasks are cancelled with it. Deleting an issue still cancels its tasks
-	// (see DeleteIssue), because the tasks' owning issue ceases to exist.
+	// (MUL-4465). The fork-original `archive` status (#39) has two status-driven
+	// exceptions, both handled below: archiving retires the issue, so its
+	// in-flight tasks are cancelled with it, and restoring from archive sweeps
+	// straggler tasks that raced past the archive-time cancel. Deleting an
+	// issue still cancels its tasks (see DeleteIssue), because the tasks'
+	// owning issue ceases to exist.
+
+	// Restoring from archive (fork status #39) sweeps stragglers: tasks that
+	// raced past the archive-time cancel were kept inert by the claim/reclaim
+	// guards, and must not wake up now that the issue is active again. Restore
+	// itself never starts new runs (see the design addendum). This runs before
+	// WillEnqueueRun so a same-request assign-triggered run survives the sweep:
+	// if the sweep ran after dispatch, it would cancel a run this very request
+	// just enqueued, violating the MUL-3375 invariant that the write path never
+	// drops a run the preview promised.
+	if statusChanged && prevIssue.Status == "archive" && issue.Status != "archive" {
+		if err := h.TaskService.CancelTasksForIssue(r.Context(), issue.ID); err != nil {
+			slog.Error("restore: cancel straggler tasks failed",
+				"issue_id", uuidToString(issue.ID), "error", err)
+		}
+	}
+
 	if trigger, ok := h.IssueService.WillEnqueueRun(r.Context(),
 		service.IssueTriggerInput{
 			Issue:           issue,
@@ -2764,17 +2782,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			// un-cancelled queued/dispatched tasks inert, but a running task
 			// survives until completion — surface the failure, never swallow it.
 			slog.Error("archive: cancel tasks failed",
-				"issue_id", uuidToString(issue.ID), "error", err)
-		}
-	}
-
-	// Restoring from archive (fork status #39) sweeps stragglers: tasks that
-	// raced past the archive-time cancel were kept inert by the claim/reclaim
-	// guards, and must not wake up now that the issue is active again.
-	// Restore itself never starts new runs (see the design addendum).
-	if statusChanged && prevIssue.Status == "archive" && issue.Status != "archive" {
-		if err := h.TaskService.CancelTasksForIssue(r.Context(), issue.ID); err != nil {
-			slog.Error("restore: cancel straggler tasks failed",
 				"issue_id", uuidToString(issue.ID), "error", err)
 		}
 	}
@@ -3261,7 +3268,22 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
 		// mirrors UpdateIssue. See that handler for the rationale.
-		//
+
+		// Restoring from archive (fork status #39) sweeps stragglers: tasks that
+		// raced past the archive-time cancel were kept inert by the claim/reclaim
+		// guards, and must not wake up now that the issue is active again.
+		// Restore itself never starts new runs (see the design addendum). This
+		// runs before WillEnqueueRun so a same-request assign-triggered run
+		// survives the sweep: if the sweep ran after dispatch, it would cancel a
+		// run this very request just enqueued, violating the MUL-3375 invariant
+		// that the write path never drops a run the preview promised.
+		if statusChanged && prevIssue.Status == "archive" && issue.Status != "archive" {
+			if err := h.TaskService.CancelTasksForIssue(r.Context(), issue.ID); err != nil {
+				slog.Error("restore: cancel straggler tasks failed",
+					"issue_id", uuidToString(issue.ID), "error", err)
+			}
+		}
+
 		// Same single predicate as UpdateIssue — batch must not grow its own
 		// copy of the enqueue rule (the historical source of four-entry-point
 		// drift, MUL-3375). suppress_run applies batch-wide.
@@ -3286,17 +3308,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				// un-cancelled queued/dispatched tasks inert, but a running task
 				// survives until completion — surface the failure, never swallow it.
 				slog.Error("archive: cancel tasks failed",
-					"issue_id", uuidToString(issue.ID), "error", err)
-			}
-		}
-
-		// Restoring from archive (fork status #39) sweeps stragglers: tasks that
-		// raced past the archive-time cancel were kept inert by the claim/reclaim
-		// guards, and must not wake up now that the issue is active again.
-		// Restore itself never starts new runs (see the design addendum).
-		if statusChanged && prevIssue.Status == "archive" && issue.Status != "archive" {
-			if err := h.TaskService.CancelTasksForIssue(r.Context(), issue.ID); err != nil {
-				slog.Error("restore: cancel straggler tasks failed",
 					"issue_id", uuidToString(issue.ID), "error", err)
 			}
 		}

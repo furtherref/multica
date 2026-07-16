@@ -266,6 +266,40 @@ func TestFailTaskSuppressesRetryOnArchivedIssue(t *testing.T) {
 	}
 }
 
+// Positive control for TestFailTaskSuppressesRetryOnArchivedIssue: the SAME
+// FailTask invocation on a NON-archived issue must actually create the retry
+// clone. Without this, the archived-issue test could pass vacuously if
+// wantRetry never fired in the first place (e.g. a broken retryEligible
+// predicate) — this pins that the retry branch is genuinely exercised.
+func TestFailTaskCreatesRetryOnNonArchivedIssue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "FailTaskRetryControl", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92171, "failtask-retry-control")
+	taskID := insertRunningIssueTask(t, agentID, issueID)
+
+	// Same call shape as TestFailTaskSuppressesRetryOnArchivedIssue, minus the
+	// archive step: "timeout" is retryable and insertRunningIssueTask leaves
+	// attempt=1 < max_attempts=2, so retryEligible/wantRetry should fire and
+	// CreateRetryTask should clone a second row.
+	if _, err := testHandler.TaskService.FailTask(context.Background(), parseUUID(taskID), "boom", "", "", "timeout"); err != nil {
+		t.Fatalf("FailTask: %v", err)
+	}
+
+	var status string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status); err != nil {
+		t.Fatalf("read task status: %v", err)
+	}
+	if status != "failed" {
+		t.Fatalf("fail must commit on a non-archived issue, got %q", status)
+	}
+	if got := taskCountForIssue(t, issueID); got != 2 {
+		t.Fatalf("retry must be created on a non-archived issue (2 rows expected), got %d", got)
+	}
+}
+
 // Fix (d): an archived issue is retired — it must not block re-creating the
 // same title as an "active duplicate". (Duplicate detection runs in
 // service.CreateIssue via issueguard.LockAndFindActiveDuplicate; done and
@@ -544,5 +578,48 @@ func TestRestoreFromArchiveCancelsStragglerTasks(t *testing.T) {
 	}
 	if status != "cancelled" {
 		t.Fatalf("restore must cancel straggler tasks, got %q", status)
+	}
+}
+
+// Fix wave 2 re-review: restoring AND reassigning in one request must cancel
+// the straggler but keep the newly dispatched assign-source run — the sweep
+// runs before WillEnqueueRun, never after (MUL-3375: the write path must not
+// drop a run the preview promised).
+func TestRestoreWithReassignKeepsNewRun(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "ArchiveRestoreReassign", []byte("[]"))
+	issue := createIssueViaHTTP(t, map[string]any{"title": "restore-reassign-keeps-run", "status": "todo"})
+	updateChildStatus(t, issue.ID, "archive")
+	stragglerID := insertQueuedIssueTask(t, agentID, issue.ID)
+
+	w := httptest.NewRecorder()
+	req := newRequest("PUT", "/api/issues/"+issue.ID, map[string]any{
+		"status":        "todo",
+		"assignee_type": "agent",
+		"assignee_id":   agentID,
+	})
+	req = withURLParam(req, "id", issue.ID)
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("restore+reassign: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var stragglerStatus string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT status FROM agent_task_queue WHERE id = $1`, stragglerID).Scan(&stragglerStatus); err != nil {
+		t.Fatalf("read straggler status: %v", err)
+	}
+	if stragglerStatus != "cancelled" {
+		t.Fatalf("straggler must be cancelled on restore, got %q", stragglerStatus)
+	}
+	var queued int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued'`, issue.ID).Scan(&queued); err != nil {
+		t.Fatalf("count queued: %v", err)
+	}
+	if queued != 1 {
+		t.Fatalf("the assign-triggered run must survive the sweep, got %d queued", queued)
 	}
 }
