@@ -4778,12 +4778,20 @@ func (q *Queries) SetTaskDeliveredCommentIDs(ctx context.Context, arg SetTaskDel
 }
 
 const startAgentTask = `-- name: StartAgentTask :one
-UPDATE agent_task_queue
+UPDATE agent_task_queue AS atq
 SET status = 'running',
     started_at = now(),
     wait_reason = NULL,
     prepare_lease_expires_at = NULL
-WHERE id = $1 AND status IN ('dispatched', 'waiting_local_directory')
+WHERE atq.id = $1 AND atq.status IN ('dispatched', 'waiting_local_directory')
+  -- Archive (fork status #39): a task must not START on retired work even if
+  -- it was legitimately dispatched before the archive — the daemon's /start
+  -- rides the same no-rows path as "cancelled between claim and start". The
+  -- handler-side cancel still covers tasks that slip into running within the
+  -- statement-snapshot window.
+  AND (atq.issue_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM issue i WHERE i.id = atq.issue_id AND i.status = 'archive'
+  ))
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id
 `
 

@@ -601,12 +601,20 @@ RETURNING *;
 -- the lock was acquired the daemon flips here). wait_reason is cleared on
 -- the transition so a future read can't conflate "currently waiting" with
 -- "previously waited".
-UPDATE agent_task_queue
+UPDATE agent_task_queue AS atq
 SET status = 'running',
     started_at = now(),
     wait_reason = NULL,
     prepare_lease_expires_at = NULL
-WHERE id = $1 AND status IN ('dispatched', 'waiting_local_directory')
+WHERE atq.id = $1 AND atq.status IN ('dispatched', 'waiting_local_directory')
+  -- Archive (fork status #39): a task must not START on retired work even if
+  -- it was legitimately dispatched before the archive — the daemon's /start
+  -- rides the same no-rows path as "cancelled between claim and start". The
+  -- handler-side cancel still covers tasks that slip into running within the
+  -- statement-snapshot window.
+  AND (atq.issue_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM issue i WHERE i.id = atq.issue_id AND i.status = 'archive'
+  ))
 RETURNING *;
 
 -- name: MarkAgentTaskWaitingLocalDirectory :one

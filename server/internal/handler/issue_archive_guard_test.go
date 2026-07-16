@@ -623,3 +623,38 @@ func TestRestoreWithReassignKeepsNewRun(t *testing.T) {
 		t.Fatalf("the assign-triggered run must survive the sweep, got %d queued", queued)
 	}
 }
+
+// Fix wave 3: a dispatched task must not START on an archived issue — the
+// /start window between archive commit and cancel effect is closed at the
+// StartAgentTask statement.
+func TestStartTaskRefusedOnArchivedIssue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "ArchiveStartGuard", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92172, "start-archived-guard")
+	var taskID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, issue_id, dispatched_at)
+		VALUES ($1, (SELECT runtime_id FROM agent WHERE id = $1), 'dispatched', 0, $2, now())
+		RETURNING id::text
+	`, agentID, issueID).Scan(&taskID); err != nil {
+		t.Fatalf("insert dispatched task: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+	ctx := context.Background()
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'archive' WHERE id = $1`, issueID); err != nil {
+		t.Fatalf("archive issue: %v", err)
+	}
+	if _, err := db.New(testPool).StartAgentTask(ctx, parseUUID(taskID)); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("start must refuse the archived issue's task, got err=%v", err)
+	}
+	var status string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status); err != nil {
+		t.Fatalf("read task status: %v", err)
+	}
+	if status != "dispatched" {
+		t.Fatalf("refused start must leave the task untouched, got %q", status)
+	}
+}
