@@ -85,8 +85,9 @@ appear**. Concretely, and unlike `done`/`cancelled`:
 - No comment triggers on an archived issue — explicit @mentions are blocked
   with reason `issue_archived`; implicit routing (assignee / thread /
   conversation) is suppressed. `done`/`cancelled` issues stay mentionable.
-- Tasks on an archived issue are never claimed and never retried, closing the
-  enqueue/archive concurrency races at the queued→dispatched chokepoint.
+- Tasks on an archived issue are never claimed, never re-delivered, never retried,
+  and never started — closing the enqueue/archive concurrency races at every
+  task-execution transition.
 - Archived issues do not count as active duplicates.
 - Archive is terminal for stage barriers and parent wake (single and batch
   paths), and a merged close-intent PR does not resurrect an archived issue.

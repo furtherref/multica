@@ -115,7 +115,7 @@ and is hidden from the PR list.
 
 | Behavior | File:line | Drifted from |
 |---|---|---|
-| Create-time: agent-assigned issue enqueues immediately unless created into `backlog` or `archive` | `server/internal/service/issue.go:395` (call site inside `IssueService.Create`, the HTTP `CreateIssue` path) | fix wave 3: old `:2263-2264` pointed at unrelated `validateAssigneePair` code |
+| Create-time: agent-assigned issue enqueues immediately unless created into `backlog` or `archive` | `server/internal/service/issue.go:395` (call site inside `maybeEnqueueOnAssign`, defined at `:391` and called by `IssueService.Create` at `:284`) | fix wave 3: old `:2263-2264` pointed at unrelated `validateAssigneePair` code |
 | `shouldEnqueueAgentTask` returns false for `backlog` and `archive` (parking lot / retired work) | `server/internal/service/issue.go:413-415` (the gate `IssueService.Create` actually uses); `server/internal/handler/issue.go:2891-2895` mirrors it for the onboarding-shim create path only (`internal/handler/onboarding_shim.go:328`) | fix wave 3: old `:2644-2648` pointed at unrelated stage-field handling |
 | Backlog → active (not `done`/`cancelled`/`archive`) enqueues on update, via the single shared `WillEnqueueRun` status source | `server/internal/service/issue_trigger.go:109-114` | fix wave 3: old `:2537-2540` pointed at unrelated priority-field handling; contract text widened to include archive |
 | `UpdateIssue` and `BatchUpdateIssues` call the identical `WillEnqueueRun` predicate — there is no separate batch copy of the enqueue rule (MUL-3375) | `server/internal/handler/issue.go:2775-2785` (`UpdateIssue`) and `:3309-3319` (`BatchUpdateIssues`) | fix wave 3: old `:3021-3024` pointed at unrelated code; the old "same contract" phrasing implied a duplicated copy, which was never accurate — it is the same call |
@@ -147,8 +147,8 @@ left orphaned.
 | Behavior | File:line |
 |---|---|
 | `issue.stage` column (nullable, `>= 1`) | `server/migrations/123_issue_stage.up.sql` |
-| Stage barrier: notify+wake fire only when the lowest unfinished stage is all-terminal; unstaged set = one implicit stage | `server/internal/handler/issue_child_done.go:231` (`stageBarrierClosed`) |
-| Per-stage summary + next stage for the wake comment | `server/internal/handler/issue_child_done.go:254` (`stageProgressSummary`) |
+| Stage barrier: notify+wake fire only when the lowest unfinished stage is all-terminal; unstaged set = one implicit stage | `server/internal/handler/issue_child_done.go:372` (`stageBarrierClosed`) | fix wave 3: was :231 |
+| Per-stage summary + next stage for the wake comment | `server/internal/handler/issue_child_done.go:404` (`stageProgressSummary`) | fix wave 3: was :254 |
 | `--stage` on `issue create` / `issue update` | `server/cmd/multica/cmd_issue.go:328,350` |
 | `multica issue children <id>` (sub-issues grouped by stage) | `server/cmd/multica/cmd_issue.go:114,678`; route `GET /api/issues/{id}/children` → `ListChildIssues` |
 
