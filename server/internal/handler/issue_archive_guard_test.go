@@ -229,6 +229,43 @@ func TestRetryNotCreatedForArchivedIssue(t *testing.T) {
 	}
 }
 
+// Fix wave 2: the FailTask service path must commit the fail and suppress the
+// retry (not error) when the issue was archived while the task ran.
+func TestFailTaskSuppressesRetryOnArchivedIssue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "ArchiveFailTaskSuppress", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92170, "failtask-archived-suppress")
+	taskID := insertRunningIssueTask(t, agentID, issueID)
+	if _, err := testPool.Exec(context.Background(), `UPDATE issue SET status = 'archive' WHERE id = $1`, issueID); err != nil {
+		t.Fatalf("archive issue: %v", err)
+	}
+
+	// Drive TaskService.FailTask directly (the real fail entrypoint wrapping
+	// the fail transaction). "timeout" is in retryableReasons, and
+	// insertRunningIssueTask leaves the schema defaults attempt=1 <
+	// max_attempts=2 with no autopilot link and an issue link, so
+	// retryEligible fires and wantRetry is true — CreateRetryTask's archive
+	// predicate (WHERE ... issue.status != 'archive') must then suppress the
+	// clone via ErrNoRows without failing the fail commit.
+	if _, err := testHandler.TaskService.FailTask(context.Background(), parseUUID(taskID), "boom", "", "", "timeout"); err != nil {
+		t.Fatalf("FailTask: %v", err)
+	}
+
+	var status string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status); err != nil {
+		t.Fatalf("read task status: %v", err)
+	}
+	if status != "failed" {
+		t.Fatalf("fail must still commit on archived issue, got %q", status)
+	}
+	if got := taskCountForIssue(t, issueID); got != 1 {
+		t.Fatalf("retry must be suppressed (1 row expected), got %d", got)
+	}
+}
+
 // Fix (d): an archived issue is retired — it must not block re-creating the
 // same title as an "active duplicate". (Duplicate detection runs in
 // service.CreateIssue via issueguard.LockAndFindActiveDuplicate; done and
