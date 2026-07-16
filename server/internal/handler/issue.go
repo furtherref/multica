@@ -2759,7 +2759,13 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// survives MUL-4465, which removed only the cancelled/done coupling —
 	// upstream has no archive status.
 	if statusChanged && issue.Status == "archive" {
-		h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
+		if err := h.TaskService.CancelTasksForIssue(r.Context(), issue.ID); err != nil {
+			// The archive is already committed. The claim/reclaim guards keep
+			// un-cancelled queued/dispatched tasks inert, but a running task
+			// survives until completion — surface the failure, never swallow it.
+			slog.Error("archive: cancel tasks failed",
+				"issue_id", uuidToString(issue.ID), "error", err)
+		}
 	}
 
 	// Platform-driven parent notification: when this issue transitions into
@@ -3264,7 +3270,13 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		// `archive` status, mirroring UpdateIssue (MUL-4465 removed the
 		// cancelled coupling; see that handler for the rationale).
 		if statusChanged && issue.Status == "archive" {
-			h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
+			if err := h.TaskService.CancelTasksForIssue(r.Context(), issue.ID); err != nil {
+				// The archive is already committed. The claim/reclaim guards keep
+				// un-cancelled queued/dispatched tasks inert, but a running task
+				// survives until completion — surface the failure, never swallow it.
+				slog.Error("archive: cancel tasks failed",
+					"issue_id", uuidToString(issue.ID), "error", err)
+			}
 		}
 
 		// Platform-driven parent notification, mirrored from UpdateIssue
