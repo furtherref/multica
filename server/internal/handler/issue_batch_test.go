@@ -486,3 +486,51 @@ func TestBatchChildDoneClosesLowerStageOnly(t *testing.T) {
 		t.Errorf("expected the advance-to-next-stage instruction, got: %s", content)
 	}
 }
+
+// Fix (e), batch child side: batch-archiving all children must close the
+// barrier and notify the parent exactly once.
+func TestBatchChildArchiveNotifiesParentOnce(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fx := newChildDoneFixture(t, "in_progress")
+	second := createIssueViaHTTP(t, map[string]any{
+		"title":           "batch-archive-child-2",
+		"status":          "in_progress",
+		"parent_issue_id": fx.parent.ID,
+	})
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
+		"issue_ids": []string{fx.child.ID, second.ID},
+		"updates":   map[string]any{"status": "archive"},
+	})
+	testHandler.BatchUpdateIssues(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := countSystemCommentsOn(t, fx.parent.ID); got != 1 {
+		t.Fatalf("batch-archiving all children must notify parent exactly once, got %d", got)
+	}
+}
+
+// Fix (e), batch parent side: the batch path's duplicated parent guard
+// (issue_child_done.go:188) must also skip archived parents.
+func TestBatchChildDoneSkipsArchivedParent(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fx := newChildDoneFixture(t, "in_progress")
+	updateChildStatus(t, fx.parent.ID, "archive")
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
+		"issue_ids": []string{fx.child.ID},
+		"updates":   map[string]any{"status": "done"},
+	})
+	testHandler.BatchUpdateIssues(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := countSystemCommentsOn(t, fx.parent.ID); got != 0 {
+		t.Fatalf("archived parent must stay inert on batch child done, got %d system comment(s)", got)
+	}
+}
