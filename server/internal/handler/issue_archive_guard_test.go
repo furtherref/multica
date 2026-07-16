@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -297,5 +298,30 @@ func TestArchivedAutopilotIssueIsNotADuplicateBlocker(t *testing.T) {
 	}
 	if ok {
 		t.Fatalf("archived autopilot issue must not count as a duplicate, found %s", uuidToString(found.ID))
+	}
+}
+
+// Fix (c), rerun half: a manual rerun must not raise new agent spend on
+// retired work. 409 + machine-readable reason, so the CLI and UI can say why.
+func TestRerunBlockedOnArchivedIssue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "ArchiveRerunBlocked", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92162, "rerun-archived-blocked")
+	updateChildStatus(t, issueID, "archive")
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+issueID+"/rerun", map[string]any{})
+	req = withURLParam(req, "id", issueID)
+	testHandler.RerunIssue(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("rerun on archived issue: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "issue_archived") {
+		t.Fatalf("expected reason_code issue_archived in body, got: %s", w.Body.String())
+	}
+	if got := taskCountForIssue(t, issueID); got != 0 {
+		t.Fatalf("blocked rerun must not create a task; got %d", got)
 	}
 }

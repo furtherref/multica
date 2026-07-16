@@ -126,6 +126,13 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Archive (fork status #39) retires the issue: a manual rerun must not
+	// raise new agent spend on retired work. Restore the issue first.
+	if issue.Status == "archive" {
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonIssueArchived)
+		return
+	}
+
 	// Body is optional. A zero-length body or `{}` keeps the legacy
 	// assignee-driven rerun behaviour the CLI relies on.
 	var req RerunIssueRequest
