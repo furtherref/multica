@@ -64,13 +64,15 @@ interface AssigneePickerProps {
  * switches. Uncontrolled callers that bring their own trigger content get a
  * deferred lookalike trigger instead; the picker mounts on first interaction.
  * The default trigger needs `getActorName` (a members/agents subscription
- * itself), so trigger-less callers stay eager.
+ * itself), so callers without their own content — no `trigger`, and no
+ * children inside `triggerRender` (e.g. the create dialog's bare
+ * PillButton) — stay eager.
  */
 export function AssigneePicker(props: AssigneePickerProps) {
   const canDefer =
     props.open === undefined &&
     props.onOpenChange === undefined &&
-    (props.trigger !== undefined || props.triggerRender !== undefined);
+    (props.trigger !== undefined || props.triggerRender?.props.children != null);
   if (!canDefer) {
     return <AssigneePickerImpl {...props} />;
   }
