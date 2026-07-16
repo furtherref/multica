@@ -1035,6 +1035,39 @@ func TestWatchTaskCancellation_RunningTaskNotInterrupted(t *testing.T) {
 	}
 }
 
+// TestWatchTaskCancellation_ImmediateFirstCheck pins the fix wave 4 change:
+// the watcher performs a first check() before entering the select loop, so a
+// task that is ALREADY terminal when the watcher starts (e.g. the archive
+// race — cancel landed between /start and the watcher spinning up) is
+// detected in milliseconds instead of waiting out the first poll interval.
+// The 30s poll interval here rules out the ticker path; only the immediate
+// check can close this fast.
+func TestWatchTaskCancellation_ImmediateFirstCheck(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"cancelled"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{client: NewClient(srv.URL), logger: slog.Default()}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	start := time.Now()
+	cancelled := d.watchTaskCancellation(ctx, "task-already-terminal", 30*time.Second, slog.Default())
+
+	select {
+	case <-cancelled:
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("expected the immediate first check to close well under the 30s poll interval, took %s", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchTaskCancellation did not perform an immediate first check")
+	}
+}
+
 func TestMergeUsage(t *testing.T) {
 	t.Parallel()
 

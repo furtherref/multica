@@ -3035,6 +3035,12 @@ func (d *Daemon) watchTaskCancellation(ctx context.Context, taskID string, pollI
 			close(cancelled)
 			return true
 		}
+		// Immediate first check: a cancel that landed between /start and the
+		// watcher starting (e.g. the archive race) interrupts in milliseconds
+		// instead of waiting out the first poll interval.
+		if check() {
+			return
+		}
 		for {
 			select {
 			case <-ctx.Done():
