@@ -419,12 +419,12 @@ func TestWebhook_MergedPR_PreservesArchive(t *testing.T) {
 		t.Skip("handler test fixture not initialized (no DB?)")
 	}
 	ctx := context.Background()
-	secret := "cancelled-secret"
+	secret := "archive-secret"
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
 
 	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
-		"title":  "Already cancelled",
+		"title":  "Already archived",
 		"status": "archive",
 	})
 	testHandler.CreateIssue(w, req)
@@ -441,11 +441,11 @@ func TestWebhook_MergedPR_PreservesArchive(t *testing.T) {
 		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, created.ID)
 	})
 
-	const installationID int64 = 11223344
+	const installationID int64 = 44556677
 	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
 		WorkspaceID:    parseUUID(testWorkspaceID),
 		InstallationID: installationID,
-		AccountLogin:   "cancelled-acct",
+		AccountLogin:   "archive-acct",
 		AccountType:    "User",
 	}); err != nil {
 		t.Fatalf("CreateGitHubInstallation: %v", err)
