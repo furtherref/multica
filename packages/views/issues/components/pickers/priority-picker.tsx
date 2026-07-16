@@ -30,14 +30,17 @@ interface PriorityPickerProps {
 /**
  * Uncontrolled callers that bring their own trigger content (board cards,
  * list rows) get a deferred lookalike trigger; the popover machinery mounts
- * on first interaction. See `DeferredPopup` for why.
+ * on first interaction. See `DeferredPopup` for why. A childless
+ * `triggerRender` (e.g. the create dialog's bare PillButton) relies on the
+ * picker's computed default content, which the lookalike can't produce —
+ * those callers stay eager.
  */
 export function PriorityPicker(props: PriorityPickerProps) {
   const canDefer =
     props.open === undefined &&
     props.onOpenChange === undefined &&
     !props.defaultOpen &&
-    (props.trigger !== undefined || props.triggerRender !== undefined);
+    (props.trigger !== undefined || props.triggerRender?.props.children != null);
   if (!canDefer) {
     return <PriorityPickerImpl {...props} />;
   }
