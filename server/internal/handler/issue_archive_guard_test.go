@@ -687,3 +687,89 @@ func TestBatchRestoreFromArchiveCancelsStragglerTasks(t *testing.T) {
 		t.Fatalf("batch restore must cancel stragglers, got %q", status)
 	}
 }
+
+// insertFailedRetryableIssueTask inserts a FAILED task linked to issueID with
+// a retryable failure_reason ("timeout", per retryableReasons) and the
+// schema-default attempt/max_attempts (attempt=1 < max_attempts=2, per the
+// same default other archive-guard tests rely on — see
+// TestFailTaskSuppressesRetryOnArchivedIssue) — the shape retryEligible /
+// MaybeRetryFailedTask require to consider a retry at all.
+func insertFailedRetryableIssueTask(t *testing.T, agentID, issueID string) string {
+	t.Helper()
+	var taskID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, issue_id, failure_reason, completed_at)
+		VALUES ($1, (SELECT runtime_id FROM agent WHERE id = $1), 'failed', 0, $2, 'timeout', now())
+		RETURNING id::text
+	`, agentID, issueID).Scan(&taskID); err != nil {
+		t.Fatalf("insert failed retryable task: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+	return taskID
+}
+
+// Fix wave 3: MaybeRetryFailedTask is the orphan-sweeper's auto-retry path
+// (HandleFailedTasks calls it directly on freshly-failed task rows) and
+// shares retryEligible/CreateRetryTask with FailTask's in-transaction retry
+// — but until now it was only ever exercised indirectly through FailTask.
+// This drives it directly: a retry must be suppressed (nil error, no new
+// row), not treated as a failure, when the parent's issue was archived
+// while the task ran.
+func TestMaybeRetryFailedTaskSuppressedOnArchivedIssue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "ArchiveSweeperRetrySuppress", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92174, "sweeper-retry-archived-suppress")
+	taskID := insertFailedRetryableIssueTask(t, agentID, issueID)
+
+	ctx := context.Background()
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'archive' WHERE id = $1`, issueID); err != nil {
+		t.Fatalf("archive issue: %v", err)
+	}
+
+	parent, err := db.New(testPool).GetAgentTask(ctx, parseUUID(taskID))
+	if err != nil {
+		t.Fatalf("load parent task: %v", err)
+	}
+	child, err := testHandler.TaskService.MaybeRetryFailedTask(ctx, parent)
+	if err != nil {
+		t.Fatalf("MaybeRetryFailedTask must suppress, not error, on an archived issue: %v", err)
+	}
+	if child != nil {
+		t.Fatalf("expected no retry child on an archived issue, got task %s", uuidToString(child.ID))
+	}
+	if got := taskCountForIssue(t, issueID); got != 1 {
+		t.Fatalf("expected only the original task row, got %d", got)
+	}
+}
+
+// Positive control for TestMaybeRetryFailedTaskSuppressedOnArchivedIssue: the
+// SAME call on a non-archived issue must create the retry clone. Without
+// this, the archived-issue assertion above could pass vacuously if
+// retryEligible (or the seeded task shape) never fired a retry in the first
+// place.
+func TestMaybeRetryFailedTaskCreatesRetryOnNonArchivedIssue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "SweeperRetryControl", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92175, "sweeper-retry-control")
+	taskID := insertFailedRetryableIssueTask(t, agentID, issueID)
+
+	ctx := context.Background()
+	parent, err := db.New(testPool).GetAgentTask(ctx, parseUUID(taskID))
+	if err != nil {
+		t.Fatalf("load parent task: %v", err)
+	}
+	child, err := testHandler.TaskService.MaybeRetryFailedTask(ctx, parent)
+	if err != nil {
+		t.Fatalf("MaybeRetryFailedTask: %v", err)
+	}
+	if child == nil {
+		t.Fatalf("expected a retry child on a non-archived issue, got nil")
+	}
+	if got := taskCountForIssue(t, issueID); got != 2 {
+		t.Fatalf("expected the original + retry rows, got %d", got)
+	}
+}
