@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "@multica/core/api";
 import type { ApiClient } from "@multica/core/api/client";
-import { issueKeys } from "@multica/core/issues/queries";
+import { issueKeys, resolveListStatuses } from "@multica/core/issues/queries";
 import {
   getIssueSurfaceViewStore,
   pruneIssueSurfaceViewStates,
@@ -196,6 +196,50 @@ describe("useIssueSurfaceController", () => {
     expect(listIssues).toHaveBeenCalledWith(
       expect.objectContaining({ status: "backlog", limit: 50, offset: 0 }),
     );
+  });
+
+  // Fix wave 3b: the list-path fetch (statusIssuesQuery) must include the
+  // archive bucket when the active status filter explicitly selects it, and
+  // must key that fetch separately from the default (no-archive) view.
+  it("fetches the archive bucket and uses a distinguishing cache key when the status filter selects archive", async () => {
+    const store = getIssueSurfaceViewStore("workspace:all:archive-filter");
+    store.getState().toggleStatusFilter("archive");
+
+    const { result } = renderHook(
+      () =>
+        useIssueSurfaceController({
+          scope: { type: "workspace", actorKind: "all" },
+          modes: ["board", "list", "swimlane"],
+        }),
+      { wrapper: makeWrapper(qc, "workspace:all:archive-filter") },
+    );
+
+    await waitFor(() =>
+      expect(listIssues).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "archive" }),
+      ),
+    );
+
+    const defaultSort = { sort_by: "position", sort_direction: undefined } as const;
+    // The default (no-archive) key must NOT be the one this view populated.
+    expect(
+      qc.getQueryCache().find({
+        queryKey: issueKeys.listSorted("ws-1", defaultSort),
+        exact: true,
+      }),
+    ).toBeUndefined();
+    // The archive-inclusive key IS the one populated.
+    expect(
+      qc.getQueryCache().find({
+        queryKey: issueKeys.listSorted(
+          "ws-1",
+          defaultSort,
+          resolveListStatuses(["archive"]),
+        ),
+        exact: true,
+      }),
+    ).toBeDefined();
+    expect(result.current.visibleStatuses).toEqual(["archive"]);
   });
 
   it("maps my assigned scope to the existing personal issue query contract", async () => {

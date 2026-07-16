@@ -35,7 +35,13 @@ import { useWorkspacePaths } from "@multica/core/paths";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useLoadMoreByStatus } from "@multica/core/issues/mutations";
-import { childrenByParentsOptions, issueKeys, type IssueSortParam, type MyIssuesFilter } from "@multica/core/issues/queries";
+import {
+  childrenByParentsOptions,
+  issueKeys,
+  resolveListStatuses,
+  type IssueSortParam,
+  type MyIssuesFilter,
+} from "@multica/core/issues/queries";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -568,6 +574,15 @@ function SwimLaneViewImpl({
   // in lifecycle order.
   const sortedStatuses = useMemo(
     () => ALL_STATUSES.filter((s) => visibleStatuses.includes(s)),
+    [visibleStatuses],
+  );
+
+  // Must match the statuses the active statusIssuesQuery actually fetched
+  // (see use-issue-surface-data's listStatuses) so load-more recomputes the
+  // same cache key — including for a non-archive column while `archive` is
+  // ALSO part of the active status filter.
+  const listStatuses = useMemo(
+    () => resolveListStatuses(visibleStatuses),
     [visibleStatuses],
   );
 
@@ -1181,11 +1196,12 @@ function SwimLaneViewImpl({
             gridStyle={gridStyle}
             myIssuesOpts={myIssuesOpts}
             sort={sort}
+            listStatuses={listStatuses}
           />
         </div>
       ),
     }),
-    [sortedStatuses, gridStyle, myIssuesOpts, sort],
+    [sortedStatuses, gridStyle, myIssuesOpts, sort, listStatuses],
   );
 
   const computeLaneKey = (_index: number, lane: LaneGroup) => lane.key;
@@ -1623,11 +1639,15 @@ function SwimLaneLoadMoreRow({
   gridStyle,
   myIssuesOpts,
   sort,
+  listStatuses,
 }: {
   sortedStatuses: IssueStatus[];
   gridStyle: React.CSSProperties;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
   sort?: IssueSortParam;
+  /** Effective statuses the active statusIssuesQuery fetched — see
+   *  useLoadMoreByStatus's `statuses` contract. */
+  listStatuses?: readonly IssueStatus[];
 }) {
   return (
     <div style={gridStyle}>
@@ -1637,6 +1657,7 @@ function SwimLaneLoadMoreRow({
           status={status}
           myIssuesOpts={myIssuesOpts}
           sort={sort}
+          listStatuses={listStatuses}
         />
       ))}
     </div>
@@ -1647,12 +1668,14 @@ function SwimLaneLoadMoreCell({
   status,
   myIssuesOpts,
   sort,
+  listStatuses,
 }: {
   status: IssueStatus;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
   sort?: IssueSortParam;
+  listStatuses?: readonly IssueStatus[];
 }) {
-  const { loadMore, hasMore, isLoading } = useLoadMoreByStatus(status, myIssuesOpts, sort);
+  const { loadMore, hasMore, isLoading } = useLoadMoreByStatus(status, myIssuesOpts, sort, listStatuses);
   if (!hasMore) return <div />;
   return <InfiniteScrollSentinel onVisible={loadMore} loading={isLoading} />;
 }

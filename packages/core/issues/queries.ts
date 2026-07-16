@@ -26,9 +26,24 @@ export const issueKeys = {
   all: (wsId: string) => ["issues", wsId] as const,
   /** PREFIX for invalidation — no sort. */
   list: (wsId: string) => [...issueKeys.all(wsId), "list"] as const,
-  /** FULL KEY for queryOptions — includes sort. */
-  listSorted: (wsId: string, sort?: IssueSortParam) =>
-    [...issueKeys.list(wsId), sort ?? {}] as const,
+  /**
+   * FULL KEY for queryOptions — includes sort and (when the effective fetch
+   * includes `archive`) a distinguishing marker. `statuses` is the resolved
+   * set passed to {@link issueListOptions} — omit it (or pass the default
+   * `PAGINATED_STATUSES`) for the byte-identical default-view key. Callers
+   * that need to relocate this exact cache entry (e.g. `useLoadMoreByStatus`)
+   * must pass the SAME `statuses` the active query was built with.
+   */
+  listSorted: (
+    wsId: string,
+    sort?: IssueSortParam,
+    statuses?: readonly IssueStatus[],
+  ) => {
+    const base = [...issueKeys.list(wsId), sort ?? {}] as const;
+    return statuses?.includes("archive")
+      ? ([...base, "archive"] as const)
+      : base;
+  },
   assigneeGroupsAll: (wsId: string) =>
     [...issueKeys.all(wsId), "assignee-groups"] as const,
   assigneeGroups: (wsId: string, filter: AssigneeGroupedIssuesFilter) =>
@@ -38,9 +53,20 @@ export const issueKeys = {
   /** PREFIX for per-scope invalidation — no sort. */
   myList: (wsId: string, scope: string, filter: MyIssuesFilter) =>
     [...issueKeys.myAll(wsId), scope, filter] as const,
-  /** FULL KEY for queryOptions — includes sort. */
-  myListSorted: (wsId: string, scope: string, filter: MyIssuesFilter, sort?: IssueSortParam) =>
-    [...issueKeys.myList(wsId, scope, filter), sort ?? {}] as const,
+  /** FULL KEY for queryOptions — see {@link issueKeys.listSorted} for the
+   *  `statuses` contract (archive-inclusion marker). */
+  myListSorted: (
+    wsId: string,
+    scope: string,
+    filter: MyIssuesFilter,
+    sort?: IssueSortParam,
+    statuses?: readonly IssueStatus[],
+  ) => {
+    const base = [...issueKeys.myList(wsId, scope, filter), sort ?? {}] as const;
+    return statuses?.includes("archive")
+      ? ([...base, "archive"] as const)
+      : base;
+  },
   myAssigneeGroupsAll: (wsId: string) =>
     [...issueKeys.myAll(wsId), "assignee-groups"] as const,
   myAssigneeGroups: (
@@ -148,24 +174,51 @@ export const ISSUE_PAGE_SIZE = 50;
  */
 export const PAGINATED_STATUSES: readonly IssueStatus[] = DEFAULT_VISIBLE_STATUSES;
 
+/**
+ * Resolve which statuses a list-path fetch (and its load-more pagination)
+ * must request: {@link PAGINATED_STATUSES}, plus `archive` when the caller's
+ * active status selection includes it. `archive` stays fetch-excluded unless
+ * explicitly selected — this is the options-builder-level decision point
+ * `PAGINATED_STATUSES` itself must NOT encode (it governs default fetch/cache
+ * membership everywhere else).
+ *
+ * `activeStatuses` is the raw `statusFilters` (surface-data hook) or the
+ * derived `visibleStatuses` (view components) — both agree on archive
+ * membership by construction, so either is a valid input.
+ */
+export function resolveListStatuses(
+  activeStatuses: readonly IssueStatus[],
+): readonly IssueStatus[] {
+  return activeStatuses.includes("archive")
+    ? [...PAGINATED_STATUSES, "archive"]
+    : PAGINATED_STATUSES;
+}
+
 /** Flatten a bucketed response to a single Issue[] for consumers that want the whole list. */
-export function flattenIssueBuckets(data: ListIssuesCache) {
+export function flattenIssueBuckets(
+  data: ListIssuesCache,
+  statuses: readonly IssueStatus[] = PAGINATED_STATUSES,
+) {
   const out = [];
-  for (const status of PAGINATED_STATUSES) {
+  for (const status of statuses) {
     const bucket = data.byStatus[status];
     if (bucket) out.push(...bucket.issues);
   }
   return out;
 }
 
-async function fetchFirstPages(filter: MyIssuesFilter = {}, sort?: IssueSortParam): Promise<ListIssuesCache> {
+async function fetchFirstPages(
+  filter: MyIssuesFilter = {},
+  sort?: IssueSortParam,
+  statuses: readonly IssueStatus[] = PAGINATED_STATUSES,
+): Promise<ListIssuesCache> {
   const responses = await Promise.all(
-    PAGINATED_STATUSES.map((status) =>
+    statuses.map((status) =>
       api.listIssues({ status, limit: ISSUE_PAGE_SIZE, offset: 0, ...sort, ...filter }),
     ),
   );
   const byStatus: ListIssuesCache["byStatus"] = {};
-  PAGINATED_STATUSES.forEach((status, i) => {
+  statuses.forEach((status, i) => {
     const res = responses[i]!;
     byStatus[status] = { issues: res.issues, total: res.total };
   });
@@ -242,14 +295,18 @@ function compareIssuesForSort(a: Issue, b: Issue, sort?: IssueSortParam): number
   }
 }
 
-async function fetchAllMyFirstPages(userId: string, sort?: IssueSortParam): Promise<ListIssuesCache> {
+async function fetchAllMyFirstPages(
+  userId: string,
+  sort?: IssueSortParam,
+  statuses: readonly IssueStatus[] = PAGINATED_STATUSES,
+): Promise<ListIssuesCache> {
   const [byAssignee, byCreator, byInvolves] = await Promise.all([
-    fetchFirstPages({ assignee_id: userId }, sort),
-    fetchFirstPages({ creator_id: userId }, sort),
-    fetchFirstPages({ involves_user_id: userId }, sort),
+    fetchFirstPages({ assignee_id: userId }, sort, statuses),
+    fetchFirstPages({ creator_id: userId }, sort, statuses),
+    fetchFirstPages({ involves_user_id: userId }, sort, statuses),
   ]);
   const byStatus: ListIssuesCache["byStatus"] = {};
-  for (const status of PAGINATED_STATUSES) {
+  for (const status of statuses) {
     const seen = new Set<string>();
     const merged: Issue[] = [];
     for (const cache of [byAssignee, byCreator, byInvolves]) {
@@ -334,12 +391,22 @@ async function fetchAllMyAssigneeGroups(
  *
  * Fetches the first page of each paginated status in parallel. Use
  * {@link useLoadMoreByStatus} to paginate a specific status into the cache.
+ *
+ * `statuses` defaults to {@link PAGINATED_STATUSES} — pass the result of
+ * {@link resolveListStatuses} to also fetch `archive` when the caller's
+ * active status filter selects it. The query key only diverges from the
+ * default-view key when `archive` is included, so non-archive callers are
+ * byte-identical to before.
  */
-export function issueListOptions(wsId: string, sort?: IssueSortParam) {
+export function issueListOptions(
+  wsId: string,
+  sort?: IssueSortParam,
+  statuses: readonly IssueStatus[] = PAGINATED_STATUSES,
+) {
   return queryOptions({
-    queryKey: issueKeys.listSorted(wsId, sort),
-    queryFn: () => fetchFirstPages({}, sort),
-    select: flattenIssueBuckets,
+    queryKey: issueKeys.listSorted(wsId, sort, statuses),
+    queryFn: () => fetchFirstPages({}, sort, statuses),
+    select: (data: ListIssuesCache) => flattenIssueBuckets(data, statuses),
     placeholderData: keepPreviousData,
   });
 }
@@ -377,14 +444,16 @@ export function myIssueListOptions(
   // is ignored.
   userId?: string,
   sort?: IssueSortParam,
+  // See issueListOptions for the `statuses` contract (archive-inclusion).
+  statuses: readonly IssueStatus[] = PAGINATED_STATUSES,
 ) {
   return queryOptions({
-    queryKey: issueKeys.myListSorted(wsId, scope, filter, sort),
+    queryKey: issueKeys.myListSorted(wsId, scope, filter, sort, statuses),
     queryFn: () =>
       scope === "all" && userId
-        ? fetchAllMyFirstPages(userId, sort)
-        : fetchFirstPages(filter, sort),
-    select: flattenIssueBuckets,
+        ? fetchAllMyFirstPages(userId, sort, statuses)
+        : fetchFirstPages(filter, sort, statuses),
+    select: (data: ListIssuesCache) => flattenIssueBuckets(data, statuses),
     placeholderData: keepPreviousData,
   });
 }
