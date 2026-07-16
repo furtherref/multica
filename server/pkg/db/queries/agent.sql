@@ -356,6 +356,11 @@ SELECT
     p.chat_input_task_id
 FROM agent_task_queue p
 WHERE p.id = $1
+  -- Archive (fork status #39): no retry attempt is raised on retired work.
+  -- Callers treat the resulting no-row as "retry suppressed", not an error.
+  AND (p.issue_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM issue i WHERE i.id = p.issue_id AND i.status = 'archive'
+  ))
 RETURNING *;
 
 -- name: CancelAgentTasksByIssue :many
@@ -445,6 +450,13 @@ SET status = 'dispatched',
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.agent_id = $1 AND atq.status = 'queued'
+      -- Archive (fork status #39) is retired work: a task whose issue was
+      -- archived after enqueue (insert/retry racing the archive cancel) must
+      -- never be claimed. This is the single queued->dispatched transition,
+      -- so the predicate makes every such orphan permanently inert.
+      AND (atq.issue_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM issue i WHERE i.id = atq.issue_id AND i.status = 'archive'
+      ))
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
           WHERE active.agent_id = atq.agent_id

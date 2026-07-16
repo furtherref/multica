@@ -2919,10 +2919,18 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 				RuntimeMcpOverlay:    retryOverlay.Overlay,
 				RuntimeConnectedApps: retryOverlay.ConnectedApps,
 			})
-			if cerr != nil {
+			switch {
+			case errors.Is(cerr, pgx.ErrNoRows):
+				// The issue was archived while this task ran (fork status
+				// #39): the fail stands, but no retry is raised on retired
+				// work — CreateRetryTask's WHERE suppressed the clone.
+				slog.Info("retry suppressed: issue archived",
+					"task_id", util.UUIDToString(taskID))
+			case cerr != nil:
 				return fmt.Errorf("create retry task: %w", cerr)
+			default:
+				retried = &child
 			}
-			retried = &child
 		}
 		return nil
 	}); err != nil {
