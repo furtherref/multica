@@ -110,6 +110,19 @@ UPDATE issue SET
 WHERE id = $1 AND workspace_id = $3
 RETURNING *;
 
+-- name: AdvanceIssueStatusIfActive :one
+-- Conditional status write for asynchronous (webhook/system) advancement:
+-- fires only while the issue is still active, so a snapshot read racing a
+-- concurrent archive (fork status #39) / done / cancel cannot resurrect or
+-- double-advance it. No rows = a concurrent writer settled the issue first;
+-- callers skip their side effects.
+UPDATE issue SET
+    status = $2,
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $3
+  AND status NOT IN ('done', 'cancelled', 'archive')
+RETURNING *;
+
 -- name: CreateIssueWithOrigin :one
 INSERT INTO issue (
     workspace_id, title, description, status, priority,

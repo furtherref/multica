@@ -11,6 +11,60 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const advanceIssueStatusIfActive = `-- name: AdvanceIssueStatusIfActive :one
+UPDATE issue SET
+    status = $2,
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $3
+  AND status NOT IN ('done', 'cancelled', 'archive')
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties
+`
+
+type AdvanceIssueStatusIfActiveParams struct {
+	ID          pgtype.UUID `json:"id"`
+	Status      string      `json:"status"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Conditional status write for asynchronous (webhook/system) advancement:
+// fires only while the issue is still active, so a snapshot read racing a
+// concurrent archive (fork status #39) / done / cancel cannot resurrect or
+// double-advance it. No rows = a concurrent writer settled the issue first;
+// callers skip their side effects.
+func (q *Queries) AdvanceIssueStatusIfActive(ctx context.Context, arg AdvanceIssueStatusIfActiveParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, advanceIssueStatusIfActive, arg.ID, arg.Status, arg.WorkspaceID)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+	)
+	return i, err
+}
+
 const childIssueProgress = `-- name: ChildIssueProgress :many
 SELECT parent_issue_id,
        COUNT(*)::bigint AS total,

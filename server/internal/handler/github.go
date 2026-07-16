@@ -1364,12 +1364,22 @@ func (h *Handler) lookupIssueByIdentifier(ctx context.Context, workspaceID pgtyp
 }
 
 func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, workspaceID string) {
-	updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+	// Conditional write: the caller's `issue` snapshot may be stale by the
+	// time this runs (webhook processing racing a concurrent archive/done/
+	// cancel), so AdvanceIssueStatusIfActive only advances issues still in
+	// an active status. ErrNoRows means a concurrent writer already settled
+	// the issue — skip the notify/publish side effects rather than
+	// resurrecting or double-advancing it.
+	updated, err := h.Queries.AdvanceIssueStatusIfActive(ctx, db.AdvanceIssueStatusIfActiveParams{
 		ID:          issue.ID,
 		Status:      "done",
 		WorkspaceID: issue.WorkspaceID,
 	})
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			slog.Info("github: issue already settled, skipping advance", "issue_id", uuidToString(issue.ID))
+			return
+		}
 		slog.Warn("github: advance issue to done failed", "err", err)
 		return
 	}
