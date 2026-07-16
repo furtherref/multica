@@ -87,7 +87,14 @@ appear**. Concretely, and unlike `done`/`cancelled`:
   conversation) is suppressed. `done`/`cancelled` issues stay mentionable.
 - Tasks on an archived issue are never claimed, never reclaimed, never retried,
   and never started — closing the enqueue/archive concurrency races at every
-  task-execution transition.
+  task-execution transition. These guards are statement-level, so the guarantee
+  is best-effort at the extreme margin: a start that races the archive commit
+  inside a single statement snapshot can still launch, and is then interrupted
+  within one daemon cancellation poll (5s in production; the watcher performs
+  an immediate first check, so a cancel that lands before the watcher starts
+  interrupts in milliseconds). Archive-time cancellation precedes the archive
+  commit, so a successfully reported archive means in-flight tasks were already
+  cancelled.
 - Archived issues do not count as active duplicates.
 - Archive is terminal for stage barriers and parent wake (single and batch
   paths), and a merged close-intent PR does not resurrect an archived issue.
