@@ -393,3 +393,42 @@ func TestCommentOnArchivedIssueDoesNotEnqueue(t *testing.T) {
 		t.Fatalf("comments on an archived issue must not enqueue; got %d task row(s)", got)
 	}
 }
+
+// Fix wave 2: a dispatched-never-started task whose issue was archived (and
+// whose cancel raced/failed) must not be re-delivered by stale-claim recovery.
+// The batch variant (ReclaimStaleDispatchedTasksForRuntimes) carries the same
+// predicate; the singular query is exercised as the representative.
+func TestReclaimSkipsTasksOnArchivedIssue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "ArchiveReclaimGuard", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92168, "reclaim-archived-guard")
+	// Seed a stale dispatched-never-started task (old dispatched_at, no lease).
+	var taskID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, issue_id, dispatched_at)
+		VALUES ($1, (SELECT runtime_id FROM agent WHERE id = $1), 'dispatched', 0, $2, now() - interval '1 hour')
+		RETURNING id::text
+	`, agentID, issueID).Scan(&taskID); err != nil {
+		t.Fatalf("insert stale dispatched task: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+	ctx := context.Background()
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'archive' WHERE id = $1`, issueID); err != nil {
+		t.Fatalf("archive issue: %v", err)
+	}
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("load runtime id: %v", err)
+	}
+	q := db.New(testPool)
+	if _, err := q.ReclaimStaleDispatchedTaskForRuntime(ctx, db.ReclaimStaleDispatchedTaskForRuntimeParams{
+		RuntimeID:         parseUUID(runtimeID),
+		ClaimRecoverySecs: 60,
+		PrepareLeaseSecs:  60,
+	}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("reclaim must skip the archived issue's task, got err=%v", err)
+	}
+}

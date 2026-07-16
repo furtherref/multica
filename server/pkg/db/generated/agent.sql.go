@@ -4289,6 +4289,12 @@ WHERE id = (
       AND atq.started_at IS NULL
       AND atq.dispatched_at < now() - make_interval(secs => $3::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
+      -- Archive (fork status #39): never re-deliver a task whose issue was
+      -- archived — mirrors the ClaimAgentTask guard so reclaim cannot bypass
+      -- the queued->dispatched chokepoint's invariant.
+      AND (atq.issue_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM issue i WHERE i.id = atq.issue_id AND i.status = 'archive'
+      ))
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
@@ -4373,6 +4379,12 @@ WHERE id IN (
       AND atq.started_at IS NULL
       AND atq.dispatched_at < now() - make_interval(secs => $3::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
+      -- Archive (fork status #39): never re-deliver a task whose issue was
+      -- archived — mirrors the ClaimAgentTask guard so reclaim cannot bypass
+      -- the queued->dispatched chokepoint's invariant.
+      AND (atq.issue_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM issue i WHERE i.id = atq.issue_id AND i.status = 'archive'
+      ))
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT $4::int
     FOR UPDATE SKIP LOCKED
