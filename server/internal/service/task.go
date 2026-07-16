@@ -3116,6 +3116,16 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		RuntimeConnectedApps: runtimeMCPOverlay.ConnectedApps,
 	})
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// CreateRetryTask's WHERE clause excludes tasks whose issue was
+			// archived while the parent ran (fork status #39). This is
+			// suppression, not failure: the sweeper's only caller discards the
+			// error anyway, but return nil so future callers don't misread a
+			// suppressed retry as a real auto-retry failure.
+			slog.Info("task auto-retry suppressed: issue archived",
+				"task_id", util.UUIDToString(parent.ID))
+			return nil, nil
+		}
 		slog.Warn("task auto-retry failed",
 			"parent_task_id", util.UUIDToString(parent.ID),
 			"reason", reason,
