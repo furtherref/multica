@@ -72,3 +72,24 @@ Existing tests around done/cancelled behavior should continue to pass with
 ## Out of Scope
 
 - Adding a separate archive browser, restore flow, or bulk archive action.
+
+## Addendum (2026-07-16): archive means retired, stricter than done/cancelled
+
+The original semantics above made archive match `cancelled`'s terminal
+behavior. The archive-consistency fixes (branch `fix/archive-consistency`)
+tighten this: archive now means **retired work on which no new agent spend can
+appear**. Concretely, and unlike `done`/`cancelled`:
+
+- Creating into, assigning onto, or promoting into `archive` never enqueues.
+- Manual rerun returns 409 `issue_archived`; restore first.
+- No comment triggers on an archived issue — explicit @mentions are blocked
+  with reason `issue_archived`; implicit routing (assignee / thread /
+  conversation) is suppressed. `done`/`cancelled` issues stay mentionable.
+- Tasks on an archived issue are never claimed and never retried, closing the
+  enqueue/archive concurrency races at the queued→dispatched chokepoint.
+- Archived issues do not count as active duplicates.
+- Archive is terminal for stage barriers and parent wake (single and batch
+  paths), and a merged close-intent PR does not resurrect an archived issue.
+
+Restoring from archive re-enables all of the above but never auto-enqueues by
+itself; runs start again via the normal assign/promote/mention actions.
