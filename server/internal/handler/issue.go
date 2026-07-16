@@ -2711,7 +2711,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to cancel the issue's tasks; archive aborted")
 			return
 		}
-		// If the cancel succeeds but the status write then fails, the issue stays active with its tasks already cancelled — acceptable: the user was archiving, and a retry completes the transition.
+		// If the cancel succeeds but the status write then fails, the issue
+		// stays active with its tasks already cancelled — acceptable: the
+		// user was archiving, and a retry completes the transition.
 	}
 
 	issue, err := h.Queries.UpdateIssue(r.Context(), params)
@@ -3295,7 +3297,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 					"issue_id", issueID, "error", err)
 				continue
 			}
-			// If the cancel succeeds but the status write then fails, the issue stays active with its tasks already cancelled — acceptable: the user was archiving, and a retry completes the transition.
+			// If the cancel succeeds but the status write then fails, the issue
+			// stays active with its tasks already cancelled — acceptable: the
+			// user was archiving, and a retry completes the transition.
 		}
 
 		issue, err := h.Queries.UpdateIssue(r.Context(), params)

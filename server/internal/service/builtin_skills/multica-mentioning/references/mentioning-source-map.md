@@ -68,7 +68,7 @@ a pointer.
 | Default dedup query skips any queued or dispatched task for the issue and agent | `server/pkg/db/queries/agent.sql:544-548` |
 | Edit-preview dedup query excludes only tasks whose `trigger_comment_id` equals the edited comment | `server/pkg/db/queries/agent.sql:550-558` |
 | `hasPendingTaskForIssueAndAgent` selects the comment-scoped exclusion only when `ExcludeTriggerCommentID` is valid | `server/internal/handler/comment.go:1232-1244` |
-| Agent-assignee on-comment dedup uses the shared helper | `server/internal/handler/issue.go:2576-2594` |
+| Agent-assignee on-comment dedup uses the shared helper | `server/internal/handler/issue.go:2926-2944` |
 | Assigned squad leader on-comment dedup uses the shared helper | `server/internal/handler/comment.go:1197-1229` |
 | Mentioned squad leader dedup uses the shared helper | `server/internal/handler/comment.go:1397-1435` |
 | Direct agent mention dedup uses the shared helper | `server/internal/handler/comment.go:1440-1464` |
