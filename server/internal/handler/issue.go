@@ -2665,6 +2665,30 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Restoring from archive (fork status #39) sweeps stragglers BEFORE the
+	// status write commits, detected from the REQUEST's own intent (not a
+	// post-write diff): the caller is setting a non-archive status on an
+	// issue that is currently archived. Tasks that raced past the
+	// archive-time cancel were kept inert by the claim/reclaim guards, and
+	// must not wake up now that the issue is going active again. Restore
+	// itself never starts new runs (see the design addendum). Sweeping here
+	// — before both the write and WillEnqueueRun — means a sweep failure
+	// aborts the whole restore (the issue stays archived) instead of
+	// leaving an ACTIVE issue with live stragglers while dispatch proceeds
+	// underneath them; a same-request assign-triggered run still survives
+	// the sweep because it hasn't been dispatched yet. If the write itself
+	// fails AFTER a successful sweep, that's harmless: the stragglers were
+	// already due to die at archive time, so cancelling them a beat early
+	// costs nothing.
+	if req.Status != nil && *req.Status != "archive" && prevIssue.Status == "archive" {
+		if err := h.TaskService.CancelTasksForIssue(r.Context(), prevIssue.ID); err != nil {
+			slog.Error("restore: cancel straggler tasks failed",
+				"issue_id", uuidToString(prevIssue.ID), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to cancel archived issue's tasks; restore aborted")
+			return
+		}
+	}
+
 	issue, err := h.Queries.UpdateIssue(r.Context(), params)
 	if err != nil {
 		slog.Warn("update issue failed", append(logger.RequestAttrs(r), "error", err, "issue_id", id, "workspace_id", workspaceID)...)
@@ -2739,26 +2763,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// active tasks: a user clicking "cancel" on an issue has no expectation that
 	// it stops in-flight agent runs, so that implicit coupling is gone
 	// (MUL-4465). The fork-original `archive` status (#39) has two status-driven
-	// exceptions, both handled below: archiving retires the issue, so its
-	// in-flight tasks are cancelled with it, and restoring from archive sweeps
-	// straggler tasks that raced past the archive-time cancel. Deleting an
+	// exceptions: archiving retires the issue, so its in-flight tasks are
+	// cancelled with it (below), and restoring from archive sweeps straggler
+	// tasks that raced past the archive-time cancel — that sweep precedes both
+	// the status write and WillEnqueueRun (see above, before h.Queries.UpdateIssue)
+	// so a sweep failure aborts the restore instead of leaving an ACTIVE issue
+	// with live stragglers while dispatch proceeds underneath them. Deleting an
 	// issue still cancels its tasks (see DeleteIssue), because the tasks'
 	// owning issue ceases to exist.
-
-	// Restoring from archive (fork status #39) sweeps stragglers: tasks that
-	// raced past the archive-time cancel were kept inert by the claim/reclaim
-	// guards, and must not wake up now that the issue is active again. Restore
-	// itself never starts new runs (see the design addendum). This runs before
-	// WillEnqueueRun so a same-request assign-triggered run survives the sweep:
-	// if the sweep ran after dispatch, it would cancel a run this very request
-	// just enqueued, violating the MUL-3375 invariant that the write path never
-	// drops a run the preview promised.
-	if statusChanged && prevIssue.Status == "archive" && issue.Status != "archive" {
-		if err := h.TaskService.CancelTasksForIssue(r.Context(), issue.ID); err != nil {
-			slog.Error("restore: cancel straggler tasks failed",
-				"issue_id", uuidToString(issue.ID), "error", err)
-		}
-	}
 
 	if trigger, ok := h.IssueService.WillEnqueueRun(r.Context(),
 		service.IssueTriggerInput{
@@ -3242,6 +3254,22 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Restoring from archive (fork status #39) sweeps stragglers BEFORE
+		// this iteration's status write commits, detected from the REQUEST's
+		// own intent (mirrors UpdateIssue; see that handler for the full
+		// rationale). On sweep failure this issue is skipped entirely —
+		// logged and `continue`d WITHOUT applying the update, same as the
+		// per-issue update-error handling right below — so it stays archived
+		// and is not counted in `updated`, instead of going active with live
+		// stragglers underneath it.
+		if req.Updates.Status != nil && *req.Updates.Status != "archive" && prevIssue.Status == "archive" {
+			if err := h.TaskService.CancelTasksForIssue(r.Context(), prevIssue.ID); err != nil {
+				slog.Error("batch restore: cancel straggler tasks failed",
+					"issue_id", issueID, "error", err)
+				continue
+			}
+		}
+
 		issue, err := h.Queries.UpdateIssue(r.Context(), params)
 		if err != nil {
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
@@ -3267,22 +3295,13 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		})
 
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
-		// mirrors UpdateIssue. See that handler for the rationale.
-
-		// Restoring from archive (fork status #39) sweeps stragglers: tasks that
-		// raced past the archive-time cancel were kept inert by the claim/reclaim
-		// guards, and must not wake up now that the issue is active again.
-		// Restore itself never starts new runs (see the design addendum). This
-		// runs before WillEnqueueRun so a same-request assign-triggered run
-		// survives the sweep: if the sweep ran after dispatch, it would cancel a
-		// run this very request just enqueued, violating the MUL-3375 invariant
-		// that the write path never drops a run the preview promised.
-		if statusChanged && prevIssue.Status == "archive" && issue.Status != "archive" {
-			if err := h.TaskService.CancelTasksForIssue(r.Context(), issue.ID); err != nil {
-				slog.Error("restore: cancel straggler tasks failed",
-					"issue_id", uuidToString(issue.ID), "error", err)
-			}
-		}
+		// mirrors UpdateIssue. See that handler for the rationale. The
+		// fork-original `archive` status (#39) has two status-driven
+		// exceptions: archiving retires the issue, so its in-flight tasks are
+		// cancelled with it (below), and restoring from archive sweeps
+		// straggler tasks that raced past the archive-time cancel — that
+		// sweep precedes both this iteration's status write and
+		// WillEnqueueRun (see above, before h.Queries.UpdateIssue).
 
 		// Same single predicate as UpdateIssue — batch must not grow its own
 		// copy of the enqueue rule (the historical source of four-entry-point

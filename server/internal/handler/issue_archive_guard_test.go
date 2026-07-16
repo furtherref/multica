@@ -658,3 +658,32 @@ func TestStartTaskRefusedOnArchivedIssue(t *testing.T) {
 		t.Fatalf("refused start must leave the task untouched, got %q", status)
 	}
 }
+
+// Fix wave 3: the batch restore path sweeps stragglers too.
+func TestBatchRestoreFromArchiveCancelsStragglerTasks(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "ArchiveBatchRestoreSweep", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92173, "batch-restore-sweeps")
+	updateChildStatus(t, issueID, "archive")
+	taskID := insertQueuedIssueTask(t, agentID, issueID)
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
+		"issue_ids": []string{issueID},
+		"updates":   map[string]any{"status": "todo"},
+	})
+	testHandler.BatchUpdateIssues(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch restore: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var status string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status); err != nil {
+		t.Fatalf("read task status: %v", err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("batch restore must cancel stragglers, got %q", status)
+	}
+}

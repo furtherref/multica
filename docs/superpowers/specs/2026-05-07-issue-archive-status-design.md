@@ -93,4 +93,8 @@ appear**. Concretely, and unlike `done`/`cancelled`:
 
 Restoring from archive re-enables all of the above, cancels any straggler
 tasks that raced past the archive-time cancel, and never auto-enqueues by
-itself; runs start again via the normal assign/promote/mention actions.
+itself; runs start again via the normal assign/promote/mention actions. A
+known theoretical residual remains: an insert transaction that reads the
+issue before archive and commits only after a full archive→restore cycle can
+strand a runnable task; closing it would need per-issue generation counters,
+which this design deliberately omits.
