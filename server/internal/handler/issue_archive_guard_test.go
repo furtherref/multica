@@ -773,3 +773,49 @@ func TestMaybeRetryFailedTaskCreatesRetryOnNonArchivedIssue(t *testing.T) {
 		t.Fatalf("expected the original + retry rows, got %d", got)
 	}
 }
+
+// Fix wave 4: archiving cancels in-flight tasks BEFORE the archive commits —
+// a reported archive means the work is already dead.
+func TestArchiveCancelsActiveTasks(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "ArchiveCancelsActive", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92176, "archive-cancels-active")
+	taskID := insertRunningIssueTask(t, agentID, issueID)
+	updateChildStatus(t, issueID, "archive")
+	var status string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status); err != nil {
+		t.Fatalf("read task status: %v", err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("archive must cancel the running task, got %q", status)
+	}
+}
+
+func TestBatchArchiveCancelsActiveTasks(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "BatchArchiveCancelsActive", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92177, "batch-archive-cancels-active")
+	taskID := insertRunningIssueTask(t, agentID, issueID)
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
+		"issue_ids": []string{issueID},
+		"updates":   map[string]any{"status": "archive"},
+	})
+	testHandler.BatchUpdateIssues(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch archive: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var status string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status); err != nil {
+		t.Fatalf("read task status: %v", err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("batch archive must cancel the running task, got %q", status)
+	}
+}
