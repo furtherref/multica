@@ -16,6 +16,8 @@ export function blockedReasonLabel(reasonCode: string, t: IssuesT): string {
       return t(($) => $.comment.trigger_blocked_target_unavailable);
     case "runtime_offline":
       return t(($) => $.comment.trigger_blocked_runtime_offline);
+    case "issue_archived":
+      return t(($) => $.comment.trigger_blocked_issue_archived);
     default:
       return t(($) => $.comment.trigger_blocked_generic);
   }
@@ -31,6 +33,8 @@ export function blockedShortReasonLabel(reasonCode: string, t: IssuesT): string 
       return t(($) => $.comment.trigger_blocked_short_target_unavailable);
     case "runtime_offline":
       return t(($) => $.comment.trigger_blocked_short_runtime_offline);
+    case "issue_archived":
+      return t(($) => $.comment.trigger_blocked_short_issue_archived);
     default:
       return t(($) => $.comment.trigger_blocked_short_generic);
   }

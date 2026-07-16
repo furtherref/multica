@@ -325,3 +325,71 @@ func TestRerunBlockedOnArchivedIssue(t *testing.T) {
 		t.Fatalf("blocked rerun must not create a task; got %d", got)
 	}
 }
+
+// Fix (c), comment half: no comment raises a run on an archived issue — not
+// explicit @mentions, and not the implicit assignee-fallback routing. The
+// preview endpoint must warn (blocked outcome) instead of silently no-oping.
+func TestCommentTriggerPreviewBlockedOnArchivedIssue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "ArchiveMentionPreview", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92163, "mention-archived-preview")
+	updateChildStatus(t, issueID, "archive")
+
+	content := "[@ArchiveMentionPreview](mention://agent/" + agentID + ") please continue"
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+issueID+"/comments/trigger-preview", map[string]any{
+		"content": content,
+	})
+	req = withURLParam(req, "id", issueID)
+	testHandler.PreviewCommentTriggers(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp CommentTriggerPreviewResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if len(resp.Agents) != 0 {
+		t.Fatalf("archived issue must trigger no agents, got %d", len(resp.Agents))
+	}
+	if len(resp.Blocked) != 1 || resp.Blocked[0].ReasonCode != ReasonIssueArchived {
+		t.Fatalf("expected one blocked outcome with issue_archived, got %+v", resp.Blocked)
+	}
+}
+
+func TestCommentOnArchivedIssueDoesNotEnqueue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "ArchiveMentionCreate", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92164, "mention-archived-create")
+	updateChildStatus(t, issueID, "archive")
+
+	// Explicit @mention.
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
+		"content": "[@ArchiveMentionCreate](mention://agent/" + agentID + ") go on",
+	})
+	req = withURLParam(req, "id", issueID)
+	testHandler.CreateComment(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment mention: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Plain comment — would normally fire the assignee fallback in any status.
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
+		"content": "just checking in",
+	})
+	req = withURLParam(req, "id", issueID)
+	testHandler.CreateComment(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment plain: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if got := taskCountForIssue(t, issueID); got != 0 {
+		t.Fatalf("comments on an archived issue must not enqueue; got %d task row(s)", got)
+	}
+}

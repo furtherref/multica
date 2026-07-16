@@ -88,6 +88,7 @@ a pointer.
 | already-pending dedup (squad leader) → shared pending-task helper → `continue` | `server/internal/handler/comment.go:1429-1433` |
 | `canAccessPrivateAgent` definition | `server/internal/handler/agent_access.go` (search `func (h *Handler) canAccessPrivateAgent`) |
 | `canEnqueueSquadLeader` (loads leader, delegates to `canInvokeAgent`) | `server/internal/handler/agent_access.go:261-267` |
+| archived issue → `computeCommentAgentTriggers` blocks every `agent`/`squad` mention target up front (before `resolveMentionedAgentCommentTriggers` runs), returning a `blocked`/`issue_archived` outcome per target instead of routing. Not silent like the guards above — the preview surfaces the block so the composer can warn (MUL-4525). | `server/internal/handler/comment.go:1879-1908` |
 
 ## @all broadcast and assignee-trigger suppression
 

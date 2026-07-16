@@ -145,6 +145,29 @@ describe("CommentTriggerChips", () => {
     expect(screen.queryByText(/won't trigger/i)).not.toBeInTheDocument();
   });
 
+  it("names a blocked mention on an archived issue with the archived reason", () => {
+    renderWithI18n(
+      <CommentTriggerChips
+        agents={[]}
+        blocked={[
+          {
+            target_type: "agent",
+            target_id: "deadbeef-0001",
+            status: "blocked",
+            reason_code: "issue_archived",
+          },
+        ]}
+        draftContent="[@Go](mention://agent/deadbeef-0001) hi"
+        suppressedAgentIds={new Set()}
+        onToggle={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Go")).toBeInTheDocument();
+    expect(screen.getByText("Issue archived")).toBeInTheDocument();
+    expect(screen.queryByText("Won't start")).not.toBeInTheDocument();
+  });
+
   it("falls back to the reason alone when the label can't be correlated", () => {
     renderWithI18n(
       <CommentTriggerChips
