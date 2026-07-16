@@ -115,20 +115,21 @@ and is hidden from the PR list.
 
 | Behavior | File:line | Drifted from |
 |---|---|---|
-| Create-time: agent-assigned, non-backlog issue enqueues immediately | `server/internal/handler/issue.go:2263-2264` | new citation |
-| `shouldEnqueueAgentTask` returns false for `backlog` (parking lot) | `server/internal/handler/issue.go:2644-2648` | new citation |
-| Backlog → non-backlog (not done/cancelled) enqueues on update | `server/internal/handler/issue.go:2537-2540` | `:2523` |
-| Same contract in batch update | `server/internal/handler/issue.go:3021-3024` | new citation |
-| Child → `done` notifies + wakes the parent, gated by the stage barrier | `server/internal/handler/issue_child_done.go:66` (`notifyParentOfChildDone`; doc comment at `:15`; barrier gate at `:115`) | func def `:51` |
-| Status change to non-archive statuses (incl. → `cancelled`) does NOT cancel in-flight tasks; only issue deletion does (MUL-4465) | no-cancel note in `server/internal/handler/issue.go:2652-2658` (`UpdateIssue`) and `:3170-3171` (`BatchUpdateIssues`); deletion still cancels at `:2863` (`DeleteIssue`) / `:3239` (`BatchDeleteIssues`) via `CancelTasksForIssue` (`server/internal/service/task.go:1229`) | new citation |
-| `archive` (fork status #39) is the one status change that DOES cancel in-flight tasks | `server/internal/handler/issue.go:2761-2769` (`UpdateIssue`) and `:3283-3291` (`BatchUpdateIssues`), both via `CancelTasksForIssue` | new citation, fix wave 2 |
-| Assigning/promoting into `archive` never enqueues a run | `server/internal/service/issue_trigger.go:105` (assign source) and `:110` (status source), inside `WillEnqueueRun` | new citation, fix wave 2 |
-| Restoring from `archive` sweeps straggler tasks (does not itself enqueue) | `server/internal/handler/issue.go:2771-2780` (`UpdateIssue`) and `:3297-3302` (`BatchUpdateIssues`), both via `CancelTasksForIssue` | new citation, fix wave 2 |
+| Create-time: agent-assigned issue enqueues immediately unless created into `backlog` or `archive` | `server/internal/service/issue.go:395` (call site inside `IssueService.Create`, the HTTP `CreateIssue` path) | fix wave 3: old `:2263-2264` pointed at unrelated `validateAssigneePair` code |
+| `shouldEnqueueAgentTask` returns false for `backlog` and `archive` (parking lot / retired work) | `server/internal/service/issue.go:413-415` (the gate `IssueService.Create` actually uses); `server/internal/handler/issue.go:2891-2895` mirrors it for the onboarding-shim create path only (`internal/handler/onboarding_shim.go:328`) | fix wave 3: old `:2644-2648` pointed at unrelated stage-field handling |
+| Backlog → active (not `done`/`cancelled`/`archive`) enqueues on update, via the single shared `WillEnqueueRun` status source | `server/internal/service/issue_trigger.go:109-114` | fix wave 3: old `:2537-2540` pointed at unrelated priority-field handling; contract text widened to include archive |
+| `UpdateIssue` and `BatchUpdateIssues` call the identical `WillEnqueueRun` predicate — there is no separate batch copy of the enqueue rule (MUL-3375) | `server/internal/handler/issue.go:2775-2785` (`UpdateIssue`) and `:3309-3319` (`BatchUpdateIssues`) | fix wave 3: old `:3021-3024` pointed at unrelated code; the old "same contract" phrasing implied a duplicated copy, which was never accurate — it is the same call |
+| Child → `done` notifies + wakes the parent, gated by the stage barrier | `server/internal/handler/issue_child_done.go:68` (`notifyParentOfChildDone`; doc comment at `:16`; barrier gate at `:124`) | fix wave 3: was func def `:66`/comment `:15`/gate `:115` |
+| Status change to non-archive statuses (incl. → `cancelled`) does NOT cancel in-flight tasks; only issue deletion does (MUL-4465) | no-cancel note in `server/internal/handler/issue.go:2762` (`UpdateIssue`) and `:3321-3323` (`BatchUpdateIssues`); deletion still cancels at `:2992` (`DeleteIssue`) / `:3400` (`BatchDeleteIssues`) via `CancelTasksForIssue` (`server/internal/service/task.go:1586`) | fix wave 3: old `:2652-2658` / `:3170-3171` / `:2863` / `:3239` / `task.go:1229` all stale |
+| `archive` (fork status #39) is the one status change that DOES cancel in-flight tasks | `server/internal/handler/issue.go:2787-2798` (`UpdateIssue`) and `:3324-3332` (`BatchUpdateIssues`), both via `CancelTasksForIssue` | fix wave 3: shifted by the item-2 sweep reorder; was `:2761-2769` / `:3283-3291` |
+| Assigning/promoting into `archive` never enqueues a run | `server/internal/service/issue_trigger.go:105` (assign source) and `:110` (status source), inside `WillEnqueueRun` | re-verified fix wave 3, unchanged |
+| Restoring from `archive` sweeps straggler tasks BEFORE the status write commits, not after (fix wave 3): a sweep failure aborts the single-issue restore outright (issue stays archived), and in the batch loop the issue is skipped without applying its update and without counting toward `updated` | `server/internal/handler/issue.go:2683-2690` (`UpdateIssue`, before `h.Queries.UpdateIssue`) and `:3265-3271` (`BatchUpdateIssues`, before that iteration's `h.Queries.UpdateIssue`), both via `CancelTasksForIssue` | fix wave 3: moved pre-write; was post-write at `:2771-2780` / `:3297-3302` |
 
-Creation with `--status todo` (or any non-backlog status) on an agent-assigned
-issue fires the agent immediately; `--status backlog` parks it with the assignee
-set but no trigger. Promoting `backlog → todo` later fires it then (update path,
-line 2537).
+Creation with `--status todo` (or any active status — not `backlog`, not
+`archive`) on an agent-assigned issue fires the agent immediately; `--status
+backlog` parks it with the assignee set but no trigger. Promoting `backlog →
+todo` later fires it then via the shared `WillEnqueueRun` status source
+(`internal/service/issue_trigger.go:109-114`).
 
 Moving an issue to `cancelled` used to call `CancelTasksForIssue` and stop every
 active task on it (the old #940 behavior). MUL-4465 removed that from both
@@ -187,6 +188,7 @@ grep -n 'ListPullRequestsForIssue'           cmd/server/router.go internal/handl
 grep -n 'func issuePullRequestRowToResponse\|type GitHubPullRequestResponse struct\|func derivePRState\|func extractIdentifiers\|func extractClosingIdentifiers\|closingIdentifierRe' internal/handler/github.go
 grep -n 'extractIdentifiers(\|extractClosingIdentifiers(\|derivePRState(' internal/handler/github.go
 grep -n 'qualifyingIdents\|reference_only\|ReferenceOnly' internal/handler/github.go pkg/db/queries/github.sql
-grep -n 'prevIssue.Status == "backlog"\|func (h \*Handler) shouldEnqueueAgentTask' internal/handler/issue.go
-grep -n 'func notifyParentOfChildDone'       internal/handler/issue_child_done.go
+grep -n 'in.PrevStatus == "backlog"\|func (s \*IssueService) WillEnqueueRun' internal/service/issue_trigger.go
+grep -n 'func (s \*IssueService) shouldEnqueueAgentTask\|func (h \*Handler) shouldEnqueueAgentTask' internal/service/issue.go internal/handler/issue.go
+grep -n 'func (h \*Handler) notifyParentOfChildDone'       internal/handler/issue_child_done.go
 ```

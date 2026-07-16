@@ -195,8 +195,9 @@ on it. These are the contracts, not advice:
 ## Sub-issues: `todo` starts work now, `backlog` parks it
 
 On an agent-assigned issue, create status decides whether the assignee fires
-immediately. A non-backlog status (e.g. `todo`) enqueues the agent at create
-time; `backlog` sets the assignee without triggering.
+immediately. An active create status (e.g. `todo`) enqueues the agent at
+create time; `backlog` parks it, and `archive` (fork status #39) never
+enqueues.
 
 Parallel children — all start now:
 
@@ -218,10 +219,10 @@ Creating every serial step as `todo` enqueues the whole chain at once.
 `--stage <N>` (N ≥ 1) groups sub-issues under the same parent into ordered
 stages. The parent assignee is woken **once, when a whole stage finishes** —
 i.e. every sub-issue in the lowest unfinished stage has reached a terminal
-status (`done`/`cancelled`). A completion that does not close a stage is silent
-(no comment, no wake). A sibling set with **no** stages is one implicit stage,
-so the parent is woken once when the *last* sub-issue finishes — not on every
-child.
+status (`done`/`cancelled`/`archive` — archiving a sub-issue also closes its
+stage). A completion that does not close a stage is silent (no comment, no
+wake). A sibling set with **no** stages is one implicit stage, so the parent
+is woken once when the *last* sub-issue finishes — not on every child.
 
 Advancement is agent-driven: the server only detects the closed barrier and
 wakes the parent assignee, who then decides whether to promote the next stage's
