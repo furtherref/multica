@@ -37,6 +37,11 @@ const fixtureEphemeral = `{"type":"session.mcp_servers_loaded","data":{"servers"
 
 const fixtureSessionStart = `{"type":"session.start","data":{"sessionId":"35059dc3-d928-4ffb-8616-b78938621d85","selectedModel":"claude-sonnet-4","context":{"cwd":"/tmp"}},"id":"ss-1","timestamp":"2026-04-16T08:43:34.000Z"}`
 
+// Newer Copilot CLI builds (observed on v1.0.70) omit selectedModel from
+// session.start when the run doesn't pass --model — the model is only
+// revealed later on tool.execution_complete events.
+const fixtureSessionStartNoModel = `{"type":"session.start","data":{"sessionId":"35059dc3-d928-4ffb-8616-b78938621d85","context":{"cwd":"/tmp"}},"id":"ss-1","timestamp":"2026-04-16T08:43:34.000Z"}`
+
 const fixtureReasoning = `{"type":"assistant.reasoning","data":{"content":"Let me think about this..."},"id":"r-1","timestamp":"2026-04-16T08:43:37.000Z","parentId":"p-1"}`
 
 const fixtureReasoningDelta = `{"type":"assistant.reasoning_delta","data":{"deltaContent":"thinking step"},"id":"rd-1","timestamp":"2026-04-16T08:43:37.100Z","parentId":"p-1","ephemeral":true}`
@@ -239,7 +244,9 @@ func TestCopilotParseSessionError(t *testing.T) {
 // simulateCopilotEventLoop feeds JSONL lines through handleCopilotEvent —
 // the exact same function used in production — and collects the results.
 func simulateCopilotEventLoop(t *testing.T, lines []string) ([]Message, string, string, map[string]TokenUsage) {
-	return simulateCopilotEventLoopWithModel(t, lines, "copilot")
+	// Empty seed model mirrors a task whose agent has no explicit model
+	// configured — the daemon passes opts.Model == "" through.
+	return simulateCopilotEventLoopWithModel(t, lines, "")
 }
 
 func simulateCopilotEventLoopWithModel(t *testing.T, lines []string, seedModel string) ([]Message, string, string, map[string]TokenUsage) {
@@ -254,6 +261,7 @@ func simulateCopilotEventLoopWithModel(t *testing.T, lines []string, seedModel s
 		}
 		msgs = append(msgs, handleCopilotEvent(evt, st)...)
 	}
+	st.finalizeUsage()
 	return msgs, st.sessionID, st.finalStatus, st.usage
 }
 
@@ -349,15 +357,16 @@ func TestCopilotEventLoopToolUseFlow(t *testing.T) {
 		t.Fatalf("expected tool result to contain 'file1.go', got %q", toolResult.Output)
 	}
 
-	// After tool.execution_complete with model, activeModel should be updated.
-	if _, ok := usage["claude-opus-4.6"]; ok {
-		// outputTokens from assistant.message came BEFORE tool.execution_complete,
-		// so they should be under "copilot", not "claude-opus-4.6".
-		t.Log("model attribution is correct: assistant.message tokens go under initial model")
+	// The assistant.message tokens arrive BEFORE tool.execution_complete
+	// reveals the real model, but a Copilot -p run uses a single model for
+	// the whole session, so pending tokens must be re-attributed to the
+	// first real model observed — never left under the "copilot" placeholder.
+	if _, ok := usage["copilot"]; ok {
+		t.Fatal("expected no tokens under the 'copilot' placeholder once a real model is known")
 	}
-	u := usage["copilot"]
+	u := usage["claude-opus-4.6"]
 	if u.OutputTokens != 112 {
-		t.Fatalf("expected 112 outputTokens under 'copilot', got %d", u.OutputTokens)
+		t.Fatalf("expected 112 outputTokens under 'claude-opus-4.6', got %d", u.OutputTokens)
 	}
 }
 
@@ -514,11 +523,14 @@ func TestCopilotEventLoopMultiTurnUsage(t *testing.T) {
 
 	_, _, _, usage := simulateCopilotEventLoop(t, lines)
 
-	if u := usage["copilot"]; u.OutputTokens != 112 {
-		t.Fatalf("expected 112 tokens under 'copilot', got %d", u.OutputTokens)
+	// Turn 0 tokens arrived before the model was known; once
+	// tool.execution_complete reveals it, they are folded into the real
+	// model together with turn 1's tokens.
+	if _, ok := usage["copilot"]; ok {
+		t.Fatal("expected no tokens under the 'copilot' placeholder once a real model is known")
 	}
-	if u := usage["claude-opus-4.6"]; u.OutputTokens != 106 {
-		t.Fatalf("expected 106 tokens under 'claude-opus-4.6', got %d", u.OutputTokens)
+	if u := usage["claude-opus-4.6"]; u.OutputTokens != 218 {
+		t.Fatalf("expected 218 tokens under 'claude-opus-4.6', got %d", u.OutputTokens)
 	}
 }
 
@@ -544,6 +556,57 @@ func TestCopilotEventLoopSessionStartSetsModel(t *testing.T) {
 	}
 	if u.OutputTokens != 5 {
 		t.Fatalf("expected 5 outputTokens, got %d", u.OutputTokens)
+	}
+}
+
+func TestCopilotEventLoopPendingTokensReattributedToFirstRealModel(t *testing.T) {
+	t.Parallel()
+	// session.start without selectedModel (Copilot CLI v1.0.70 with no
+	// --model), then first-turn tokens, then tool.execution_complete finally
+	// reveals the real model. The buffered first-turn tokens must be folded
+	// into that model instead of staying under the "copilot" placeholder.
+	lines := []string{
+		fixtureSessionStartNoModel,
+		fixtureTurnStart,
+		fixtureAssistantMessageWithTools, // 112 outputTokens, model not yet known
+		fixtureToolExecComplete,          // reveals model "claude-opus-4.6"
+		fixtureResult,
+	}
+
+	_, _, _, usage := simulateCopilotEventLoop(t, lines)
+
+	if _, ok := usage["copilot"]; ok {
+		t.Fatal("expected no tokens under the 'copilot' placeholder once a real model is known")
+	}
+	u, ok := usage["claude-opus-4.6"]
+	if !ok {
+		t.Fatal("expected tokens under 'claude-opus-4.6'")
+	}
+	if u.OutputTokens != 112 {
+		t.Fatalf("expected 112 outputTokens under 'claude-opus-4.6', got %d", u.OutputTokens)
+	}
+}
+
+func TestCopilotEventLoopNoModelEventsFallsBackToPlaceholder(t *testing.T) {
+	t.Parallel()
+	// A run where no event ever reveals the model (no selectedModel, no tool
+	// calls): tokens have nowhere better to go, so they fall back to the
+	// "copilot" placeholder bucket at finalize time.
+	lines := []string{
+		fixtureSessionStartNoModel,
+		fixtureTurnStart,
+		fixtureAssistantMessage, // 5 outputTokens
+		fixtureResult,
+	}
+
+	_, _, _, usage := simulateCopilotEventLoop(t, lines)
+
+	u, ok := usage["copilot"]
+	if !ok {
+		t.Fatal("expected fallback usage entry under 'copilot'")
+	}
+	if u.OutputTokens != 5 {
+		t.Fatalf("expected 5 outputTokens under 'copilot', got %d", u.OutputTokens)
 	}
 }
 
