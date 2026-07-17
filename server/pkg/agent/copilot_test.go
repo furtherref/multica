@@ -42,6 +42,12 @@ const fixtureSessionStart = `{"type":"session.start","data":{"sessionId":"35059d
 // revealed later on tool.execution_complete events.
 const fixtureSessionStartNoModel = `{"type":"session.start","data":{"sessionId":"35059dc3-d928-4ffb-8616-b78938621d85","context":{"cwd":"/tmp"}},"id":"ss-1","timestamp":"2026-04-16T08:43:34.000Z"}`
 
+// Real Copilot CLI v1.0.70 assistant.message: newer builds stamp the model
+// directly on the message event that carries outputTokens. A default-model
+// no-tool run emits no session.start at all, so this field is the only
+// model signal on such streams.
+const fixtureAssistantMessageV1070 = `{"type":"assistant.message","data":{"messageId":"ffaa165a-30dc-4d28-b594-c982c2350b66","model":"claude-opus-4.8","content":"pong","toolRequests":[],"interactionId":"f6401bea-7dd3-4a69-bf51-046dea1aeb6a","turnId":"0","outputTokens":4,"requestId":"ED27:15BAC8:E86D82:FF215A:6A59F7B3","clientRequestId":"00000-91ab96f7-acf5-4c34-823a-47d871217923","serviceRequestId":"861ec382-1a7a-41f7-ada8-947b521275b4","apiCallId":"msg_011Cd7QQ7ZuosU57rQ7pTbSv"},"id":"a4b89bdd-86ff-4f14-a0f9-b5bde3e4354c","timestamp":"2026-07-17T09:36:54.298Z","parentId":"1bab961b-056f-4045-92be-96bbc6b79092"}`
+
 const fixtureReasoning = `{"type":"assistant.reasoning","data":{"content":"Let me think about this..."},"id":"r-1","timestamp":"2026-04-16T08:43:37.000Z","parentId":"p-1"}`
 
 const fixtureReasoningDelta = `{"type":"assistant.reasoning_delta","data":{"deltaContent":"thinking step"},"id":"rd-1","timestamp":"2026-04-16T08:43:37.100Z","parentId":"p-1","ephemeral":true}`
@@ -584,6 +590,32 @@ func TestCopilotEventLoopPendingTokensReattributedToFirstRealModel(t *testing.T)
 	}
 	if u.OutputTokens != 112 {
 		t.Fatalf("expected 112 outputTokens under 'claude-opus-4.6', got %d", u.OutputTokens)
+	}
+}
+
+func TestCopilotEventLoopAssistantMessageModelAttributesTokens(t *testing.T) {
+	t.Parallel()
+	// Copilot CLI v1.0.70 default-model no-tool run: no session.start event
+	// at all, and the only model signal is the model field on
+	// assistant.message itself. Tokens must land under that model, not the
+	// "copilot" placeholder.
+	lines := []string{
+		fixtureTurnStart,
+		fixtureAssistantMessageV1070, // 4 outputTokens, model "claude-opus-4.8"
+		fixtureResult,
+	}
+
+	_, _, _, usage := simulateCopilotEventLoop(t, lines)
+
+	if _, ok := usage["copilot"]; ok {
+		t.Fatal("expected no tokens under the 'copilot' placeholder when assistant.message carries the model")
+	}
+	u, ok := usage["claude-opus-4.8"]
+	if !ok {
+		t.Fatal("expected tokens under 'claude-opus-4.8'")
+	}
+	if u.OutputTokens != 4 {
+		t.Fatalf("expected 4 outputTokens under 'claude-opus-4.8', got %d", u.OutputTokens)
 	}
 }
 

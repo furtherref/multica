@@ -155,6 +155,11 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 		if msg.ReasoningText != "" {
 			msgs = append(msgs, Message{Type: MessageThinking, Content: msg.ReasoningText})
 		}
+		// Resolve the model before counting tokens so they attribute
+		// directly instead of round-tripping through the pending buffer.
+		if msg.Model != "" {
+			st.setModel(msg.Model)
+		}
 		if msg.OutputTokens > 0 {
 			st.addOutputTokens(msg.OutputTokens)
 		}
@@ -430,7 +435,12 @@ type copilotSessionStart struct {
 
 // copilotAssistantMessage is data payload for "assistant.message".
 type copilotAssistantMessage struct {
-	MessageID     string               `json:"messageId"`
+	MessageID string `json:"messageId"`
+	// Model is stamped on the message event by newer CLI builds (observed
+	// on v1.0.70; absent on v1.0.28). On a default-model no-tool run it is
+	// the only model signal in the whole stream — such runs emit no
+	// session.start event at all.
+	Model         string               `json:"model,omitempty"`
 	Content       string               `json:"content"`
 	ToolRequests  []copilotToolRequest `json:"toolRequests"`
 	OutputTokens  int64                `json:"outputTokens"`
