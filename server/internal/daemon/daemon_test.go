@@ -2657,9 +2657,22 @@ func TestHandleTask_ReportsUsageBeforeCancel(t *testing.T) {
 			recordCall("usage")
 			w.WriteHeader(http.StatusOK)
 		case strings.HasSuffix(r.URL.Path, "/status"):
-			recordCall("status")
+			// The cancellation watcher performs an immediate first status
+			// check when it starts, concurrently with the runner. Answer
+			// "running" until usage has been reported so that early read
+			// neither interrupts the task nor races into callOrder; only the
+			// post-run status check — the one this test orders against —
+			// sees "cancelled".
+			mu.Lock()
+			usageSeen := slices.Contains(callOrder, "usage")
+			mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
+			if !usageSeen {
+				_, _ = w.Write([]byte(`{"status":"running"}`))
+				return
+			}
+			recordCall("status")
 			_, _ = w.Write([]byte(`{"status":"cancelled"}`))
 		default:
 			w.WriteHeader(http.StatusOK)
