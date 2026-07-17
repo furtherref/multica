@@ -31,6 +31,38 @@ func taskCountForIssue(t *testing.T, issueID string) int {
 	return n
 }
 
+func waitForTaskStatus(taskID, want string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var status string
+		err := testPool.QueryRow(context.Background(),
+			`SELECT status FROM agent_task_queue WHERE id = $1`, taskID,
+		).Scan(&status)
+		if err == nil && status == want {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+func lockIssueRow(t *testing.T, issueID string) pgx.Tx {
+	t.Helper()
+	tx, err := testPool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin issue lock transaction: %v", err)
+	}
+	if _, err := tx.Exec(context.Background(),
+		// FOR NO KEY UPDATE blocks the status write while remaining compatible
+		// with the KEY SHARE lock taken by a late task's issue_id FK check.
+		`SELECT 1 FROM issue WHERE id = $1 FOR NO KEY UPDATE`, issueID,
+	); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatalf("lock issue row: %v", err)
+	}
+	return tx
+}
+
 // createIssueViaHTTP drives the real CreateIssue handler and returns the
 // created issue. Cleanup is registered on the test.
 func createIssueViaHTTP(t *testing.T, body map[string]any) IssueResponse {
@@ -115,6 +147,112 @@ func TestBatchBacklogToArchiveDoesNotEnqueue(t *testing.T) {
 	}
 	if got := taskCountForIssue(t, issue.ID); got != 0 {
 		t.Fatalf("batch backlog->archive must not enqueue; got %d task row(s)", got)
+	}
+}
+
+// The pre-archive cancellation is deliberately retained as an early failure
+// gate, but it cannot close the enqueue/start race by itself. This test locks
+// the issue write, waits until that first cancellation has completed, inserts
+// a late running task while the issue is still active, then lets the archive
+// commit. The post-commit sweep must converge that late task to cancelled.
+func TestArchiveCancelsTaskStartedAfterPreWriteSweep(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "ArchiveLateStartSweep", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92178, "archive-cancels-late-start")
+	initialTaskID := insertRunningIssueTask(t, agentID, issueID)
+
+	tx := lockIssueRow(t, issueID)
+	rollback := true
+	defer func() {
+		if rollback {
+			_ = tx.Rollback(context.Background())
+		}
+	}()
+
+	w := httptest.NewRecorder()
+	req := newRequest("PUT", "/api/issues/"+issueID, map[string]any{"status": "archive"})
+	req = withURLParam(req, "id", issueID)
+	done := make(chan struct{})
+	go func() {
+		testHandler.UpdateIssue(w, req)
+		close(done)
+	}()
+
+	if !waitForTaskStatus(initialTaskID, "cancelled", 2*time.Second) {
+		_ = tx.Rollback(context.Background())
+		rollback = false
+		<-done
+		t.Fatal("archive handler did not finish its pre-write cancellation")
+	}
+	lateTaskID := insertRunningIssueTask(t, agentID, issueID)
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatalf("release issue row lock: %v", err)
+	}
+	rollback = false
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("archive handler did not finish after issue row lock was released")
+	}
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateIssue archive: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := taskStatus(t, lateTaskID); got != "cancelled" {
+		t.Fatalf("task started after the pre-write sweep must be cancelled after archive commit, got %q", got)
+	}
+}
+
+func TestBatchArchiveCancelsTaskStartedAfterPreWriteSweep(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "BatchArchiveLateStartSweep", []byte("[]"))
+	issueID := insertAgentAssignedIssue(t, agentID, 92179, "batch-archive-cancels-late-start")
+	initialTaskID := insertRunningIssueTask(t, agentID, issueID)
+
+	tx := lockIssueRow(t, issueID)
+	rollback := true
+	defer func() {
+		if rollback {
+			_ = tx.Rollback(context.Background())
+		}
+	}()
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
+		"issue_ids": []string{issueID},
+		"updates":   map[string]any{"status": "archive"},
+	})
+	done := make(chan struct{})
+	go func() {
+		testHandler.BatchUpdateIssues(w, req)
+		close(done)
+	}()
+
+	if !waitForTaskStatus(initialTaskID, "cancelled", 2*time.Second) {
+		_ = tx.Rollback(context.Background())
+		rollback = false
+		<-done
+		t.Fatal("batch archive handler did not finish its pre-write cancellation")
+	}
+	lateTaskID := insertRunningIssueTask(t, agentID, issueID)
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatalf("release issue row lock: %v", err)
+	}
+	rollback = false
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("batch archive handler did not finish after issue row lock was released")
+	}
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("BatchUpdateIssues archive: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := taskStatus(t, lateTaskID); got != "cancelled" {
+		t.Fatalf("batch archive must cancel a task started after its pre-write sweep, got %q", got)
 	}
 }
 

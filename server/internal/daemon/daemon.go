@@ -3035,9 +3035,10 @@ func (d *Daemon) watchTaskCancellation(ctx context.Context, taskID string, pollI
 			close(cancelled)
 			return true
 		}
-		// Immediate first check: a cancel that landed between /start and the
-		// watcher starting (e.g. the archive race) interrupts in milliseconds
-		// instead of waiting out the first poll interval.
+		// Immediate first check handles a task that was already terminal when
+		// the watcher started. The distinct post-/start launch boundary is
+		// checked synchronously inside runTask; this goroutine may otherwise
+		// observe "dispatched" before /start and sleep for a full poll interval.
 		if check() {
 			return
 		}
@@ -4026,6 +4027,31 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("start task failed: %w", err)
 	}
 	stopPrepareLease()
+
+	// The asynchronous watcher starts before runTask so it can interrupt env
+	// preparation, but that means its immediate read may see "dispatched" and
+	// sleep through the critical post-/start launch boundary. Re-read status
+	// synchronously here: if archive/cancel won the race, do not create model
+	// spend by invoking the provider. Transient read errors remain best-effort
+	// and fall through to the watcher, matching shouldInterruptAgent's policy.
+	if status, statusErr := d.client.GetTaskStatus(ctx, task.ID); shouldInterruptAgent(status, statusErr) {
+		if env.LocalDirectory {
+			if cleanupErr := execenv.CleanupSidecars(env.RootDir); cleanupErr != nil {
+				taskLog.Warn("cancelled task sidecar cleanup failed (non-fatal)", "error", cleanupErr)
+			}
+		}
+		taskLog.Info("task terminal after start; skipping provider launch", "status", status, "error", statusErr)
+		resultStatus := status
+		if resultStatus == "" {
+			resultStatus = "cancelled"
+		}
+		return TaskResult{
+			Status:  resultStatus,
+			Comment: "task cancelled before provider launch",
+			WorkDir: env.WorkDir,
+			EnvRoot: env.RootDir,
+		}, nil
+	}
 	_ = d.client.ReportProgress(ctx, task.ID, fmt.Sprintf("Launching %s", provider), 1, 2)
 
 	reused := gateResumeToReusedWorkdir(&task, &taskCtx, env.WorkDir, taskLog)

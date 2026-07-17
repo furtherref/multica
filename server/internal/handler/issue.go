@@ -2665,12 +2665,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The next two blocks are pre-write, mutually exclusive status-transition
+	// The next two blocks are mutually exclusive pre-write status-transition
 	// guards compared against `prevIssue.Status`: restoring sweeps stragglers
-	// when LEAVING archive, archiving cancels active tasks when ENTERING
-	// archive. Both run before h.Queries.UpdateIssue so a cancellation
-	// failure aborts the whole write instead of leaving the issue in a state
-	// where dispatch can race underneath it.
+	// when LEAVING archive, while archiving performs its early cancellation
+	// gate when ENTERING archive. Both can abort before h.Queries.UpdateIssue;
+	// archiving also has a post-write convergence sweep below.
 
 	// Restoring from archive (fork status #39) sweeps stragglers BEFORE the
 	// status write commits, detected from the REQUEST's own intent (not a
@@ -2696,14 +2695,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Archiving (fork status #39) cancels in-flight tasks BEFORE the status
-	// write commits, for the same reason as the restore sweep above: a
-	// reported archive must mean the work is already dead, not "dead soon".
-	// This deliberately survives MUL-4465, which removed only the
-	// cancelled/done coupling — upstream has no archive status. Cancel
-	// precedes the archive commit, so a reported archive means in-flight
-	// tasks are already cancelled; this also narrows the /start race — by
-	// the time the archive is visible, dispatched/running tasks are gone.
+	// Archiving (fork status #39) first cancels in-flight tasks BEFORE the
+	// status write. This deliberately survives MUL-4465, which removed only
+	// the cancelled/done coupling — upstream has no archive status. The early
+	// gate lets an initial cancellation failure leave the issue active and
+	// narrows the /start race; the post-write sweep below catches tasks that
+	// become active after this scan while the archive write is pending.
 	if req.Status != nil && *req.Status == "archive" && prevIssue.Status != "archive" {
 		if err := h.TaskService.CancelTasksForIssue(r.Context(), prevIssue.ID); err != nil {
 			slog.Error("archive: cancel tasks failed",
@@ -2721,6 +2718,21 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("update issue failed", append(logger.RequestAttrs(r), "error", err, "issue_id", id, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to update issue: "+err.Error())
 		return
+	}
+
+	// The pre-write archive cancellation is an early failure gate, not a
+	// complete concurrency barrier: a task can become active after that scan
+	// while the issue status write is waiting to commit. Sweep again after the
+	// archive is visible so every such late task converges to cancelled before
+	// we publish success. Run this for any explicit archive request, including a
+	// retry after a previous post-write sweep failure.
+	var archiveConvergenceErr error
+	if req.Status != nil && *req.Status == "archive" {
+		archiveConvergenceErr = h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
+		if archiveConvergenceErr != nil {
+			slog.Error("archive committed but post-write task sweep failed",
+				"issue_id", uuidToString(issue.ID), "error", archiveConvergenceErr)
+		}
 	}
 
 	if len(attachmentIDs) > 0 {
@@ -2790,14 +2802,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// active tasks: a user clicking "cancel" on an issue has no expectation that
 	// it stops in-flight agent runs, so that implicit coupling is gone
 	// (MUL-4465). The fork-original `archive` status (#39) has two status-driven
-	// exceptions, both pre-write (see above, before h.Queries.UpdateIssue):
-	// archiving cancels in-flight tasks before the archive commits, so a
-	// reported archive already means the work is dead, and restoring from
-	// archive sweeps straggler tasks that raced past the archive-time cancel
-	// so a sweep failure aborts the restore instead of leaving an ACTIVE issue
-	// with live stragglers while dispatch proceeds underneath them. Deleting an
-	// issue still cancels its tasks (see DeleteIssue), because the tasks'
-	// owning issue ceases to exist.
+	// exceptions: archiving uses a pre-write failure gate plus a post-write
+	// convergence sweep (see above), while restoring from archive sweeps
+	// straggler tasks before the write so a sweep failure aborts the restore
+	// instead of leaving an ACTIVE issue with live stragglers while dispatch
+	// proceeds underneath them. Deleting an issue still cancels its tasks (see
+	// DeleteIssue), because the tasks' owning issue ceases to exist.
 
 	if trigger, ok := h.IssueService.WillEnqueueRun(r.Context(),
 		service.IssueTriggerInput{
@@ -2818,6 +2828,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// fails best-effort.
 	if statusChanged {
 		h.notifyParentOfChildDone(r.Context(), prevIssue, issue)
+	}
+	if archiveConvergenceErr != nil {
+		// The issue mutation, attachment links, and issue:updated event have
+		// already completed. Surface the remaining task-convergence failure
+		// explicitly so the caller can retry status=archive without mistaking
+		// the committed issue state for a rolled-back write.
+		writeError(w, http.StatusInternalServerError, "issue is archived but task cancellation did not converge; retry the archive request")
+		return
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -3112,6 +3130,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated := 0
+	var archiveConvergenceFailedIDs []string
 	// Children that transitioned into a terminal status this batch, collected so
 	// the parent/stage notification is evaluated once against the final state
 	// after the loop (MUL-4155) rather than per-child mid-batch.
@@ -3283,10 +3302,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Archiving (fork status #39) cancels in-flight tasks BEFORE this
-		// iteration's status write commits, mirroring UpdateIssue (see that
-		// handler for the full rationale: a reported archive must mean the
-		// work is already dead). On cancel failure this issue is skipped
+		// Archiving (fork status #39) first cancels in-flight tasks BEFORE this
+		// iteration's status write, mirroring UpdateIssue's early failure gate;
+		// the post-write convergence sweep below closes the late-start window.
+		// On cancel failure this issue is skipped
 		// entirely — logged and `continue`d WITHOUT applying the update, same
 		// as the restore sweep's batch branch immediately above — so it is
 		// not counted in `updated` instead of archiving over live in-flight
@@ -3306,6 +3325,18 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
 			continue
+		}
+
+		// Mirror UpdateIssue's post-write convergence sweep. An explicit
+		// archive retry also runs this block, allowing a caller to recover from
+		// a previous sweep failure after the status was already committed.
+		var archiveConvergenceErr error
+		if req.Updates.Status != nil && *req.Updates.Status == "archive" {
+			archiveConvergenceErr = h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
+			if archiveConvergenceErr != nil {
+				slog.Error("batch archive committed but post-write task sweep failed",
+					"issue_id", issueID, "error", archiveConvergenceErr)
+			}
 		}
 
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
@@ -3329,10 +3360,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
 		// mirrors UpdateIssue. See that handler for the rationale. The
 		// fork-original `archive` status (#39) has two status-driven
-		// exceptions, both pre-write (see above, before h.Queries.UpdateIssue,
-		// mirroring UpdateIssue): archiving cancels in-flight tasks before the
-		// archive commits, and restoring from archive sweeps straggler tasks
-		// that raced past the archive-time cancel.
+		// exceptions: archiving uses the pre-write failure gate plus post-write
+		// convergence sweep above, and restoring from archive sweeps straggler
+		// tasks before its status write.
 
 		// Same single predicate as UpdateIssue — batch must not grow its own
 		// copy of the enqueue rule (the historical source of four-entry-point
@@ -3363,6 +3393,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		updated++
+		if archiveConvergenceErr != nil {
+			archiveConvergenceFailedIDs = append(archiveConvergenceFailedIDs, issueID)
+		}
 	}
 
 	// Aggregate parent/stage notification over the whole batch's final state so
@@ -3372,6 +3405,14 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	h.notifyParentsOfBatchChildDone(r.Context(), childDoneCompleted)
 
 	slog.Info("batch update issues", append(logger.RequestAttrs(r), "count", updated)...)
+	if len(archiveConvergenceFailedIDs) > 0 {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":                        "issues were archived but task cancellation did not converge; retry status=archive for the listed issues",
+			"updated":                      updated,
+			"convergence_failed_issue_ids": archiveConvergenceFailedIDs,
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
 }
 
