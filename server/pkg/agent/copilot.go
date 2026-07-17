@@ -29,17 +29,77 @@ type copilotEventState struct {
 	output      strings.Builder
 	sessionID   string
 	activeModel string
-	finalStatus string
-	finalError  string
-	usage       map[string]TokenUsage
+	// modelResolved reports whether activeModel is a real model id (seeded
+	// from opts.Model, or observed on session.start.selectedModel /
+	// tool.execution_complete.model) rather than the "copilot" placeholder.
+	modelResolved bool
+	// pendingUsage buffers tokens that arrive before the model is known, so
+	// they can be attributed to the first real model observed instead of the
+	// placeholder. Newer Copilot CLI builds omit selectedModel from
+	// session.start when no --model is passed, so without this the whole
+	// first turn lands under "copilot".
+	pendingUsage TokenUsage
+	finalStatus  string
+	finalError   string
+	usage        map[string]TokenUsage
 }
 
 func newCopilotEventState(seedModel string) *copilotEventState {
-	return &copilotEventState{
+	st := &copilotEventState{
 		activeModel: seedModel,
 		finalStatus: "completed",
 		usage:       make(map[string]TokenUsage),
 	}
+	if seedModel == "" {
+		st.activeModel = "copilot"
+	} else {
+		st.modelResolved = true
+	}
+	return st
+}
+
+// setModel records a real model id observed on the event stream. The first
+// real model also adopts any tokens buffered while the model was unknown: a
+// Copilot -p run uses a single model for the whole session, so the first
+// observed model is the correct owner of earlier tokens.
+func (st *copilotEventState) setModel(model string) {
+	st.activeModel = model
+	if st.modelResolved {
+		return
+	}
+	st.modelResolved = true
+	st.flushPendingUsage()
+}
+
+func (st *copilotEventState) addOutputTokens(n int64) {
+	if !st.modelResolved {
+		st.pendingUsage.OutputTokens += n
+		return
+	}
+	u := st.usage[st.activeModel]
+	u.OutputTokens += n
+	st.usage[st.activeModel] = u
+}
+
+func (st *copilotEventState) flushPendingUsage() {
+	if st.pendingUsage == (TokenUsage{}) {
+		return
+	}
+	u := st.usage[st.activeModel]
+	u.InputTokens += st.pendingUsage.InputTokens
+	u.OutputTokens += st.pendingUsage.OutputTokens
+	u.CacheReadTokens += st.pendingUsage.CacheReadTokens
+	u.CacheWriteTokens += st.pendingUsage.CacheWriteTokens
+	st.usage[st.activeModel] = u
+	st.pendingUsage = TokenUsage{}
+}
+
+// finalizeUsage must be called once after the event stream ends. If no event
+// ever revealed the real model (no selectedModel and zero tool calls),
+// buffered tokens fall back to the placeholder bucket rather than being
+// dropped.
+func (st *copilotEventState) finalizeUsage() {
+	st.flushPendingUsage()
 }
 
 // handleCopilotEvent processes a single parsed copilotEvent, updates state,
@@ -53,7 +113,7 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 		var ss copilotSessionStart
 		if err := json.Unmarshal(evt.Data, &ss); err == nil {
 			if ss.SelectedModel != "" {
-				st.activeModel = ss.SelectedModel
+				st.setModel(ss.SelectedModel)
 			}
 			// Capture sessionId from session.start as well: the synthetic
 			// "result" event may never arrive (timeout, cancel, crash, or a
@@ -95,10 +155,13 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 		if msg.ReasoningText != "" {
 			msgs = append(msgs, Message{Type: MessageThinking, Content: msg.ReasoningText})
 		}
+		// Resolve the model before counting tokens so they attribute
+		// directly instead of round-tripping through the pending buffer.
+		if msg.Model != "" {
+			st.setModel(msg.Model)
+		}
 		if msg.OutputTokens > 0 {
-			u := st.usage[st.activeModel]
-			u.OutputTokens += msg.OutputTokens
-			st.usage[st.activeModel] = u
+			st.addOutputTokens(msg.OutputTokens)
 		}
 		for _, tr := range msg.ToolRequests {
 			var input map[string]any
@@ -132,7 +195,7 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 			return nil
 		}
 		if tc.Model != "" {
-			st.activeModel = tc.Model
+			st.setModel(tc.Model)
 		}
 		resultContent := ""
 		if tc.Success && tc.Result != nil {
@@ -269,11 +332,9 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		}
 
 		startTime := time.Now()
-		seedModel := opts.Model
-		if seedModel == "" {
-			seedModel = "copilot"
-		}
-		st := newCopilotEventState(seedModel)
+		// An empty opts.Model seeds the placeholder state: tokens buffer
+		// until the stream reveals the real model (see copilotEventState).
+		st := newCopilotEventState(opts.Model)
 
 		go func() {
 			<-runCtx.Done()
@@ -319,6 +380,8 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		if st.finalError != "" {
 			st.finalError = withAgentStderr(st.finalError, "copilot", stderrBuf.Tail())
 		}
+
+		st.finalizeUsage()
 
 		b.cfg.Logger.Info("copilot finished", "pid", cmd.Process.Pid, "status", st.finalStatus, "duration", duration.Round(time.Millisecond).String())
 
@@ -372,7 +435,12 @@ type copilotSessionStart struct {
 
 // copilotAssistantMessage is data payload for "assistant.message".
 type copilotAssistantMessage struct {
-	MessageID     string               `json:"messageId"`
+	MessageID string `json:"messageId"`
+	// Model is stamped on the message event by newer CLI builds (observed
+	// on v1.0.70; absent on v1.0.28). On a default-model no-tool run it is
+	// the only model signal in the whole stream — such runs emit no
+	// session.start event at all.
+	Model         string               `json:"model,omitempty"`
 	Content       string               `json:"content"`
 	ToolRequests  []copilotToolRequest `json:"toolRequests"`
 	OutputTokens  int64                `json:"outputTokens"`
