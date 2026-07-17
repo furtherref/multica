@@ -73,19 +73,27 @@ export type ToggleIssueReactionVars = {
  * with the wrong sort would patch a stale cache entry that nobody is
  * subscribed to. It is also threaded into the API request so the appended
  * page lines up with the server-side ordering of the existing items.
+ *
+ * `statuses` must likewise match the EFFECTIVE status set the consuming
+ * `useQuery` fetched (see `resolveListStatuses`) — the key only diverges from
+ * the default-view key when `archive` is in that set, so a caller paginating
+ * any column (not just the archive one) while `archive` is also part of the
+ * active filter must pass it through, or this recomputes the wrong key and
+ * misses the active cache entry entirely.
  */
 export function useLoadMoreByStatus(
   status: IssueStatus,
   myIssues?: { scope: string; filter: MyIssuesFilter },
   sort?: IssueSortParam,
+  statuses?: readonly IssueStatus[],
 ) {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
   const [isLoading, setIsLoading] = useState(false);
 
   const activeKey = myIssues
-    ? issueKeys.myListSorted(wsId, myIssues.scope, myIssues.filter, sort)
-    : issueKeys.listSorted(wsId, sort);
+    ? issueKeys.myListSorted(wsId, myIssues.scope, myIssues.filter, sort, statuses)
+    : issueKeys.listSorted(wsId, sort, statuses);
   const cache = qc.getQueryData<ListIssuesCache>(activeKey);
   const bucket = cache?.byStatus[status];
   const loaded = bucket?.issues.length ?? 0;

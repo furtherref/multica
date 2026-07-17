@@ -1,6 +1,6 @@
 ---
 name: multica-mentioning
-description: "Use when an issue comment needs to @mention someone — link to a person, trigger another agent, hand work to a squad, or broadcast with @all. Documents the verified mention contract: how a mention link is built from a real UUID, the four mention types and exactly what each one enqueues (agent → a run for that agent, squad → a run for the squad leader, member and issue → a rendered link with NO run), comment create/edit preview and suppression, the @all broadcast and how it suppresses the assignee's auto-trigger, and the silent no-op cases (a name where a UUID belongs, a bad/unknown UUID, an already-pending task, an archived agent, a private agent you cannot access). WHETHER to mention — loop avoidance, staying silent on acknowledgements — lives in the runtime brief's Mentions section, not here. This skill is the backend contract only, traced to server/internal/util/mention.go and server/internal/handler/comment.go."
+description: "Use when an issue comment needs to @mention someone — link to a person, trigger another agent, hand work to a squad, or broadcast with @all. Documents the verified mention contract: how a mention link is built from a real UUID, the four mention types and exactly what each one enqueues (agent → a run for that agent, squad → a run for the squad leader, member and issue → a rendered link with NO run), comment preview and suppression, the @all broadcast and assignee-trigger suppression, and silent no-ops (name where UUID belongs, bad UUID, already-pending, archived agent, private agent)—exception: archived issue surfaces a visible blocked outcome, not silently. WHETHER to mention lives in the runtime brief's Mentions section. Backend contract only, traced to server/internal/util/mention.go and server/internal/handler/comment.go."
 user-invocable: false
 allowed-tools: Bash(multica *)
 ---
@@ -122,6 +122,11 @@ These are all silent no-ops — no error, no run:
   triggers. It is still comment-scoped, not an agent-wide bypass.
 - **An archived agent**, or a squad whose leader is archived: skipped
   (`RuntimeID` invalid or `ArchivedAt` set).
+- **An archived issue** (fork status #39): NO mention on it triggers anything —
+  the run is blocked with reason `issue_archived` until the issue is restored
+  to an active status. Unlike done/cancelled issues, which stay mentionable.
+  Unlike the silent guards above, this block surfaces in the composer preview and
+  post-send outcomes with `reason_code: "issue_archived"` so the user is warned.
 - **A private agent you cannot access:** skipped — the mention path gates on
   `canAccessPrivateAgent` directly for both `@agent` and `@squad` (the
   `canEnqueueSquadLeader` wrapper is the squad assignment/promote path, not this

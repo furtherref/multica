@@ -356,6 +356,11 @@ SELECT
     p.chat_input_task_id
 FROM agent_task_queue p
 WHERE p.id = $1
+  -- Archive (fork status #39): no retry attempt is raised on retired work.
+  -- Callers treat the resulting no-row as "retry suppressed", not an error.
+  AND (p.issue_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM issue i WHERE i.id = p.issue_id AND i.status = 'archive'
+  ))
 RETURNING *;
 
 -- name: CancelAgentTasksByIssue :many
@@ -445,6 +450,13 @@ SET status = 'dispatched',
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.agent_id = $1 AND atq.status = 'queued'
+      -- Archive (fork status #39) is retired work: a task whose issue was
+      -- archived after enqueue (insert/retry racing the archive cancel) must
+      -- never be claimed. This is the single queued->dispatched transition,
+      -- so the predicate makes every such orphan permanently inert.
+      AND (atq.issue_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM issue i WHERE i.id = atq.issue_id AND i.status = 'archive'
+      ))
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
           WHERE active.agent_id = atq.agent_id
@@ -527,6 +539,12 @@ WHERE id = (
       AND atq.started_at IS NULL
       AND atq.dispatched_at < now() - make_interval(secs => @claim_recovery_secs::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
+      -- Archive (fork status #39): never re-deliver a task whose issue was
+      -- archived — mirrors the ClaimAgentTask guard so reclaim cannot bypass
+      -- the queued->dispatched chokepoint's invariant.
+      AND (atq.issue_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM issue i WHERE i.id = atq.issue_id AND i.status = 'archive'
+      ))
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
@@ -551,6 +569,12 @@ WHERE id IN (
       AND atq.started_at IS NULL
       AND atq.dispatched_at < now() - make_interval(secs => @claim_recovery_secs::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
+      -- Archive (fork status #39): never re-deliver a task whose issue was
+      -- archived — mirrors the ClaimAgentTask guard so reclaim cannot bypass
+      -- the queued->dispatched chokepoint's invariant.
+      AND (atq.issue_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM issue i WHERE i.id = atq.issue_id AND i.status = 'archive'
+      ))
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT @max_tasks::int
     FOR UPDATE SKIP LOCKED
@@ -577,12 +601,20 @@ RETURNING *;
 -- the lock was acquired the daemon flips here). wait_reason is cleared on
 -- the transition so a future read can't conflate "currently waiting" with
 -- "previously waited".
-UPDATE agent_task_queue
+UPDATE agent_task_queue AS atq
 SET status = 'running',
     started_at = now(),
     wait_reason = NULL,
     prepare_lease_expires_at = NULL
-WHERE id = $1 AND status IN ('dispatched', 'waiting_local_directory')
+WHERE atq.id = $1 AND atq.status IN ('dispatched', 'waiting_local_directory')
+  -- Archive (fork status #39): a task must not START on retired work even if
+  -- it was legitimately dispatched before the archive — the daemon's /start
+  -- rides the same no-rows path as "cancelled between claim and start". The
+  -- handler-side cancel still covers tasks that slip into running within the
+  -- statement-snapshot window.
+  AND (atq.issue_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM issue i WHERE i.id = atq.issue_id AND i.status = 'archive'
+  ))
 RETURNING *;
 
 -- name: MarkAgentTaskWaitingLocalDirectory :one

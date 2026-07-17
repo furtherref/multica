@@ -11,6 +11,60 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const advanceIssueStatusIfActive = `-- name: AdvanceIssueStatusIfActive :one
+UPDATE issue SET
+    status = $2,
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $3
+  AND status NOT IN ('done', 'cancelled', 'archive')
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties
+`
+
+type AdvanceIssueStatusIfActiveParams struct {
+	ID          pgtype.UUID `json:"id"`
+	Status      string      `json:"status"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Conditional status write for asynchronous (webhook/system) advancement:
+// fires only while the issue is still active, so a snapshot read racing a
+// concurrent archive (fork status #39) / done / cancel cannot resurrect or
+// double-advance it. No rows = a concurrent writer settled the issue first;
+// callers skip their side effects.
+func (q *Queries) AdvanceIssueStatusIfActive(ctx context.Context, arg AdvanceIssueStatusIfActiveParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, advanceIssueStatusIfActive, arg.ID, arg.Status, arg.WorkspaceID)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+	)
+	return i, err
+}
+
 const childIssueProgress = `-- name: ChildIssueProgress :many
 SELECT parent_issue_id,
        COUNT(*)::bigint AS total,
@@ -410,7 +464,7 @@ func (q *Queries) DeleteIssueMetadataKey(ctx context.Context, arg DeleteIssueMet
 const findActiveDuplicateIssue = `-- name: FindActiveDuplicateIssue :one
 SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties FROM issue
 WHERE workspace_id = $1
-  AND status NOT IN ('done', 'cancelled')
+  AND status NOT IN ('done', 'cancelled', 'archive')
   AND project_id IS NOT DISTINCT FROM $2::uuid
   AND parent_issue_id IS NOT DISTINCT FROM $3::uuid
   AND lower(btrim(regexp_replace(title, '[[:space:]]+', ' ', 'g'))) = $4
@@ -467,7 +521,7 @@ func (q *Queries) FindActiveDuplicateIssue(ctx context.Context, arg FindActiveDu
 const findRecentAutopilotDuplicateIssue = `-- name: FindRecentAutopilotDuplicateIssue :one
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties FROM issue i
 WHERE i.workspace_id = $1
-  AND i.status NOT IN ('done', 'cancelled')
+  AND i.status NOT IN ('done', 'cancelled', 'archive')
   AND i.origin_type = 'autopilot'
   AND i.origin_id = $2
   AND i.project_id IS NOT DISTINCT FROM $3::uuid

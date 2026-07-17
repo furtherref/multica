@@ -115,34 +115,43 @@ and is hidden from the PR list.
 
 | Behavior | File:line | Drifted from |
 |---|---|---|
-| Create-time: agent-assigned, non-backlog issue enqueues immediately | `server/internal/handler/issue.go:2263-2264` | new citation |
-| `shouldEnqueueAgentTask` returns false for `backlog` (parking lot) | `server/internal/handler/issue.go:2644-2648` | new citation |
-| Backlog → non-backlog (not done/cancelled) enqueues on update | `server/internal/handler/issue.go:2537-2540` | `:2523` |
-| Same contract in batch update | `server/internal/handler/issue.go:3021-3024` | new citation |
-| Child → `done` notifies + wakes the parent, gated by the stage barrier | `server/internal/handler/issue_child_done.go:66` (`notifyParentOfChildDone`; doc comment at `:15`; barrier gate at `:115`) | func def `:51` |
-| Status change (incl. → `cancelled`) does NOT cancel in-flight tasks; only issue deletion does (MUL-4465) | no-cancel note in `server/internal/handler/issue.go:2652-2658` (`UpdateIssue`) and `:3170-3171` (`BatchUpdateIssues`); deletion still cancels at `:2863` (`DeleteIssue`) / `:3239` (`BatchDeleteIssues`) via `CancelTasksForIssue` (`server/internal/service/task.go:1229`) | new citation |
+| Create-time: agent-assigned issue enqueues immediately unless created into `backlog` or `archive` | `server/internal/service/issue.go:395` (call site inside `maybeEnqueueOnAssign`, defined at `:391` and called by `IssueService.Create` at `:284`) | fix wave 3: old `:2263-2264` pointed at unrelated `validateAssigneePair` code; re-verified fix wave 4 final sweep, unchanged |
+| `shouldEnqueueAgentTask` returns false for `backlog` and `archive` (parking lot / retired work) | `server/internal/service/issue.go:413-415` (the gate `IssueService.Create` actually uses); `server/internal/handler/issue.go:2922-2926` mirrors it for the onboarding-shim create path only (`internal/handler/onboarding_shim.go:328`) | fix wave 4 follow-up: handler lines moved after the archive convergence error contract was finalized |
+| Backlog → active (not `done`/`cancelled`/`archive`) enqueues on update, via the single shared `WillEnqueueRun` status source | `server/internal/service/issue_trigger.go:109-114` | fix wave 3: old `:2537-2540` pointed at unrelated priority-field handling; contract text widened to include archive; re-verified fix wave 4 final sweep, unchanged |
+| `UpdateIssue` and `BatchUpdateIssues` call the identical `WillEnqueueRun` predicate — there is no separate batch copy of the enqueue rule (MUL-3375) | `server/internal/handler/issue.go:2812-2821` (`UpdateIssue`) and `:3370-3379` (`BatchUpdateIssues`) | fix wave 4 follow-up: lines moved after the archive convergence blocks were added |
+| Child → `done` notifies + wakes the parent, gated by the stage barrier | `server/internal/handler/issue_child_done.go:68` (`notifyParentOfChildDone`; doc comment at `:16`; barrier gate at `:124`) | fix wave 3: was func def `:66`/comment `:15`/gate `:115`; re-verified fix wave 4 final sweep, unchanged |
+| Status change to non-archive statuses (incl. → `cancelled`) does NOT cancel in-flight tasks; only issue deletion does (MUL-4465) | no-cancel note in `server/internal/handler/issue.go:2794-2810`; batch version refers back at `:3360-3365`; deletion cancels at `:3023` / `:3459` via `CancelTasksForIssue` (`server/internal/service/task.go:1586`) | fix wave 4 follow-up: refreshed after adding post-write archive convergence |
+| `archive` (fork status #39) is the one status change that DOES cancel in-flight tasks. Single and batch paths use a pre-write failure gate plus a post-write convergence sweep; an explicit archive retry repeats the post-write sweep. A single-item post-write failure still completes attachment linking and publishes `issue:updated`, then returns 500 with an explicit retry message. Batch items are likewise published and counted as updated; after processing the batch, a 500 response includes `convergence_failed_issue_ids` for targeted retry. | single path `server/internal/handler/issue.go:2698-2736,2767-2787,2832-2838`; batch path `:3305-3340,3352-3358,3395-3415`, both via `CancelTasksForIssue` | fix wave 4 follow-up: replaces the inaccurate pre-write-only guarantee and documents the explicit partial-commit recovery contract |
+| Daemon launch checks task status synchronously after `/start` and before provider execution; terminal/deleted tasks skip provider launch, while transient status-read errors fall through to the asynchronous watcher | `server/internal/daemon/daemon.go:4031-4054`; watcher scope clarification at `:3038-3042` | fix wave 4 follow-up: documents the real provider boundary rather than treating the watcher's pre-start read as sufficient |
+| Assigning/promoting into `archive` never enqueues a run | `server/internal/service/issue_trigger.go:105` (assign source) and `:110` (status source), inside `WillEnqueueRun` | re-verified fix wave 3, unchanged; re-verified fix wave 4 final sweep, unchanged |
+| Restoring from `archive` sweeps straggler tasks BEFORE the status write commits, not after: a sweep failure aborts the single-issue restore outright (issue stays archived), and in the batch loop the issue is skipped without applying its update and without counting toward `updated` | `server/internal/handler/issue.go:2674-2696` and `:3289-3303`, both via `CancelTasksForIssue` | fix wave 4 follow-up: refreshed the batch citation after post-write archive convergence was inserted |
 
-Creation with `--status todo` (or any non-backlog status) on an agent-assigned
-issue fires the agent immediately; `--status backlog` parks it with the assignee
-set but no trigger. Promoting `backlog → todo` later fires it then (update path,
-line 2537).
+Creation with `--status todo` (or any active status — not `backlog`, not
+`archive`) on an agent-assigned issue fires the agent immediately; `--status
+backlog` parks it with the assignee set but no trigger. Promoting `backlog →
+todo` later fires it then via the shared `WillEnqueueRun` status source
+(`internal/service/issue_trigger.go:109-114`).
 
 Moving an issue to `cancelled` used to call `CancelTasksForIssue` and stop every
 active task on it (the old #940 behavior). MUL-4465 removed that from both
-`UpdateIssue` and `BatchUpdateIssues`: a status flip — `cancelled` included —
-never cancels tasks now. `CancelTasksForIssue` fires only from the issue-deletion
-paths (`DeleteIssue` / `BatchDeleteIssues`), where the owning issue row is going
-away, so no task is left orphaned.
+`UpdateIssue` and `BatchUpdateIssues`: a status flip to a non-archive status —
+`cancelled` included — never cancels tasks now. The fork-original `archive`
+status (#39) is the one exception, re-adding a `CancelTasksForIssue` call on
+both sides of the archive status write (and on the archive → active restore
+transition, to sweep stragglers) — see the rows above. Outside archive,
+`CancelTasksForIssue` fires only from the issue-deletion paths (`DeleteIssue` /
+`BatchDeleteIssues`), where the owning issue row is going away, so no task is
+left orphaned.
 
 ## Sub-issue stages (barrier wake)
 
-| Behavior | File:line |
-|---|---|
-| `issue.stage` column (nullable, `>= 1`) | `server/migrations/123_issue_stage.up.sql` |
-| Stage barrier: notify+wake fire only when the lowest unfinished stage is all-terminal; unstaged set = one implicit stage | `server/internal/handler/issue_child_done.go:231` (`stageBarrierClosed`) |
-| Per-stage summary + next stage for the wake comment | `server/internal/handler/issue_child_done.go:254` (`stageProgressSummary`) |
-| `--stage` on `issue create` / `issue update` | `server/cmd/multica/cmd_issue.go:328,350` |
-| `multica issue children <id>` (sub-issues grouped by stage) | `server/cmd/multica/cmd_issue.go:114,678`; route `GET /api/issues/{id}/children` → `ListChildIssues` |
+| Behavior | File:line | Drifted from |
+|---|---|---|
+| `issue.stage` column (nullable, `>= 1`) | `server/migrations/123_issue_stage.up.sql` | |
+| Stage barrier: notify+wake fire only when the lowest unfinished stage is all-terminal; unstaged set = one implicit stage | `server/internal/handler/issue_child_done.go:372` (`stageBarrierClosed`) | fix wave 3: was :231 |
+| Per-stage summary + next stage for the wake comment | `server/internal/handler/issue_child_done.go:404` (`stageProgressSummary`) | fix wave 3: was :254 |
+| `--stage` on `issue create` / `issue update` | `server/cmd/multica/cmd_issue.go:328,350` | |
+| `multica issue children <id>` (sub-issues grouped by stage) | `server/cmd/multica/cmd_issue.go:114,678`; route `GET /api/issues/{id}/children` → `ListChildIssues` | |
 
 Advancement is agent-driven: the server only detects the closed barrier and
 wakes the parent assignee. Promoting the next stage's `backlog` sub-issues to
@@ -180,6 +189,7 @@ grep -n 'ListPullRequestsForIssue'           cmd/server/router.go internal/handl
 grep -n 'func issuePullRequestRowToResponse\|type GitHubPullRequestResponse struct\|func derivePRState\|func extractIdentifiers\|func extractClosingIdentifiers\|closingIdentifierRe' internal/handler/github.go
 grep -n 'extractIdentifiers(\|extractClosingIdentifiers(\|derivePRState(' internal/handler/github.go
 grep -n 'qualifyingIdents\|reference_only\|ReferenceOnly' internal/handler/github.go pkg/db/queries/github.sql
-grep -n 'prevIssue.Status == "backlog"\|func (h \*Handler) shouldEnqueueAgentTask' internal/handler/issue.go
-grep -n 'func notifyParentOfChildDone'       internal/handler/issue_child_done.go
+grep -n 'in.PrevStatus == "backlog"\|func (s \*IssueService) WillEnqueueRun' internal/service/issue_trigger.go
+grep -n 'func (s \*IssueService) shouldEnqueueAgentTask\|func (h \*Handler) shouldEnqueueAgentTask' internal/service/issue.go internal/handler/issue.go
+grep -n 'func (h \*Handler) notifyParentOfChildDone'       internal/handler/issue_child_done.go
 ```

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Issue, ListIssuesCache } from "../types";
-import { insertByPosition, patchIssueInBuckets } from "./cache-helpers";
+import {
+  findIssueLocation,
+  insertByPosition,
+  patchIssueInBuckets,
+} from "./cache-helpers";
 
 const WS_ID = "ws-1";
 
@@ -146,5 +150,63 @@ describe("patchIssueInBuckets — unknown issue", () => {
   it("returns the cache unchanged when the id is absent", () => {
     const c0 = cache({ todo: { issues: [mk("a", "todo", 1)], total: 1 } });
     expect(patchIssueInBuckets(c0, "ghost", { position: 9 })).toBe(c0);
+  });
+});
+
+// Requirement 4 (fix wave 3b): a cache entry only carries an `archive`
+// bucket when the active status filter explicitly widened the fetch to
+// include it (resolveListStatuses) — `findIssueLocation` must locate an
+// issue there the same way it does for any default bucket, not just the
+// fixed PAGINATED_STATUSES set. This is what lets an archived-issue's field
+// edit patch in place, and a status move in/out of `archive` rebucket
+// correctly, while the filter is active.
+describe("findIssueLocation / patchIssueInBuckets — archive bucket (when present in cache)", () => {
+  it("locates an issue sitting in a loaded archive bucket", () => {
+    const c0 = cache({
+      todo: { issues: [mk("a", "todo", 1)], total: 1 },
+      archive: { issues: [mk("b", "archive", 1)], total: 1 },
+    });
+    expect(findIssueLocation(c0, "b")).toEqual({
+      status: "archive",
+      issue: expect.objectContaining({ id: "b" }),
+    });
+  });
+
+  it("patches a plain field on an issue sitting in the archive bucket in place", () => {
+    const c0 = cache({
+      archive: { issues: [mk("b", "archive", 1)], total: 1 },
+    });
+    // A remote label/title edit on an archived, currently-loaded issue must
+    // not be a silent no-op just because the bucket isn't in
+    // PAGINATED_STATUSES.
+    const next = patchIssueInBuckets(c0, "b", { title: "renamed" });
+    expect(ids(next, "archive")).toEqual(["b"]);
+    expect(next.byStatus.archive?.issues[0]?.title).toBe("renamed");
+  });
+
+  it("rebuckets an issue moving INTO the archive bucket and keeps it locatable", () => {
+    const c0 = cache({
+      todo: { issues: [mk("a", "todo", 1)], total: 1 },
+      archive: { issues: [], total: 0 },
+    });
+    const archived = patchIssueInBuckets(c0, "a", { status: "archive" });
+    expect(ids(archived, "todo")).toEqual([]);
+    expect(ids(archived, "archive")).toEqual(["a"]);
+    expect(archived.byStatus.archive?.total).toBe(1);
+
+    // A follow-up edit still finds the card in the archive bucket.
+    const renamed = patchIssueInBuckets(archived, "a", { title: "renamed" });
+    expect(renamed.byStatus.archive?.issues[0]?.title).toBe("renamed");
+  });
+
+  it("rebuckets an issue moving OUT of the archive bucket into a default bucket", () => {
+    const c0 = cache({
+      todo: { issues: [], total: 0 },
+      archive: { issues: [mk("a", "archive", 1)], total: 1 },
+    });
+    const restored = patchIssueInBuckets(c0, "a", { status: "todo" });
+    expect(ids(restored, "archive")).toEqual([]);
+    expect(ids(restored, "todo")).toEqual(["a"]);
+    expect(restored.byStatus.todo?.total).toBe(1);
   });
 });

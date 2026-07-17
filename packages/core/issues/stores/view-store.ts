@@ -5,7 +5,7 @@ import { create } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { createJSONStorage, persist } from "zustand/middleware";
 import type { IssueStatus, IssuePriority } from "../../types";
-import { ALL_STATUSES } from "../config";
+import { DEFAULT_VISIBLE_STATUSES } from "../config";
 import { createWorkspaceAwareStorage, registerForWorkspaceRehydration } from "../../platform/workspace-storage";
 import { defaultStorage } from "../../platform/storage";
 
@@ -274,9 +274,12 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
     set((state) => ({ agentRunningFilter: !state.agentRunningFilter })),
   hideStatus: (status) =>
     set((state) => {
-      // If no filter active, activate filter with all EXCEPT this one
+      // If no filter is active, activate a filter with every DEFAULT-VISIBLE
+      // status except this one. Never seed from ALL_STATUSES: that would
+      // implicitly enroll `archive` (fork status #39), which must only ever
+      // be selected explicitly.
       if (state.statusFilters.length === 0) {
-        return { statusFilters: ALL_STATUSES.filter((s) => s !== status) };
+        return { statusFilters: DEFAULT_VISIBLE_STATUSES.filter((s) => s !== status) };
       }
       return {
         statusFilters: state.statusFilters.filter((s) => s !== status),

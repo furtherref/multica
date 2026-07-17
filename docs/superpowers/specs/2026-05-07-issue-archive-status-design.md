@@ -72,3 +72,40 @@ Existing tests around done/cancelled behavior should continue to pass with
 ## Out of Scope
 
 - Adding a separate archive browser, restore flow, or bulk archive action.
+
+## Addendum (2026-07-16): archive means retired, stricter than done/cancelled
+
+The original semantics above made archive match `cancelled`'s terminal
+behavior. The archive-consistency fixes (branch `fix/archive-consistency`)
+tighten this: archive now means **retired work whose normal trigger and
+execution paths are closed, with active work converged toward cancellation**.
+Concretely, and unlike `done`/`cancelled`:
+
+- Creating into, assigning onto, or promoting into `archive` never enqueues.
+- Manual rerun returns 409 `issue_archived`; restore first.
+- No comment triggers on an archived issue — explicit @mentions are blocked
+  with reason `issue_archived`; implicit routing (assignee / thread /
+  conversation) is suppressed. `done`/`cancelled` issues stay mentionable.
+- Claim, stale-claim recovery, and retry creation exclude tasks whose issue is
+  archived. The archive handler cancels active tasks before the status write as
+  an early failure gate, then sweeps again after commit to catch tasks that
+  became active in between; an explicit archive retry repeats the post-write
+  sweep if convergence previously failed.
+- After `/start`, the daemon synchronously re-reads task status before invoking
+  the provider. A terminal/deleted task skips provider launch; the asynchronous
+  watcher remains responsible for cancellation that becomes visible later.
+  This is deliberately a best-effort concurrency contract, not an absolute
+  zero-spend claim: cancellation can still land after the synchronous read and
+  before provider execution, in which case the watcher interrupts it on its
+  next poll/reconcile signal.
+- Archived issues do not count as active duplicates.
+- Archive is terminal for stage barriers and parent wake (single and batch
+  paths), and a merged close-intent PR does not resurrect an archived issue.
+
+Restoring from archive re-enables all of the above, cancels any straggler tasks
+visible before the restore write, and does not auto-enqueue by itself; runs
+start again via the normal assign/promote/mention actions. A known theoretical
+residual remains: an insert transaction that reads the issue before archive
+and commits only after the restore sweep can strand a runnable task once the
+issue becomes active again. Closing that cross-cycle window would need
+per-issue generation counters, which this design deliberately omits.

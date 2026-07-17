@@ -7,6 +7,7 @@ import { ALL_STATUSES, DEFAULT_VISIBLE_STATUSES } from "@multica/core/issues/con
 import { projectListOptions } from "@multica/core/projects/queries";
 import {
   childIssueProgressOptions,
+  resolveListStatuses,
   type AssigneeGroupedIssuesFilter,
   type IssueSortParam,
   type MyIssuesFilter,
@@ -139,8 +140,18 @@ export function useIssueSurfaceData({
     sort,
   );
 
+  // The list-path fetch (list/board/swimlane, via statusIssuesQuery) only
+  // ever pulls PAGINATED_STATUSES by default — `archive` stays excluded
+  // unless the user's active status filter explicitly selects it. Resolving
+  // that here (options-builder level) keeps `PAGINATED_STATUSES` itself as
+  // the default-membership constant everywhere else.
+  const listStatuses = useMemo(
+    () => resolveListStatuses(statusFilters),
+    [statusFilters],
+  );
+
   const statusIssuesQuery = useQuery({
-    ...issueSurfaceListOptions(wsId, queryPlan, sort),
+    ...issueSurfaceListOptions(wsId, queryPlan, sort, listStatuses),
     enabled: !usesAssigneeBoard && !usesGantt,
   });
   const assigneeGroupsQuery = useQuery({

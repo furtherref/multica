@@ -19,7 +19,7 @@ import { Virtuoso } from "react-virtuoso";
 import { Button } from "@multica/ui/components/ui/button";
 import type { Issue, IssueStatus, Project } from "@multica/core/types";
 import { useLoadMoreByStatus } from "@multica/core/issues/mutations";
-import type { IssueSortParam, MyIssuesFilter } from "@multica/core/issues/queries";
+import { resolveListStatuses, type IssueSortParam, type MyIssuesFilter } from "@multica/core/issues/queries";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
 import { StatusHeading } from "./status-heading";
 import { ListRow, DraggableListRow, type ChildProgress } from "./list-row";
@@ -116,6 +116,15 @@ function ListViewImpl({
   const myIssuesOpts = myIssuesScope
     ? { scope: myIssuesScope, filter: myIssuesFilter ?? {} }
     : undefined;
+
+  // Must match the statuses the active statusIssuesQuery actually fetched
+  // (see use-issue-surface-data's listStatuses) so load-more recomputes the
+  // same cache key — including for a non-archive column while `archive` is
+  // ALSO part of the active status filter.
+  const listStatuses = useMemo(
+    () => resolveListStatuses(visibleStatuses),
+    [visibleStatuses],
+  );
 
   const dragEnabled = !!onMoveIssue;
 
@@ -360,6 +369,7 @@ function ListViewImpl({
             isExpanded={isExpanded}
             sortLabel={sortLabel}
             sort={sort}
+            listStatuses={listStatuses}
             scrollParent={scrollEl}
           />
         );
@@ -412,6 +422,7 @@ function StatusAccordionItem({
   isExpanded,
   sortLabel,
   sort,
+  listStatuses,
   scrollParent,
 }: {
   status: IssueStatus;
@@ -426,6 +437,9 @@ function StatusAccordionItem({
   isExpanded: boolean;
   sortLabel: string | null;
   sort?: IssueSortParam;
+  /** Effective statuses the active statusIssuesQuery fetched — see
+   *  useLoadMoreByStatus's `statuses` contract. */
+  listStatuses?: readonly IssueStatus[];
   scrollParent: HTMLElement | null;
 }) {
   const { t } = useT("issues");
@@ -437,6 +451,7 @@ function StatusAccordionItem({
     status,
     myIssuesOpts,
     sort,
+    listStatuses,
   );
 
   const issues = useMemo(

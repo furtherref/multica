@@ -1569,11 +1569,15 @@ func (s *TaskService) SendDirectChatMessage(ctx context.Context, session db.Chat
 // affected agent's status, and broadcasts task:cancelled events so frontends
 // clear their live cards.
 //
-// Callers are explicit issue-lifecycle cleanup paths only — DeleteIssue and
-// BatchDeleteIssues, where the owning issue row is going away so its tasks
-// must not be left orphaned. A plain status flip, `cancelled` included, no
-// longer routes here (MUL-4465): cancelling an issue is not an implicit "stop
-// all runs" switch. Do not re-add a status-driven caller.
+// Callers are deliberately limited to three cases: delete cleanup (DeleteIssue
+// and BatchDeleteIssues, where the owning issue row is going away so its tasks
+// must not be left orphaned), the archive transition (fork status #39 —
+// retiring an issue cancels its in-flight work), and the archive->active
+// restore sweep (stragglers that raced past the archive-time cancel must not
+// wake up now that the issue is active again). A plain status flip,
+// `cancelled` included, does not route here (MUL-4465): cancelling an issue is
+// not an implicit "stop all runs" switch. Do not re-add a status-driven caller
+// beyond these two archive-lifecycle exceptions.
 //
 // Before #1587 this path was "cancel rows and return", which left each affected
 // agent stuck at status="working" indefinitely, requiring a manual
@@ -2919,10 +2923,18 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 				RuntimeMcpOverlay:    retryOverlay.Overlay,
 				RuntimeConnectedApps: retryOverlay.ConnectedApps,
 			})
-			if cerr != nil {
+			switch {
+			case errors.Is(cerr, pgx.ErrNoRows):
+				// The issue was archived while this task ran (fork status
+				// #39): the fail stands, but no retry is raised on retired
+				// work — CreateRetryTask's WHERE suppressed the clone.
+				slog.Info("retry suppressed: issue archived",
+					"task_id", util.UUIDToString(taskID))
+			case cerr != nil:
 				return fmt.Errorf("create retry task: %w", cerr)
+			default:
+				retried = &child
 			}
-			retried = &child
 		}
 		return nil
 	}); err != nil {
@@ -3108,6 +3120,16 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		RuntimeConnectedApps: runtimeMCPOverlay.ConnectedApps,
 	})
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// CreateRetryTask's WHERE clause excludes tasks whose issue was
+			// archived while the parent ran (fork status #39). This is
+			// suppression, not failure: the sweeper's only caller discards the
+			// error anyway, but return nil so future callers don't misread a
+			// suppressed retry as a real auto-retry failure.
+			slog.Info("task auto-retry suppressed: issue archived",
+				"task_id", util.UUIDToString(parent.ID))
+			return nil, nil
+		}
 		slog.Warn("task auto-retry failed",
 			"parent_task_id", util.UUIDToString(parent.ID),
 			"reason", reason,

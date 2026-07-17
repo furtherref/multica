@@ -11,6 +11,7 @@ import {
 import type {
   GroupedIssuesResponse,
   Issue,
+  IssueStatus,
   ListIssuesCache,
 } from "../../types";
 import type { IssueSurfaceQueryPlan } from "./query-plan";
@@ -27,16 +28,24 @@ import type { IssueSurfaceQueryPlan } from "./query-plan";
  *
  * Both branches share the exact cache shape (`ListIssuesCache` selected to
  * `Issue[]`); the cast below only erases the branch-specific query-key
- * literal so one `useQuery` call site can consume either plan kind. */
+ * literal so one `useQuery` call site can consume either plan kind.
+ *
+ * `statuses` is the EFFECTIVE status set to fetch, defaulting to
+ * `PAGINATED_STATUSES` inside `issueListOptions`/`myIssueListOptions` when
+ * omitted. Callers derive it via `resolveListStatuses` from the active
+ * status filter — this is the options-builder-level hook that lets an
+ * explicit `archive` filter widen the fetch without mutating
+ * `PAGINATED_STATUSES` itself. */
 export function issueSurfaceListOptions(
   wsId: string,
   plan: IssueSurfaceQueryPlan,
   sort?: IssueSortParam,
+  statuses?: readonly IssueStatus[],
 ): UseQueryOptions<ListIssuesCache, Error, Issue[]> {
   return (
     plan.kind === "workspace"
-      ? issueListOptions(wsId, sort)
-      : myIssueListOptions(wsId, plan.queryScope, plan.queryFilter, plan.userId, sort)
+      ? issueListOptions(wsId, sort, statuses)
+      : myIssueListOptions(wsId, plan.queryScope, plan.queryFilter, plan.userId, sort, statuses)
   ) as UseQueryOptions<ListIssuesCache, Error, Issue[]>;
 }
 

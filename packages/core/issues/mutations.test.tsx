@@ -300,6 +300,85 @@ describe("useLoadMoreByStatus", () => {
     const updated = qc.getQueryData<ListIssuesCache>(activeKey);
     expect(updated?.byStatus.todo?.issues).toHaveLength(2);
   });
+
+  // Fix wave 3b (requirement 3): when the active statusIssuesQuery fetched
+  // `archive` (statusFilters selected it), its cache key carries a
+  // distinguishing marker — load-more for ANY column (not just archive
+  // itself) must pass the SAME effective `statuses` or it recomputes the
+  // wrong key and silently misses the active cache entry.
+  it("targets the archive-inclusive cache key when statuses includes archive, even for a non-archive column", async () => {
+    const sort: IssueSortParam = { sort_by: "position", sort_direction: undefined };
+    const statuses = [...(["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"] as const), "archive"] as const;
+    const activeKey = issueKeys.listSorted(WS_ID, sort, statuses);
+    // A default (non-archive) key also exists in the cache — load-more must
+    // NOT hit this one.
+    const defaultKey = issueKeys.listSorted(WS_ID, sort);
+    qc.setQueryData<ListIssuesCache>(defaultKey, {
+      byStatus: { todo: { issues: [makeIssue(999)], total: 999 } },
+    });
+    qc.setQueryData<ListIssuesCache>(activeKey, {
+      byStatus: { todo: { issues: [makeIssue(1)], total: 2 } },
+    });
+
+    listIssues.mockResolvedValue({ issues: [makeIssue(2)], total: 2 });
+
+    const { result } = renderHook(
+      () => useLoadMoreByStatus("todo", undefined, sort, statuses),
+      { wrapper: createWrapper(qc) },
+    );
+
+    // total comes from the archive-inclusive key's bucket (2), not the
+    // stale default key's bucket (999).
+    expect(result.current.total).toBe(2);
+
+    await act(async () => {
+      await result.current.loadMore();
+    });
+
+    const updatedActive = qc.getQueryData<ListIssuesCache>(activeKey);
+    expect(updatedActive?.byStatus.todo?.issues.map((i) => i.id)).toEqual([
+      "issue-1",
+      "issue-2",
+    ]);
+    // The default key (nobody is subscribed to it) is untouched.
+    const updatedDefault = qc.getQueryData<ListIssuesCache>(defaultKey);
+    expect(updatedDefault?.byStatus.todo?.issues.map((i) => i.id)).toEqual([
+      "issue-999",
+    ]);
+  });
+
+  it("paginates the archive column itself using the archive-inclusive key", async () => {
+    const statuses = ["archive"] as const;
+    const activeKey = issueKeys.listSorted(WS_ID, undefined, statuses);
+    qc.setQueryData<ListIssuesCache>(activeKey, {
+      byStatus: { archive: { issues: [makeIssue(1, { status: "archive" })], total: 2 } },
+    });
+
+    listIssues.mockResolvedValue({
+      issues: [makeIssue(2, { status: "archive" })],
+      total: 2,
+    });
+
+    const { result } = renderHook(
+      () => useLoadMoreByStatus("archive", undefined, undefined, statuses),
+      { wrapper: createWrapper(qc) },
+    );
+
+    expect(result.current.hasMore).toBe(true);
+
+    await act(async () => {
+      await result.current.loadMore();
+    });
+
+    expect(listIssues).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "archive", offset: 1 }),
+    );
+    const updated = qc.getQueryData<ListIssuesCache>(activeKey);
+    expect(updated?.byStatus.archive?.issues.map((i) => i.id)).toEqual([
+      "issue-1",
+      "issue-2",
+    ]);
+  });
 });
 
 describe("useLoadMoreByAssigneeGroup", () => {

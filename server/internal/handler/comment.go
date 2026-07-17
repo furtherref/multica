@@ -1876,6 +1876,37 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		return nil, nil
 	}
 
+	// Archive (fork status #39) is retired work: no comment raises a new agent
+	// run on an archived issue — not explicit @mentions and not the implicit
+	// routing fallbacks (assignee / thread parent / conversation). done and
+	// cancelled stay mentionable (an agent can reopen them — see
+	// resolveMentionedAgentCommentTriggers); archive requires an explicit
+	// restore first. Explicit mention targets still get a blocked outcome so
+	// the composer warns instead of silently no-oping (MUL-4525). The reason
+	// code reveals nothing about any target — the caller can already see the
+	// issue's status.
+	if issue.Status == "archive" {
+		var targets []commentMentionTarget
+		seen := make(map[string]struct{})
+		for _, m := range util.ParseMentions(content) {
+			if m.Type != "agent" && m.Type != "squad" {
+				continue
+			}
+			key := m.Type + ":" + m.ID
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			targets = append(targets, commentMentionTarget{
+				TargetType: m.Type,
+				TargetID:   m.ID,
+				Status:     DispatchBlocked,
+				ReasonCode: ReasonIssueArchived,
+			})
+		}
+		return nil, targets
+	}
+
 	mentions := util.ParseMentions(content)
 	if util.HasMentionAll(mentions) {
 		return nil, nil
@@ -2188,8 +2219,10 @@ func (h *Handler) hasPendingTaskForIssueAndAgent(ctx context.Context, issueID, a
 // a child-issue run notifying the parent issue whose assignee is the same
 // agent); runaway loops are prevented by HasPendingTaskForIssueAndAgent
 // dedupe and the natural queued/dispatched coalescing of the task queue.
-// Note: no issue status gate here — @mention is an explicit action and should
-// work even on done/cancelled issues (the agent can reopen the issue if needed).
+// Note: done/cancelled issues are deliberately not gated here — @mention is an
+// explicit action and the agent can reopen them. Archived issues never reach
+// this function: computeCommentAgentTriggers blocks them up front (fork
+// status #39 — archive means retired, restore first).
 // commentMentionTarget is one EXPLICIT @agent / @squad mention and how it
 // resolved (MUL-4525 §2). This is tracked separately from the execution
 // triggers: several mentions can resolve to the same executing agent (e.g.

@@ -4,7 +4,6 @@ import type {
   IssueStatusBucket,
   ListIssuesCache,
 } from "../types";
-import { PAGINATED_STATUSES } from "./queries";
 
 const EMPTY_BUCKET: IssueStatusBucket = { issues: [], total: 0 };
 
@@ -23,12 +22,20 @@ export function setBucket(
   return { ...resp, byStatus: { ...resp.byStatus, [status]: bucket } };
 }
 
-/** Locate which status bucket holds `id`, if any. */
+/**
+ * Locate which status bucket holds `id`, if any. Scans whichever buckets are
+ * ACTUALLY loaded in `resp.byStatus` — not the fixed `PAGINATED_STATUSES`
+ * list — so this stays correct for a cache entry that also carries an
+ * `archive` bucket (an explicit status filter selecting `archive` widens the
+ * fetch beyond the default set; see `resolveListStatuses`). An issue can only
+ * occupy one status bucket at a time, so scan order doesn't affect the
+ * result.
+ */
 export function findIssueLocation(
   resp: ListIssuesCache,
   id: string,
 ): { status: IssueStatus; issue: Issue } | null {
-  for (const status of PAGINATED_STATUSES) {
+  for (const status of Object.keys(resp.byStatus) as IssueStatus[]) {
     const bucket = resp.byStatus[status];
     const found = bucket?.issues.find((i) => i.id === id);
     if (found) return { status, issue: found };

@@ -5,18 +5,23 @@ import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
 import type {
   Issue,
+  ListIssuesCache,
   ListIssuesParams,
   ListIssuesResponse,
   SearchIssuesResponse,
 } from "../types";
 import {
   CHILDREN_BY_PARENTS_CHUNK_SIZE,
+  PAGINATED_STATUSES,
   PROJECT_GANTT_MAX_ISSUES,
   PROJECT_GANTT_PAGE_LIMIT,
   childrenByParentsOptions,
   issueIdentifierOptions,
   issueKeys,
+  issueListOptions,
+  myIssueListOptions,
   projectGanttIssuesOptions,
+  resolveListStatuses,
 } from "./queries";
 
 const WS_ID = "ws-1";
@@ -154,6 +159,175 @@ describe("projectGanttIssuesOptions", () => {
   it("uses the project-scoped Gantt cache key", () => {
     const options = projectGanttIssuesOptions(WS_ID, PROJECT_ID);
     expect(options.queryKey).toEqual(issueKeys.projectGantt(WS_ID, PROJECT_ID));
+  });
+});
+
+describe("resolveListStatuses", () => {
+  it("returns PAGINATED_STATUSES unchanged when archive is not selected", () => {
+    expect(resolveListStatuses([])).toBe(PAGINATED_STATUSES);
+    expect(resolveListStatuses(["todo", "done"])).toBe(PAGINATED_STATUSES);
+  });
+
+  it("appends archive to PAGINATED_STATUSES when it is selected", () => {
+    expect(resolveListStatuses(["archive"])).toEqual([
+      ...PAGINATED_STATUSES,
+      "archive",
+    ]);
+    expect(resolveListStatuses(["todo", "archive"])).toEqual([
+      ...PAGINATED_STATUSES,
+      "archive",
+    ]);
+  });
+});
+
+describe("issueListOptions — archive bucket (fix wave 3b)", () => {
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  });
+
+  afterEach(() => {
+    qc.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("fetches only PAGINATED_STATUSES by default — byte-identical to today", async () => {
+    const listIssues = vi
+      .fn<(params?: ListIssuesParams) => Promise<ListIssuesResponse>>()
+      .mockResolvedValue({ issues: [], total: 0 });
+    installFakeApi(listIssues);
+
+    await qc.fetchQuery(issueListOptions(WS_ID));
+
+    const requestedStatuses = listIssues.mock.calls.map(([p]) => p?.status);
+    expect(requestedStatuses).toEqual(PAGINATED_STATUSES);
+    expect(requestedStatuses).not.toContain("archive");
+  });
+
+  it("does NOT fetch archive when the active status filter excludes it", async () => {
+    const listIssues = vi
+      .fn<(params?: ListIssuesParams) => Promise<ListIssuesResponse>>()
+      .mockResolvedValue({ issues: [], total: 0 });
+    installFakeApi(listIssues);
+
+    const statuses = resolveListStatuses(["todo"]);
+    await qc.fetchQuery(issueListOptions(WS_ID, undefined, statuses));
+
+    const requestedStatuses = listIssues.mock.calls.map(([p]) => p?.status);
+    expect(requestedStatuses).not.toContain("archive");
+  });
+
+  it("fetches the archive bucket when the effective status set includes it, and the cache carries byStatus.archive", async () => {
+    const listIssues = vi
+      .fn<(params?: ListIssuesParams) => Promise<ListIssuesResponse>>()
+      .mockImplementation(async (params) => {
+        if (params?.status === "archive") {
+          return { issues: [{ ...makeIssue(9), status: "archive" }], total: 1 };
+        }
+        return { issues: [], total: 0 };
+      });
+    installFakeApi(listIssues);
+
+    const statuses = resolveListStatuses(["archive"]);
+    const options = issueListOptions(WS_ID, undefined, statuses);
+    await qc.fetchQuery(options);
+
+    expect(listIssues).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "archive" }),
+    );
+    const rawCache = qc.getQueryData<ListIssuesCache>(options.queryKey);
+    expect(rawCache?.byStatus.archive?.issues).toHaveLength(1);
+    expect(rawCache?.byStatus.archive?.issues[0]?.id).toBe("issue-9");
+  });
+
+  it("flattens the archive bucket into the returned issue list when archive was fetched", async () => {
+    const listIssues = vi
+      .fn<(params?: ListIssuesParams) => Promise<ListIssuesResponse>>()
+      .mockImplementation(async (params) => {
+        if (params?.status === "archive") {
+          return { issues: [{ ...makeIssue(9), status: "archive" }], total: 1 };
+        }
+        if (params?.status === "todo") {
+          return { issues: [{ ...makeIssue(1), status: "todo" }], total: 1 };
+        }
+        return { issues: [], total: 0 };
+      });
+    installFakeApi(listIssues);
+
+    const statuses = resolveListStatuses(["archive"]);
+    const options = issueListOptions(WS_ID, undefined, statuses);
+    // fetchQuery resolves with the raw queryFn result (ListIssuesCache), not
+    // the `select`-transformed value — apply `select` explicitly to exercise
+    // the exact function the consuming useQuery would run.
+    await qc.fetchQuery(options);
+    const rawCache = qc.getQueryData<ListIssuesCache>(options.queryKey)!;
+    const data = options.select!(rawCache);
+
+    expect(data.map((i) => i.id).sort()).toEqual(["issue-1", "issue-9"]);
+  });
+
+  it("produces a query key that differs from the default key only when archive is included — both carry wsId", () => {
+    const defaultOptions = issueListOptions(WS_ID);
+    const archiveOptions = issueListOptions(
+      WS_ID,
+      undefined,
+      resolveListStatuses(["archive"]),
+    );
+
+    expect(defaultOptions.queryKey).not.toEqual(archiveOptions.queryKey);
+    expect(defaultOptions.queryKey).toContain(WS_ID);
+    expect(archiveOptions.queryKey).toContain(WS_ID);
+    // The non-archive path is untouched: passing the default statuses
+    // explicitly reproduces the exact 2-arg key call sites elsewhere use.
+    expect(issueListOptions(WS_ID, undefined, PAGINATED_STATUSES).queryKey).toEqual(
+      issueKeys.listSorted(WS_ID, undefined),
+    );
+  });
+});
+
+describe("myIssueListOptions — archive bucket (fix wave 3b)", () => {
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  });
+
+  afterEach(() => {
+    qc.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("fetches the archive bucket for a scoped (my-issues) list when selected, distinct from the default scoped key", async () => {
+    const listIssues = vi
+      .fn<(params?: ListIssuesParams) => Promise<ListIssuesResponse>>()
+      .mockImplementation(async (params) => {
+        if (params?.status === "archive") {
+          return { issues: [{ ...makeIssue(9), status: "archive" }], total: 1 };
+        }
+        return { issues: [], total: 0 };
+      });
+    installFakeApi(listIssues);
+
+    const filter = { assignee_id: "user-1" };
+    const defaultOptions = myIssueListOptions(WS_ID, "assigned", filter);
+    const archiveOptions = myIssueListOptions(
+      WS_ID,
+      "assigned",
+      filter,
+      undefined,
+      undefined,
+      resolveListStatuses(["archive"]),
+    );
+    expect(defaultOptions.queryKey).not.toEqual(archiveOptions.queryKey);
+
+    await qc.fetchQuery(archiveOptions);
+    expect(listIssues).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "archive", assignee_id: "user-1" }),
+    );
+    const rawCache = qc.getQueryData<ListIssuesCache>(archiveOptions.queryKey)!;
+    const data = archiveOptions.select!(rawCache);
+    expect(data.some((i) => i.status === "archive")).toBe(true);
   });
 });
 

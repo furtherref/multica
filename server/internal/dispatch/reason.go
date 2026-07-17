@@ -43,6 +43,10 @@ const (
 	// success: nothing new runs. (Named to avoid implying the NEW comment was
 	// already processed.)
 	ReasonSelfTriggerSuppressed ReasonCode = "self_trigger_suppressed"
+	// ReasonIssueArchived: the target issue is archived (fork status #39) —
+	// retired work refuses new runs until the issue is restored. Reveals
+	// nothing about any target: the caller can already see the issue.
+	ReasonIssueArchived ReasonCode = "issue_archived"
 	// ReasonInternalError: an unexpected server error prevented a clean decision.
 	ReasonInternalError ReasonCode = "internal_error"
 )

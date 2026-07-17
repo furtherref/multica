@@ -176,23 +176,28 @@ A status change is not cosmetic — the server enqueues or skips agent work base
 on it. These are the contracts, not advice:
 
 - **`backlog`** parks an agent-assigned issue: the assignee is set but no task
-  fires. Moving `backlog → todo` (or any non-done/non-cancelled status) enqueues
-  the assigned agent then.
+  fires. Moving `backlog → todo` (or any active status — not `done`, `cancelled`,
+  or `archive`) enqueues the assigned agent then.
 - **`in_review`** is an accepted issue status. Some workflows use it while a PR
   is open and awaiting review; moving to it is an explicit mutation.
 - **`done`** on a child issue posts a system comment on its parent. If a PR
   carries close intent (`Closes MUL-XXXX`), it advances the issue to `done`
   itself on merge — you do not also need to flip it manually.
 - **`cancelled`** is a terminal, user-driven decision to close the issue. Like
-  `done` it enqueues no new agent work, but it does **not** stop tasks already in
-  flight — a run in progress keeps going (MUL-4465). To stop a running task,
-  cancel the task itself.
+  `done` it enqueues no new agent work, and — unlike `archive` — it does **not**
+  stop tasks already in flight: a run in progress keeps going (MUL-4465). To
+  stop a running task, cancel the task itself.
+- **`archive`** (fork status #39) retires the issue: moving into it cancels
+  in-flight tasks, and nothing — comments, @mentions, rerun, or merged PRs —
+  starts a new run until the issue is restored to an active status. Restoring
+  sweeps any leftover tasks and does not itself enqueue.
 
 ## Sub-issues: `todo` starts work now, `backlog` parks it
 
 On an agent-assigned issue, create status decides whether the assignee fires
-immediately. A non-backlog status (e.g. `todo`) enqueues the agent at create
-time; `backlog` sets the assignee without triggering.
+immediately. An active create status (e.g. `todo`) enqueues the agent at
+create time; `backlog` parks it, and `archive` (fork status #39) never
+enqueues.
 
 Parallel children — all start now:
 
@@ -214,10 +219,10 @@ Creating every serial step as `todo` enqueues the whole chain at once.
 `--stage <N>` (N ≥ 1) groups sub-issues under the same parent into ordered
 stages. The parent assignee is woken **once, when a whole stage finishes** —
 i.e. every sub-issue in the lowest unfinished stage has reached a terminal
-status (`done`/`cancelled`). A completion that does not close a stage is silent
-(no comment, no wake). A sibling set with **no** stages is one implicit stage,
-so the parent is woken once when the *last* sub-issue finishes — not on every
-child.
+status (`done`/`cancelled`/`archive` — archiving a sub-issue also closes its
+stage). A completion that does not close a stage is silent (no comment, no
+wake). A sibling set with **no** stages is one implicit stage, so the parent
+is woken once when the *last* sub-issue finishes — not on every child.
 
 Advancement is agent-driven: the server only detects the closed barrier and
 wakes the parent assignee, who then decides whether to promote the next stage's

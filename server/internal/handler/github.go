@@ -962,7 +962,8 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		// just linked once both the PR row and the link row are persisted,
 		// so the aggregate query sees the freshest state. We advance the
 		// issue to done when:
-		//   1. the issue isn't already terminal (`done` / `cancelled`);
+		//   1. the issue isn't already terminal (`done` / `cancelled` /
+		//      `archive`);
 		//   2. no linked PR is still `open` / `draft`;
 		//   3. at least one merged linked PR declared close_intent (a
 		//      "Closes/Fixes/Resolves" keyword on its link row).
@@ -973,7 +974,9 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		// intent was ever delivered, the user should decide manually.
 		if state == "merged" || state == "closed" {
 			for _, issue := range reevalIssues {
-				if issue.Status == "done" || issue.Status == "cancelled" {
+				// done/cancelled are final; archive (fork status #39) is
+				// retired — a PR merging later must not resurrect it.
+				if issue.Status == "done" || issue.Status == "cancelled" || issue.Status == "archive" {
 					continue
 				}
 				counts, err := h.Queries.GetIssuePullRequestCloseAggregate(ctx, issue.ID)
@@ -1361,12 +1364,22 @@ func (h *Handler) lookupIssueByIdentifier(ctx context.Context, workspaceID pgtyp
 }
 
 func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, workspaceID string) {
-	updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+	// Conditional write: the caller's `issue` snapshot may be stale by the
+	// time this runs (webhook processing racing a concurrent archive/done/
+	// cancel), so AdvanceIssueStatusIfActive only advances issues still in
+	// an active status. ErrNoRows means a concurrent writer already settled
+	// the issue — skip the notify/publish side effects rather than
+	// resurrecting or double-advancing it.
+	updated, err := h.Queries.AdvanceIssueStatusIfActive(ctx, db.AdvanceIssueStatusIfActiveParams{
 		ID:          issue.ID,
 		Status:      "done",
 		WorkspaceID: issue.WorkspaceID,
 	})
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			slog.Info("github: issue already settled, skipping advance", "issue_id", uuidToString(issue.ID))
+			return
+		}
 		slog.Warn("github: advance issue to done failed", "err", err)
 		return
 	}

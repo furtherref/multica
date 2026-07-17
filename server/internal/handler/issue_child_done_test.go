@@ -554,3 +554,46 @@ func TestChildDoneWakesLeaderWhenChildIsSameSquad(t *testing.T) {
 		t.Errorf("expected 1 pending leader task for same-squad child (MUL-3969), got %d", got)
 	}
 }
+
+// Fix (e), child side: an archived child is retired — it must close its slot
+// in the stage barrier and notify the parent exactly like done/cancelled,
+// instead of holding the stage open forever.
+func TestChildArchiveNotifiesParent(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fx := newChildDoneFixture(t, "in_progress")
+	updateChildStatus(t, fx.child.ID, "archive")
+	if got := countSystemCommentsOn(t, fx.parent.ID); got != 1 {
+		t.Fatalf("archived child must notify the parent once, got %d", got)
+	}
+}
+
+// Terminal -> terminal is a no-op: cancelling then archiving must not
+// produce a second parent notification.
+func TestChildCancelledThenArchivedDoesNotDoubleNotify(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fx := newChildDoneFixture(t, "in_progress")
+	updateChildStatus(t, fx.child.ID, "cancelled")
+	updateChildStatus(t, fx.child.ID, "archive")
+	if got := countSystemCommentsOn(t, fx.parent.ID); got != 1 {
+		t.Fatalf("cancelled->archive is terminal->terminal, expected 1 notification, got %d", got)
+	}
+}
+
+// Fix (e), parent side (single path): an archived parent is retired — a child
+// completing must not post a system comment on it (which would wake its
+// assignee and raise new spend on retired work).
+func TestArchivedParentNotWokenByChildDone(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fx := newChildDoneFixture(t, "in_progress")
+	updateChildStatus(t, fx.parent.ID, "archive")
+	updateChildStatus(t, fx.child.ID, "done")
+	if got := countSystemCommentsOn(t, fx.parent.ID); got != 0 {
+		t.Fatalf("archived parent must stay inert, got %d system comment(s)", got)
+	}
+}

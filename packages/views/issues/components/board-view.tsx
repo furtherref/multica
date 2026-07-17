@@ -23,7 +23,12 @@ import type {
   IssueProperty,
 } from "@multica/core/types";
 import { useLoadMoreByAssigneeGroup, useLoadMoreByStatus } from "@multica/core/issues/mutations";
-import type { AssigneeGroupedIssuesFilter, IssueSortParam, MyIssuesFilter } from "@multica/core/issues/queries";
+import {
+  resolveListStatuses,
+  type AssigneeGroupedIssuesFilter,
+  type IssueSortParam,
+  type MyIssuesFilter,
+} from "@multica/core/issues/queries";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
 import { propertyIdFromViewKey } from "@multica/core/issues/stores/view-store";
 import { propertyListOptions, useSetIssueProperty, useUnsetIssueProperty } from "@multica/core/properties";
@@ -247,6 +252,14 @@ function BoardViewImpl({
   const myIssuesOpts = myIssuesScope
     ? { scope: myIssuesScope, filter: myIssuesFilter ?? {} }
     : undefined;
+  // Must match the statuses the active statusIssuesQuery actually fetched
+  // (see use-issue-surface-data's listStatuses) so load-more recomputes the
+  // same cache key — including for a non-archive column while `archive` is
+  // ALSO part of the active status filter.
+  const listStatuses = useMemo(
+    () => resolveListStatuses(visibleStatuses),
+    [visibleStatuses],
+  );
   const groupedIssues = useMemo(
     () =>
       grouping === "assignee" && assigneeGroups
@@ -521,6 +534,7 @@ function BoardViewImpl({
                 projectMap={projectMap}
                 myIssuesOpts={myIssuesOpts}
                 sort={sort}
+                listStatuses={listStatuses}
                 projectId={projectId}
                 onCreateIssue={onCreateIssue}
                 sortLabel={sortLabel}
@@ -564,6 +578,7 @@ function BoardViewImpl({
             statuses={visibleStatuses}
             myIssuesOpts={myIssuesOpts}
             sort={sort}
+            listStatuses={listStatuses}
           />
         )}
 
@@ -572,6 +587,7 @@ function BoardViewImpl({
             hiddenStatuses={hiddenStatuses}
             myIssuesOpts={myIssuesOpts}
             sort={sort}
+            listStatuses={listStatuses}
           />
         )}
       </div>
@@ -658,6 +674,7 @@ const PaginatedBoardColumn = memo(function PaginatedBoardColumn({
   projectMap,
   myIssuesOpts,
   sort,
+  listStatuses,
   projectId,
   onCreateIssue,
   sortLabel,
@@ -669,6 +686,9 @@ const PaginatedBoardColumn = memo(function PaginatedBoardColumn({
   projectMap?: Map<string, Project>;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
   sort?: IssueSortParam;
+  /** Effective statuses the active statusIssuesQuery fetched — see
+   *  useLoadMoreByStatus's `statuses` contract. */
+  listStatuses?: readonly IssueStatus[];
   projectId?: string;
   onCreateIssue?: (defaults: IssueCreateDefaults) => void;
   sortLabel?: string | null;
@@ -677,6 +697,7 @@ const PaginatedBoardColumn = memo(function PaginatedBoardColumn({
     group.status,
     myIssuesOpts,
     sort,
+    listStatuses,
   );
   return (
     <BoardColumn
@@ -717,15 +738,26 @@ function PropertyBoardPoolLoader({
   statuses,
   myIssuesOpts,
   sort,
+  listStatuses,
 }: {
   statuses: IssueStatus[];
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
   sort?: IssueSortParam;
+  /** Effective statuses the active statusIssuesQuery fetched — see
+   *  useLoadMoreByStatus's `statuses` contract. Distinct from `statuses`
+   *  above, which is the set of pool sentinels to render. */
+  listStatuses?: readonly IssueStatus[];
 }) {
   return (
     <div className="col-span-full flex justify-center py-1">
       {statuses.map((status) => (
-        <PropertyBoardPoolSentinel key={status} status={status} myIssuesOpts={myIssuesOpts} sort={sort} />
+        <PropertyBoardPoolSentinel
+          key={status}
+          status={status}
+          myIssuesOpts={myIssuesOpts}
+          sort={sort}
+          listStatuses={listStatuses}
+        />
       ))}
     </div>
   );
@@ -735,12 +767,14 @@ function PropertyBoardPoolSentinel({
   status,
   myIssuesOpts,
   sort,
+  listStatuses,
 }: {
   status: IssueStatus;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
   sort?: IssueSortParam;
+  listStatuses?: readonly IssueStatus[];
 }) {
-  const { loadMore, hasMore, isLoading } = useLoadMoreByStatus(status, myIssuesOpts, sort);
+  const { loadMore, hasMore, isLoading } = useLoadMoreByStatus(status, myIssuesOpts, sort, listStatuses);
   if (!hasMore) return null;
   return <InfiniteScrollSentinel onVisible={loadMore} loading={isLoading} />;
 }
@@ -749,12 +783,14 @@ function BoardHiddenColumnRow({
   status,
   myIssuesOpts,
   sort,
+  listStatuses,
 }: {
   status: IssueStatus;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
   sort?: IssueSortParam;
+  listStatuses?: readonly IssueStatus[];
 }) {
-  const { total } = useLoadMoreByStatus(status, myIssuesOpts, sort);
+  const { total } = useLoadMoreByStatus(status, myIssuesOpts, sort, listStatuses);
   return <HiddenColumnRow status={status} total={total} />;
 }
 
@@ -762,10 +798,12 @@ function BoardHiddenColumnsPanel({
   hiddenStatuses,
   myIssuesOpts,
   sort,
+  listStatuses,
 }: {
   hiddenStatuses: IssueStatus[];
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
   sort?: IssueSortParam;
+  listStatuses?: readonly IssueStatus[];
 }) {
   return (
     <HiddenColumnsPanel
@@ -776,6 +814,7 @@ function BoardHiddenColumnsPanel({
           status={status}
           myIssuesOpts={myIssuesOpts}
           sort={sort}
+          listStatuses={listStatuses}
         />
       )}
     />

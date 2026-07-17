@@ -158,6 +158,86 @@ func TestRunTask_StartTaskCalledAfterWorkdirOnDisk(t *testing.T) {
 	}
 }
 
+// A watcher started before runTask can perform its first status read while the
+// task is still dispatched, then sleep for a full poll interval. The launch
+// path therefore needs its own synchronous status check after /start and
+// immediately before provider execution. This test makes /start succeed,
+// exposes cancelled on the following status read, and proves the provider
+// process is never spawned.
+func TestRunTask_CancelledAfterStartDoesNotLaunchProvider(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script agent fixture is POSIX-only")
+	}
+
+	providerCalled := filepath.Join(t.TempDir(), "provider-called")
+	fakeBin := filepath.Join(t.TempDir(), "claude")
+	script := "#!/bin/sh\ntouch \"$PROVIDER_CALLED\"\n"
+	if err := os.WriteFile(fakeBin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake agent: %v", err)
+	}
+
+	var (
+		startCalled      atomic.Bool
+		statusAfterStart atomic.Bool
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/start"):
+			startCalled.Store(true)
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			statusAfterStart.Store(startCalled.Load())
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"status":"cancelled"}`)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{
+		client:         NewClient(srv.URL),
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:     make(map[string]*workspaceState),
+		runtimeIndex:   map[string]Runtime{"rt-1": {ID: "rt-1", Provider: "claude"}},
+		activeEnvRoots: make(map[string]int),
+		cfg: Config{
+			WorkspacesRoot: t.TempDir(),
+			Agents: map[string]AgentEntry{
+				"claude": {Path: fakeBin},
+			},
+		},
+	}
+	task := Task{
+		ID:          "task-cancelled-after-start",
+		WorkspaceID: "ws-cancelled-after-start",
+		RuntimeID:   "rt-1",
+		IssueID:     "issue-cancelled-after-start",
+		AuthToken:   "mat_cancelled_after_start",
+		Agent: &AgentData{
+			Name:      "test-agent",
+			CustomEnv: map[string]string{"PROVIDER_CALLED": providerCalled},
+		},
+	}
+
+	result, err := d.runTask(context.Background(), task, "claude", 0, d.logger)
+	if err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	if !startCalled.Load() {
+		t.Fatal("runTask did not call /start before checking cancellation")
+	}
+	if !statusAfterStart.Load() {
+		t.Fatal("runTask checked cancellation before /start; the launch-boundary check must follow the state transition")
+	}
+	if result.Status != "cancelled" {
+		t.Fatalf("runTask status = %q, want cancelled", result.Status)
+	}
+	if _, err := os.Stat(providerCalled); !os.IsNotExist(err) {
+		t.Fatalf("provider executed after cancellation became visible, stat err=%v", err)
+	}
+}
+
 func TestRunTask_InjectsPrivateTaskTempDir(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script agent fixture is POSIX-only")
