@@ -69,10 +69,12 @@ interface AssigneePickerProps {
  * PillButton) — stay eager.
  */
 export function AssigneePicker(props: AssigneePickerProps) {
+  const hasDeferredTriggerContent =
+    props.trigger !== undefined || props.triggerRender?.props.children != null;
   const canDefer =
     props.open === undefined &&
     props.onOpenChange === undefined &&
-    (props.trigger !== undefined || props.triggerRender?.props.children != null);
+    hasDeferredTriggerContent;
   if (!canDefer) {
     return <AssigneePickerImpl {...props} />;
   }

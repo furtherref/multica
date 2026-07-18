@@ -46,6 +46,9 @@ beforeEach(() => {
     onCloseActiveTab: vi.fn(() => vi.fn()),
     closeWindow: vi.fn(),
     getLastFreeze: vi.fn(() => null),
+    windowContext: { kind: "main" as const },
+    reportAuthSession: vi.fn(),
+    openIssueWindow: vi.fn(() => Promise.resolve({ ok: true as const })),
   };
 
   window.updater = {
