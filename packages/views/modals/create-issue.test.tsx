@@ -431,12 +431,14 @@ vi.mock("../projects/components/project-picker", () => ({
     projectId,
     onUpdate,
     required,
+    open,
   }: {
     projectId: string | null;
     onUpdate: (updates: { project_id: string | null }) => void;
     required?: boolean;
+    open?: boolean;
   }) => (
-    <div data-testid="project-picker">
+    <div data-testid="project-picker" data-open={String(open)}>
       <span>{projectId ? "Project selected" : "No project"}</span>
       {required && (
         <span aria-label="Project required" className="text-destructive">
@@ -971,6 +973,18 @@ describe("CreateIssueModal", () => {
         }),
       );
     });
+  });
+
+  it("keeps the field pickers fully controlled so selecting an item closes them", () => {
+    // Base UI resolves open as `openProp ?? internalOpen`. Passing `undefined`
+    // while closed makes the menu uncontrolled at mount: a pill click sets the
+    // INTERNAL open flag, onOpenChange(true) then flips the prop to `true`
+    // (controlled), and on select the prop goes back to `undefined` — which
+    // falls through to the stale internal `true`, so the menu never closes.
+    // The wiring must therefore always pass a boolean.
+    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+
+    expect(screen.getByTestId("project-picker")).toHaveAttribute("data-open", "false");
   });
 
   it("applies an issue template to title and description", async () => {
