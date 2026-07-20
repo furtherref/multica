@@ -152,6 +152,7 @@
     "description_placeholder": "설명 추가...",
     "more_options_aria": "추가 옵션",
     "title_required": "만들려면 제목을 입력하세요",
+    "project_required": "만들려면 프로젝트를 선택하세요",
     "submit": "이슈 만들기",
     "submitting": "만드는 중...",
     "toast_created": "이슈를 만들었습니다",

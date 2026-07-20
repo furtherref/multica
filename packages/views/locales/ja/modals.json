@@ -152,6 +152,7 @@
     "description_placeholder": "説明を追加...",
     "more_options_aria": "その他のオプション",
     "title_required": "作成するにはタイトルを入力してください",
+    "project_required": "作成するにはプロジェクトを選択してください",
     "submit": "イシューを作成",
     "submitting": "作成中...",
     "toast_created": "イシューを作成しました",
