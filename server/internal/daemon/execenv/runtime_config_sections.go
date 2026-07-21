@@ -465,7 +465,7 @@ func writeSkills(b *strings.Builder, provider string, ctx TaskContextForEnv) {
 	b.WriteString("3. Follow the references that `SKILL.md` points to that are relevant to your change. For any code-writing or code-review task this ALWAYS includes the applicable coding-standards reference (comments/Javadoc, naming, etc.), not only the task-type-specific reference (e.g. unit-test).\n")
 	b.WriteString("4. Comply with every required rule the skill states — rules marked Mandatory, must/required language, Principles, and checklist items alike (skills label requirements differently; do not assume a `Mandatory:` tag). If one cannot be met, state which one and why in your result comment.\n\n")
 	switch provider {
-	case "claude", "codebuddy", "codex", "copilot", "opencode", "deveco", "openclaw", "hermes", "pi", "cursor", "kimi", "kiro", "qoder", "antigravity":
+	case "claude", "codebuddy", "codex", "copilot", "opencode", "deveco", "openclaw", "hermes", "pi", "cursor", "kimi", "kiro", "qoder", "antigravity", "qwen":
 		// Hermes discovers these from its per-task HERMES_HOME/skills (seeded by
 		// the daemon), so it needs the same "discovered automatically" framing
 		// as the other native-discovery runtimes rather than a path pointer.
