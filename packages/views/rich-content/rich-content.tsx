@@ -50,6 +50,7 @@ import {
 } from "@multica/ui/markdown";
 import { AppLink } from "../navigation";
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
+import { EntityMentionName, type EntityMentionType } from "../editor/mention-name";
 import { useResolveIssueIdentifier } from "../issues/hooks";
 import { ProjectChip } from "../projects/components/project-chip";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
@@ -169,7 +170,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   }
 
   if (isMentionHref(href)) {
-    const match = href.match(/^mention:\/\/(member|agent|issue|project|all)\/(.+)$/);
+    const match = href.match(/^mention:\/\/(member|agent|squad|issue|project|all)\/(.+)$/);
     if (match?.[1] === "issue" && match[2]) {
       // A bare identifier (from the autolink preprocessor) is carried as the id
       // segment; a real mention carries a UUID. Dispatch on the id shape.
@@ -181,7 +182,26 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
     if (match?.[1] === "project" && match[2]) {
       return <ProjectMentionLink projectId={match[2]} label={childrenToLabel(children)} />;
     }
-    // Member / agent / all mentions
+    // Agent / member / squad — look up the entity by UUID and render its
+    // canonical name. The markdown label is treated as a fallback hint only.
+    // This catches label/UUID mismatch ("[@A](mention://agent/<B-uuid>)") so
+    // the rendered comment always names the entity actually addressed.
+    if (
+      match &&
+      (match[1] === "agent" || match[1] === "member" || match[1] === "squad") &&
+      match[2]
+    ) {
+      return (
+        <span className="mention">
+          <EntityMentionName
+            type={match[1] as EntityMentionType}
+            id={match[2]}
+            fallbackLabel={childrenToLabel(children) ?? ""}
+          />
+        </span>
+      );
+    }
+    // @all and any other shape: keep the literal markdown text.
     return <span className="mention">{children}</span>;
   }
 

@@ -35,7 +35,7 @@ import { Label } from "@multica/ui/components/ui/label";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
-import { Markdown } from "../../common/markdown";
+import { ReadonlyContent } from "../../editor";
 import { AppLink, useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 
@@ -276,7 +276,7 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
               ) : (
                 <div className="rounded-md border px-4 py-3 min-h-72">
                   {issueContent ? (
-                    <Markdown mode="full">{issueContent}</Markdown>
+                    <ReadonlyContent content={issueContent} />
                   ) : (
                     <p className="text-sm text-muted-foreground italic">
                       {t(($) => $.detail.no_content)}

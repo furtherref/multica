@@ -29,10 +29,15 @@ vi.mock("../issues/hooks", () => ({
 vi.mock("../i18n", async () => {
   const editor = (await import("../locales/en/editor.json")).default;
   const chat = (await import("../locales/en/chat.json")).default;
+  const common = (await import("../locales/en/common.json")).default;
+  const bundles: Record<string, Record<string, unknown>> = {
+    chat: chat as Record<string, unknown>,
+    common: common as Record<string, unknown>,
+  };
   return {
     useT: (ns?: string) => ({
       t: (select: (bundle: Record<string, unknown>) => string) =>
-        select((ns === "chat" ? chat : editor) as Record<string, unknown>),
+        select(ns ? (bundles[ns] ?? (editor as Record<string, unknown>)) : (editor as Record<string, unknown>)),
     }),
     useTimeAgo: () => "just now",
   };

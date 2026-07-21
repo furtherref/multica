@@ -760,9 +760,12 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       // must preserve the exact current return value (no `trimEnd`).
       getMarkdown: () => stripBlobUrls(editor?.getMarkdown() ?? ""),
       setMarkdown: (markdown: string) => {
-        editor?.commands.setContent(preprocessMarkdown(markdown), {
-          contentType: "markdown",
-        });
+        editor?.commands.setContent(
+          preprocessMarkdown(markdown, {
+            cdnDomain: configStore.getState().cdnDomain,
+          }),
+          { contentType: "markdown" },
+        );
         lastEmittedRef.current = stripBlobUrls(markdown).trimEnd();
         onUpdateRef.current?.(stripBlobUrls(markdown).trimEnd());
       },
