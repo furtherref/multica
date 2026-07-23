@@ -61,6 +61,7 @@ vi.mock("@multica/core/workspace/queries", () => ({
 
 vi.mock("../navigation", () => ({
   useNavigation: () => ({ push: vi.fn(), openInNewTab: vi.fn() }),
+  useAppOrigin: () => null,
 }));
 
 vi.mock("../issues/components/issue-mention-card", () => ({

@@ -1107,6 +1107,7 @@ func (c *hermesClient) extractPromptResult(data json.RawMessage) {
 	var resp struct {
 		StopReason string          `json:"stopReason"`
 		Usage      json.RawMessage `json:"usage"`
+		Meta       json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return
@@ -1118,10 +1119,49 @@ func (c *hermesClient) extractPromptResult(data json.RawMessage) {
 	if len(resp.Usage) > 0 && string(resp.Usage) != "null" {
 		pr.usage = parseACPTokenUsage(resp.Usage)
 	}
+	// Prefer the standard top-level ACP `usage` field when present. Some
+	// agents (notably xAI Grok Build) put per-turn metering only under
+	// result._meta — either as `_meta.usage` or as flat token counters on
+	// `_meta` itself. Without this fallback, tasks complete with an empty
+	// usage map and Multica's Usage/cost dashboards stay at zero.
+	if !acpTokenUsagePresent(pr.usage) {
+		if metaUsage := parseACPTokenUsageFromMeta(resp.Meta); acpTokenUsagePresent(metaUsage) {
+			pr.usage = metaUsage
+		}
+	}
 
 	if c.onPromptDone != nil {
 		c.onPromptDone(pr)
 	}
+}
+
+// acpTokenUsagePresent reports whether any token counter is non-zero.
+func acpTokenUsagePresent(u TokenUsage) bool {
+	return u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheReadTokens > 0 || u.CacheWriteTokens > 0
+}
+
+// parseACPTokenUsageFromMeta extracts token usage from an ACP result `_meta`
+// object. Grok Build returns shapes like:
+//
+//	{"inputTokens":…,"outputTokens":…,"cachedReadTokens":…,"usage":{…}}
+//
+// Prefer the nested `usage` object when it carries counters; otherwise parse
+// the flat `_meta` fields with the same alias rules as top-level usage.
+func parseACPTokenUsageFromMeta(meta json.RawMessage) TokenUsage {
+	if len(meta) == 0 || string(meta) == "null" {
+		return TokenUsage{}
+	}
+	var envelope struct {
+		Usage json.RawMessage `json:"usage"`
+	}
+	if err := json.Unmarshal(meta, &envelope); err == nil {
+		if len(envelope.Usage) > 0 && string(envelope.Usage) != "null" {
+			if u := parseACPTokenUsage(envelope.Usage); acpTokenUsagePresent(u) {
+				return u
+			}
+		}
+	}
+	return parseACPTokenUsage(meta)
 }
 
 func (c *hermesClient) handleNotification(raw map[string]json.RawMessage) {
@@ -1609,7 +1649,7 @@ func parseACPTokenUsage(data json.RawMessage) TokenUsage {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return TokenUsage{}
 	}
-	return TokenUsage{
+	usage := TokenUsage{
 		InputTokens:  acpUsageInt64(fields, "inputTokens", "input_tokens"),
 		OutputTokens: acpUsageInt64(fields, "outputTokens", "output_tokens"),
 		CacheReadTokens: acpUsageInt64(fields,
@@ -1626,6 +1666,37 @@ func parseACPTokenUsage(data json.RawMessage) TokenUsage {
 			"cache_creation_input_tokens",
 		),
 	}
+	return excludeACPCachedInput(usage, acpUsageInt64(fields, "totalTokens", "total_tokens"))
+}
+
+// excludeACPCachedInput re-buckets a usage record whose `inputTokens` already
+// contains `cachedReadTokens`, so the persisted buckets stay mutually
+// exclusive and dashboard cost math does not charge the cached prefix twice
+// (same normalization codex.go applies via codexUncachedInputTokens).
+//
+// ACP does not specify whether cached reads are counted inside inputTokens.
+// Grok Build counts them inside: a real `grok 0.2.106` turn reports
+// inputTokens=12929, cachedReadTokens=10880, outputTokens=29,
+// totalTokens=12958 — i.e. total == input + output, so the cached prefix is
+// counted once, within input. The same payload's costUsdTicks=75360000
+// ($0.007536) matches exactly (12929-10880) uncached input + 10880 cached
+// read + 29 output at xAI's published grok-4.5 rates, confirming how xAI
+// bills it. Kept raw, that turn is priced as if 12929 tokens were uncached —
+// ~4x the real spend on a cache-heavy turn.
+//
+// `totalTokens` is the only self-describing signal available, so the
+// re-bucketing only happens when it is present and equals input + output.
+// Agents that report exclusive buckets (total == input + cached + output) or
+// omit totalTokens keep their counters untouched.
+func excludeACPCachedInput(usage TokenUsage, totalTokens int64) TokenUsage {
+	if totalTokens <= 0 || usage.CacheReadTokens <= 0 || usage.CacheReadTokens > usage.InputTokens {
+		return usage
+	}
+	if totalTokens != usage.InputTokens+usage.OutputTokens {
+		return usage
+	}
+	usage.InputTokens -= usage.CacheReadTokens
+	return usage
 }
 
 func acpUsageInt64(fields map[string]json.RawMessage, names ...string) int64 {

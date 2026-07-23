@@ -43,6 +43,16 @@ export interface DaemonPrefs {
   workspacesRoot?: string;
 }
 
+export type LocalRuntimeProbe =
+  | {
+      probeResult: "success";
+      runtimeCount: number;
+      providerSummary: Record<string, number>;
+      onlineCount: number;
+      offlineCount: number;
+    }
+  | { probeResult: "error" };
+
 export const DAEMON_STATE_COLORS: Record<DaemonState, string> = {
   running: "bg-emerald-500",
   stopped: "bg-muted-foreground/40",

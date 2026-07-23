@@ -424,6 +424,7 @@ describe("AttachmentPreviewModal — controls", () => {
     fireEvent.click(dialog);
     expect(onClose).toHaveBeenCalled();
   });
+
 });
 
 describe("AttachmentPreviewModal — URL-only source", () => {

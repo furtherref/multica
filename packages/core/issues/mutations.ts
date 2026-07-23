@@ -16,6 +16,7 @@ import {
   invalidateStaleListKeys,
   rollbackIssueChange,
   type IssueFlatCache,
+  type IssueTableRowCache,
 } from "./cache-coordinator";
 import { issueChangedDims } from "./surface/membership";
 import {
@@ -38,8 +39,9 @@ import { useRecentIssuesStore } from "./stores";
 import type { GroupedIssuesResponse, InboxItem, Issue, IssueAssigneeGroup, IssueReaction, IssueStatus } from "../types";
 import type {
   CreateIssueRequest,
-  UpdateIssueRequest,
   ListIssuesCache,
+  MoveIssueRequest,
+  UpdateIssueRequest,
 } from "../types";
 import type { TimelineEntry, IssueSubscriber, Reaction } from "../types";
 import { sortTimelineEntriesAsc } from "./timeline-sort";
@@ -59,6 +61,15 @@ export type ToggleIssueReactionVars = {
   emoji: string;
   existing: IssueReaction | undefined;
 };
+
+export type UpdateIssueMutationInput = {
+  id: string;
+  /**
+   * Present only for drag/drop. `position` remains in the optimistic patch,
+   * while the request sent to the server contains relative anchors instead.
+   */
+  move_intent?: Pick<MoveIssueRequest, "before_id" | "after_id">;
+} & UpdateIssueRequest;
 
 // ---------------------------------------------------------------------------
 // Per-status pagination
@@ -216,6 +227,7 @@ export function useCreateIssue() {
     onSettled: () => {
       qc.invalidateQueries({ queryKey: issueKeys.list(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.flatAll(wsId) });
+      qc.invalidateQueries({ queryKey: issueKeys.tableAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.projectGanttAll(wsId) });
@@ -228,9 +240,12 @@ export function useUpdateIssue() {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
   return useMutation({
-    mutationFn: ({ id, ...data }: { id: string } & UpdateIssueRequest) =>
-      api.updateIssue(id, data),
-    onMutate: ({ id, ...data }) => {
+    mutationFn: ({ id, move_intent: moveIntent, ...data }: UpdateIssueMutationInput) => {
+      if (!moveIntent) return api.updateIssue(id, data);
+      const { position: _optimisticPosition, ...target } = data;
+      return api.moveIssue(id, { ...target, ...moveIntent });
+    },
+    onMutate: ({ id, move_intent: _moveIntent, ...data }) => {
       // suppress_run / handoff_note are write-time control fields, not Issue
       // columns — they steer enqueue/injection on the server and must never be
       // written into the query cache (MUL-3375). Strip them from the patch; the
@@ -243,6 +258,7 @@ export function useUpdateIssue() {
       qc.cancelQueries({ queryKey: issueKeys.list(wsId) });
       qc.cancelQueries({ queryKey: issueKeys.myAll(wsId) });
       qc.cancelQueries({ queryKey: issueKeys.flatAll(wsId) });
+      qc.cancelQueries({ queryKey: issueKeys.tableAll(wsId) });
       if (patch.status !== undefined) {
         qc.cancelQueries({ queryKey: inboxKeys.list(wsId) });
       }
@@ -327,7 +343,13 @@ export function useUpdateIssue() {
       // optimistically; against the post-write entity the changed dims come
       // out false unless the server coerced a different value, so this pass
       // is the plain surgical patch it always was.
-      const { suppress_run: _suppressRun, handoff_note: _handoffNote, id: _id, ...intent } = vars;
+      const {
+        suppress_run: _suppressRun,
+        handoff_note: _handoffNote,
+        move_intent: _moveIntent,
+        id: _id,
+        ...intent
+      } = vars;
       // Drop `properties` from the reconcile payload: the bag is owned by the
       // property mutation pipeline (single-key atomic writes + its own
       // optimistic state). An UpdateIssue snapshot taken before a concurrent
@@ -357,6 +379,7 @@ export function useUpdateIssue() {
           vars.status !== undefined ||
           Object.prototype.hasOwnProperty.call(vars, "project_id"),
       });
+      qc.invalidateQueries({ queryKey: issueKeys.tableAll(wsId) });
       if (ctx) {
         invalidateStaleListKeys(qc, ctx.change.staleKeys);
       }
@@ -473,6 +496,7 @@ export function useDeleteIssue() {
     onSettled: (_data, _err, _id, ctx) => {
       qc.invalidateQueries({ queryKey: issueKeys.list(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.flatAll(wsId) });
+      qc.invalidateQueries({ queryKey: issueKeys.tableAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.projectGanttAll(wsId) });
@@ -500,6 +524,7 @@ export function useBatchUpdateIssues() {
       await qc.cancelQueries({ queryKey: issueKeys.list(wsId) });
       await qc.cancelQueries({ queryKey: issueKeys.myAll(wsId) });
       await qc.cancelQueries({ queryKey: issueKeys.flatAll(wsId) });
+      await qc.cancelQueries({ queryKey: issueKeys.tableAll(wsId) });
       if (patch.status !== undefined) {
         await qc.cancelQueries({ queryKey: inboxKeys.list(wsId) });
       }
@@ -512,6 +537,10 @@ export function useBatchUpdateIssues() {
       // first snapshot per key is pristine for rollback.
       const prevListByHash = new Map<string, [QueryKey, ListIssuesCache]>();
       const prevFlatListByHash = new Map<string, [QueryKey, IssueFlatCache]>();
+      const prevTableRowByHash = new Map<
+        string,
+        [QueryKey, IssueTableRowCache]
+      >();
       const prevDetailById = new Map<string, Issue>();
       let prevInboxList: InboxItem[] | undefined;
       const staleKeys: QueryKey[] = [];
@@ -529,6 +558,12 @@ export function useBatchUpdateIssues() {
           const hash = hashKey(key);
           if (!prevFlatListByHash.has(hash)) {
             prevFlatListByHash.set(hash, [key, snapshot]);
+          }
+        }
+        for (const [key, snapshot] of change.prevTableRows) {
+          const hash = hashKey(key);
+          if (!prevTableRowByHash.has(hash)) {
+            prevTableRowByHash.set(hash, [key, snapshot]);
           }
         }
         if (change.prevDetail) prevDetailById.set(id, change.prevDetail);
@@ -560,6 +595,7 @@ export function useBatchUpdateIssues() {
       return {
         prevLists: [...prevListByHash.values()],
         prevFlatLists: [...prevFlatListByHash.values()],
+        prevTableRows: [...prevTableRowByHash.values()],
         prevDetailById,
         prevInboxList,
         staleKeys,
@@ -575,6 +611,11 @@ export function useBatchUpdateIssues() {
       }
       if (ctx?.prevFlatLists) {
         for (const [key, snapshot] of ctx.prevFlatLists) {
+          qc.setQueryData(key, snapshot);
+        }
+      }
+      if (ctx?.prevTableRows) {
+        for (const [key, snapshot] of ctx.prevTableRows) {
           qc.setQueryData(key, snapshot);
         }
       }
@@ -606,6 +647,7 @@ export function useBatchUpdateIssues() {
           _vars.updates.status !== undefined ||
           Object.prototype.hasOwnProperty.call(_vars.updates, "project_id"),
       });
+      qc.invalidateQueries({ queryKey: issueKeys.tableAll(wsId) });
       if (ctx) {
         invalidateStaleListKeys(qc, ctx.staleKeys);
       }
@@ -741,6 +783,7 @@ export function useBatchDeleteIssues() {
     onSettled: (_data, _err, _ids, ctx) => {
       qc.invalidateQueries({ queryKey: issueKeys.list(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.flatAll(wsId) });
+      qc.invalidateQueries({ queryKey: issueKeys.tableAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.projectGanttAll(wsId) });

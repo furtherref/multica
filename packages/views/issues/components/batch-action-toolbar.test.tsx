@@ -188,4 +188,18 @@ describe("BatchActionToolbar", () => {
     });
     expect(mockOpenModal).not.toHaveBeenCalled();
   });
+
+  it("removes the toolbar after the final selected issue is cleared", async () => {
+    const issues = [makeIssue("a")];
+    selectionState.selectedIds = new Set(["a"]);
+    const view = render(wrap(<BatchActionToolbar issues={issues} />));
+
+    expect(screen.getByText("Status")).toBeInTheDocument();
+    selectionState.selectedIds = new Set();
+    view.rerender(wrap(<BatchActionToolbar issues={issues} />));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Status")).not.toBeInTheDocument();
+    });
+  });
 });

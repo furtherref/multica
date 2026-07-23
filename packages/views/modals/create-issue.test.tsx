@@ -45,6 +45,7 @@ const mockDraftStore = {
     priority: "none" as const,
     assigneeType: undefined as "agent" | "squad" | "member" | undefined,
     assigneeId: undefined as string | undefined,
+    projectId: undefined as string | undefined,
     startDate: null,
     dueDate: null,
     labelIds: [] as string[],
@@ -438,14 +439,20 @@ vi.mock("../projects/components/project-picker", () => ({
     required?: boolean;
     open?: boolean;
   }) => (
-    <div data-testid="project-picker" data-open={String(open)}>
+    <div>
       <span>{projectId ? "Project selected" : "No project"}</span>
       {required && (
         <span aria-label="Project required" className="text-destructive">
           *
         </span>
       )}
-      <button type="button" onClick={() => onUpdate({ project_id: "project-1" })}>
+      <button
+        type="button"
+        data-testid="project-picker"
+        data-open={String(open)}
+        data-project-id={projectId ?? "none"}
+        onClick={() => onUpdate({ project_id: "project-1" })}
+      >
         Select project
       </button>
     </div>
@@ -578,6 +585,7 @@ describe("CreateIssueModal", () => {
     // doesn't leak into the next test in the suite.
     mockDraftStore.draft.assigneeType = undefined;
     mockDraftStore.draft.assigneeId = undefined;
+    mockDraftStore.draft.projectId = undefined;
     mockDraftStore.draft.startDate = null;
     mockDraftStore.draft.dueDate = null;
     mockDraftStore.draft.labelIds = [];
@@ -594,6 +602,7 @@ describe("CreateIssueModal", () => {
         priority: "none",
         assigneeType: mockDraftStore.lastAssigneeType,
         assigneeId: mockDraftStore.lastAssigneeId,
+        projectId: undefined,
         startDate: null,
         dueDate: null,
         labelIds: [],
@@ -1165,6 +1174,21 @@ describe("CreateIssueModal", () => {
         project_id: "proj-1",
       }),
     );
+  });
+
+  it("restores an unfinished project selection after manual create remounts", async () => {
+    const user = userEvent.setup();
+
+    const firstOpen = renderModal(<CreateIssueModal onClose={vi.fn()} />);
+    expect(screen.getByTestId("project-picker")).toHaveAttribute("data-project-id", "none");
+
+    await user.click(screen.getByTestId("project-picker"));
+    expect(mockSetDraft).toHaveBeenCalledWith({ projectId: "project-1" });
+
+    firstOpen.unmount();
+    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+
+    expect(screen.getByTestId("project-picker")).toHaveAttribute("data-project-id", "project-1");
   });
 
   // Manual → agent must forward parent_issue_id when the modal was opened

@@ -196,7 +196,9 @@ export interface AttachmentPreviewHandle {
 export function useAttachmentPreview(): AttachmentPreviewHandle {
   const [current, setCurrent] = useState<PreviewSource | null>(null);
 
-  const open = useCallback((source: PreviewSource) => setCurrent(source), []);
+  const open = useCallback((source: PreviewSource) => {
+    setCurrent(source);
+  }, []);
   const tryOpen = useCallback((source: PreviewSource) => {
     const state = normalize(source);
     const kind = getPreviewKind(state.contentType, state.filename);
@@ -356,7 +358,7 @@ export function AttachmentPreviewModal({
     onClose();
   };
 
-  if (!open || typeof document === "undefined") return null;
+  if (typeof document === "undefined") return null;
 
   return createPortal(
     <div
@@ -367,6 +369,7 @@ export function AttachmentPreviewModal({
       aria-label={state.filename}
     >
       <Rnd
+
         // Remount on fullscreen toggle so Rnd picks up the new size/position
         // without animating from the previous bounds.
         key={fullscreen ? "fullscreen" : "windowed"}

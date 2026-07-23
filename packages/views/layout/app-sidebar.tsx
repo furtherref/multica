@@ -17,26 +17,13 @@ import {
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
-  Inbox,
-  MessageSquare,
-  ListTodo,
-  Bot,
-  Monitor,
   ChevronDown,
   ChevronRight,
-  Settings,
   LogOut,
   Plus,
-  BookOpenText,
-  FileText,
   SquarePen,
-  CircleUser,
-  FolderKanban,
-  BarChart3,
   Check,
   X,
-  Zap,
-  Users,
 } from "lucide-react";
 import { WorkspaceAvatar } from "../workspace/workspace-avatar";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
@@ -88,6 +75,7 @@ import { projectDetailOptions } from "@multica/core/projects/queries";
 import type { PinnedItem } from "@multica/core/types";
 import { useLogout } from "../auth";
 import { ProjectIcon } from "../projects/components/project-icon";
+import { routeIconForPath } from "./route-icon-components";
 import { useT } from "../i18n";
 import {
   useShortcut,
@@ -132,7 +120,8 @@ type NavKey =
   | "issueTemplates"
   | "settings";
 
-// Static schema (key + icon) — labels resolved at render via useT("layout").
+// Static schema (key only) — labels resolved at render via useT("layout"),
+// icons derived from the destination path via routeIconForPath.
 type NavLabelKey =
   | "inbox"
   | "chat"
@@ -148,26 +137,29 @@ type NavLabelKey =
   | "issue_templates"
   | "settings";
 
-const personalNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
-  { key: "inbox", labelKey: "inbox", icon: Inbox },
-  { key: "chat", labelKey: "chat", icon: MessageSquare },
-  { key: "myIssues", labelKey: "my_issues", icon: CircleUser },
+// Nav icons are NOT declared here: they are derived from each item's
+// destination path at render time, so the sidebar and the desktop tab bar
+// always agree. See route-icon-components.tsx.
+const personalNav: { key: NavKey; labelKey: NavLabelKey }[] = [
+  { key: "inbox", labelKey: "inbox" },
+  { key: "chat", labelKey: "chat" },
+  { key: "myIssues", labelKey: "my_issues" },
 ];
 
-const workspaceNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
-  { key: "issues", labelKey: "issues", icon: ListTodo },
-  { key: "projects", labelKey: "projects", icon: FolderKanban },
-  { key: "autopilots", labelKey: "autopilots", icon: Zap },
-  { key: "agents", labelKey: "agents", icon: Bot },
-  { key: "squads", labelKey: "squads", icon: Users },
-  { key: "usage", labelKey: "usage", icon: BarChart3 },
+const workspaceNav: { key: NavKey; labelKey: NavLabelKey }[] = [
+  { key: "issues", labelKey: "issues" },
+  { key: "projects", labelKey: "projects" },
+  { key: "autopilots", labelKey: "autopilots" },
+  { key: "agents", labelKey: "agents" },
+  { key: "squads", labelKey: "squads" },
+  { key: "usage", labelKey: "usage" },
 ];
 
-const configureNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
-  { key: "runtimes", labelKey: "runtimes", icon: Monitor },
-  { key: "skills", labelKey: "skills", icon: BookOpenText },
-  { key: "issueTemplates", labelKey: "issue_templates", icon: FileText },
-  { key: "settings", labelKey: "settings", icon: Settings },
+const configureNav: { key: NavKey; labelKey: NavLabelKey }[] = [
+  { key: "runtimes", labelKey: "runtimes" },
+  { key: "skills", labelKey: "skills" },
+  { key: "issueTemplates", labelKey: "issue_templates" },
+  { key: "settings", labelKey: "settings" },
 ];
 
 function DraftDot() {
@@ -675,6 +667,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
               <SidebarMenu className="gap-0.5">
                 {personalNav.map((item) => {
                   const href = p[item.key]();
+                  const Icon = routeIconForPath(href);
                   const isActive = isNavActive(pathname, href);
                   return (
                     <SidebarMenuItem key={item.key}>
@@ -683,7 +676,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                         render={<AppLink href={href} />}
                         className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
                       >
-                        <item.icon />
+                        <Icon />
                         <span>{t(($) => $.nav[item.labelKey])}</span>
                         {item.key === "inbox" && unreadCount > 0 && (
                           <CappedNumberFlow
@@ -748,6 +741,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
               <SidebarMenu className="gap-0.5">
                 {workspaceNav.map((item) => {
                   const href = p[item.key]();
+                  const Icon = routeIconForPath(href);
                   const isActive = !isActivePinnedRoute && isNavActive(pathname, href);
                   return (
                     <SidebarMenuItem key={item.key}>
@@ -756,7 +750,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                         render={<AppLink href={href} />}
                         className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
                       >
-                        <item.icon />
+                        <Icon />
                         <span>{t(($) => $.nav[item.labelKey])}</span>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
@@ -772,6 +766,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
               <SidebarMenu className="gap-0.5">
                 {configureNav.map((item) => {
                   const href = p[item.key]();
+                  const Icon = routeIconForPath(href);
                   const isActive = isNavActive(pathname, href);
                   return (
                     <SidebarMenuItem key={item.key}>
@@ -780,7 +775,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                         render={<AppLink href={href} />}
                         className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
                       >
-                        <item.icon />
+                        <Icon />
                         <span>{t(($) => $.nav[item.labelKey])}</span>
                       </SidebarMenuButton>
                     </SidebarMenuItem>

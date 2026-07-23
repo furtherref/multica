@@ -125,6 +125,9 @@ and is hidden from the PR list.
 | Daemon launch checks task status synchronously after `/start` and before provider execution; terminal/deleted tasks skip provider launch, while transient status-read errors fall through to the asynchronous watcher | `server/internal/daemon/daemon.go:4031-4054`; watcher scope clarification at `:3038-3042` | fix wave 4 follow-up: documents the real provider boundary rather than treating the watcher's pre-start read as sufficient |
 | Assigning/promoting into `archive` never enqueues a run | `server/internal/service/issue_trigger.go:105` (assign source) and `:110` (status source), inside `WillEnqueueRun` | re-verified fix wave 3, unchanged; re-verified fix wave 4 final sweep, unchanged |
 | Restoring from `archive` sweeps straggler tasks BEFORE the status write commits, not after: a sweep failure aborts the single-issue restore outright (issue stays archived), and in the batch loop the issue is skipped without applying its update and without counting toward `updated` | `server/internal/handler/issue.go:2674-2696` and `:3289-3303`, both via `CancelTasksForIssue` | fix wave 4 follow-up: refreshed the batch citation after post-write archive convergence was inserted |
+| `StartTask` / `CompleteTask` do not write issue status (agent CLI owns progress) | `server/internal/service/task.go` (`StartTask` `:2502` / `CompleteTask` `:2606`) | upstream sync: new citation |
+| Assignment brief: ordinary agent `in_progress` then `in_review`; squad leader `in_progress` only on first dispatch | `server/internal/daemon/execenv/runtime_config_sections.go:472` (`writeWorkflowAssignment`) | upstream sync: new citation |
+| Failed task may roll `in_progress` → `todo` when no active task remains | `server/internal/service/task.go:3611` (`HandleFailedTasks`) | upstream sync: new citation |
 
 Creation with `--status todo` (or any active status — not `backlog`, not
 `archive`) on an agent-assigned issue fires the agent immediately; `--status
@@ -155,7 +158,10 @@ left orphaned.
 
 Advancement is agent-driven: the server only detects the closed barrier and
 wakes the parent assignee. Promoting the next stage's `backlog` sub-issues to
-`todo` is the woken agent's decision, not a server side effect.
+`todo` is the woken agent's decision, not a server side effect. When the woken
+assignee (often a squad leader) decides the parent is complete, the system
+comment explicitly asks for `multica issue status <parent-id> in_review` —
+comment-triggered runs otherwise must not change status unless asked.
 
 ## Metadata CLI
 
