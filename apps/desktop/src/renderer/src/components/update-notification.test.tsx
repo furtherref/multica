@@ -46,6 +46,8 @@ beforeEach(() => {
     onCloseActiveTab: vi.fn(() => vi.fn()),
     closeWindow: vi.fn(),
     getLastFreeze: vi.fn(() => null),
+    ackFreeze: vi.fn(),
+    setDiagnosticsControl: vi.fn(),
     windowContext: { kind: "main" as const },
     reportAuthSession: vi.fn(),
     openIssueWindow: vi.fn(() => Promise.resolve({ ok: true as const })),

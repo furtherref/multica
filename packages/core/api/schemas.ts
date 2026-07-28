@@ -20,6 +20,8 @@ import type {
   CreateBillingPortalSessionResponse,
   CronPreviewResponse,
   GroupedIssuesResponse,
+  GitHubConnectResponse,
+  GitHubPullRequest,
   InboxItem,
   InboxWorkspaceUnread,
   Label,
@@ -31,6 +33,8 @@ import type {
   IssueTableGroupsResponse,
   IssueTableRowsResponse,
   ListIssuesResponse,
+  ListGitHubInstallationsResponse,
+  ListGitHubRepositoriesResponse,
   ListLabelsResponse,
   ListWebhookDeliveriesResponse,
   NotificationPreferenceResponse,
@@ -45,6 +49,107 @@ import type {
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
+
+export const GitHubInstallationSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  installation_id: z.number().optional(),
+  account_login: z.string(),
+  account_type: z.string(),
+  account_avatar_url: z.string().nullable(),
+  created_at: z.string(),
+  connected_by: z.string().optional(),
+}).loose();
+
+export const ListGitHubInstallationsResponseSchema = z.object({
+  installations: z.array(GitHubInstallationSchema).default([]),
+  configured: z.boolean().optional().default(false),
+  repository_browse_configured: z.boolean().optional().default(false),
+  can_manage: z.boolean().optional().default(false),
+}).loose();
+
+export const EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE: ListGitHubInstallationsResponse = {
+  installations: [],
+  configured: false,
+  repository_browse_configured: false,
+  can_manage: false,
+};
+
+export const GitHubConnectResponseSchema = z.object({
+  url: z.string().optional(),
+  configured: z.boolean().optional().default(false),
+}).loose();
+
+export const EMPTY_GITHUB_CONNECT_RESPONSE: GitHubConnectResponse = {
+  configured: false,
+};
+
+export const GitHubRepositorySchema = z.object({
+  id: z.number(),
+  full_name: z.string(),
+  html_url: z.string(),
+  clone_url: z.string(),
+  description: z.string().nullable(),
+  private: z.boolean(),
+  archived: z.boolean(),
+  default_branch: z.string(),
+}).loose();
+
+export const ListGitHubRepositoriesResponseSchema = z.object({
+  repositories: z.array(GitHubRepositorySchema).default([]),
+  total_count: z.number().optional().default(0),
+  next_page: z.number().nullable().optional().default(null),
+}).loose();
+
+export const EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE: ListGitHubRepositoriesResponse = {
+  repositories: [],
+  total_count: 0,
+  next_page: null,
+};
+
+export const GitHubPullRequestSchema = z.object({
+  id: z.string(),
+  provider: z.string().optional().default("github"),
+  workspace_id: z.string(),
+  repo_owner: z.string(),
+  repo_name: z.string(),
+  number: z.number(),
+  title: z.string(),
+  state: z.string(),
+  html_url: z.string(),
+  branch: z.string().nullable(),
+  author_login: z.string().nullable(),
+  author_avatar_url: z.string().nullable(),
+  merged_at: z.string().nullable(),
+  closed_at: z.string().nullable(),
+  pr_created_at: z.string(),
+  pr_updated_at: z.string(),
+  mergeable: z.string().nullable().optional(),
+  merge_state_status: z.string().nullable().optional(),
+  snapshot_available: z.boolean().optional(),
+  checks_rollup: z.string().nullable().optional(),
+  checks_conclusion: z.string().nullable().optional(),
+  checks_total: z.number().optional().default(0),
+  checks_passed: z.number().optional().default(0),
+  checks_failed: z.number().optional().default(0),
+  checks_running: z.number().optional().default(0),
+  checks_pending: z.number().optional().default(0),
+  failed_check_names: z.array(z.string()).optional().default([]),
+  snapshot_stale: z.boolean().optional().default(false),
+  snapshot_fetched_at: z.string().nullable().optional(),
+  mergeable_state: z.string().nullable().optional(),
+  additions: z.number().optional().default(0),
+  deletions: z.number().optional().default(0),
+  changed_files: z.number().optional().default(0),
+}).loose();
+
+export const IssuePullRequestsResponseSchema = z.object({
+  pull_requests: z.array(GitHubPullRequestSchema).default([]),
+}).loose();
+
+export const EMPTY_ISSUE_PULL_REQUESTS_RESPONSE: { pull_requests: GitHubPullRequest[] } = {
+  pull_requests: [],
+};
 
 // Label responses are consumed by settings tables and resource pickers. Keep
 // the resource type lenient so newer server scopes do not break older clients,
@@ -189,6 +294,10 @@ export interface AppConfigResponse {
   // Server. Older servers (and forks deployed without OnlyOffice) omit it;
   // treat missing as false so the office-attachment preview Eye stays hidden.
   office_preview_enabled?: boolean;
+  /** Whether this deployment offers the self-hosted Git provider integration
+   * (self-host only; off on the managed cloud). Absent/false hides the whole
+   * Settings → Integrations "Git providers" section. */
+  vcs_integration_available?: boolean;
   feature_flags?: Record<string, boolean>;
   server_version?: string;
 }
@@ -352,6 +461,7 @@ export const AppConfigSchema = z.object({
   daemon_app_url: OptionalStringSchema,
   workspace_creation_disabled: BooleanWithDefaultSchema(false).optional(),
   office_preview_enabled: BooleanWithDefaultSchema(false).optional(),
+  vcs_integration_available: BooleanWithDefaultSchema(false).optional(),
   feature_flags: FeatureFlagsSchema,
   server_version: OptionalStringSchema,
 }).loose();
@@ -365,6 +475,7 @@ export const EMPTY_APP_CONFIG: AppConfigResponse = {
   daemon_app_url: "",
   workspace_creation_disabled: false,
   office_preview_enabled: false,
+  vcs_integration_available: false,
   feature_flags: {},
 };
 
@@ -761,6 +872,26 @@ export const EMPTY_CLOUD_RUNTIME_NODE: CloudRuntimeNode = {
 // only that row instead of dropping the whole array to the `[]` fallback.
 // ---------------------------------------------------------------------------
 
+// Cost split carried by every usage row. `cost_usd_ticks` is what the provider
+// itself charged for the rows behind this aggregate (1e-10 USD); the
+// `uncosted_*` counts are the tokens from rows the provider did NOT price, and
+// so are the only ones the client should run through its rate table.
+//
+// The `uncosted_*` fields are deliberately `.optional()` rather than
+// `.default(0)`: a backend that predates them sends nothing, and defaulting
+// those rows to "0 tokens left to estimate" would silently zero their cost.
+// `undefined` means "this backend doesn't split", and the consumer falls back
+// to the full token counts — i.e. exactly the old behaviour. A real 0 from a
+// current backend means "everything here is already priced", which is a
+// different thing and must stay distinguishable.
+const CostSplitShape = {
+  cost_usd_ticks: z.number().optional(),
+  uncosted_input_tokens: z.number().optional(),
+  uncosted_output_tokens: z.number().optional(),
+  uncosted_cache_read_tokens: z.number().optional(),
+  uncosted_cache_write_tokens: z.number().optional(),
+};
+
 const DashboardUsageDailySchema = z.object({
   date: z.string().default(""),
   provider: z.string().default(""),
@@ -769,6 +900,7 @@ const DashboardUsageDailySchema = z.object({
   output_tokens: z.number().default(0),
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
+  ...CostSplitShape,
   task_count: z.number().default(0),
 }).loose();
 
@@ -782,6 +914,7 @@ const DashboardUsageByAgentSchema = z.object({
   output_tokens: z.number().default(0),
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
+  ...CostSplitShape,
   task_count: z.number().default(0),
 }).loose();
 
@@ -805,6 +938,32 @@ const DashboardRunTimeDailySchema = z.object({
 
 export const DashboardRunTimeDailyListSchema = z.array(DashboardRunTimeDailySchema);
 
+// Failure rollups. `failure_reason` is an open string on purpose — it carries
+// the backend's canonical taxonomy, which grows as new classifier rules land
+// (server/pkg/taskfailure). Pinning it to a z.enum would make an installed
+// desktop client drop rows for a reason its build predates; the client folds
+// unrecognised reasons into an "other" display class instead. The empty
+// string is the succeeded bucket, so `.default("")` is a meaningful default
+// only for a row that already lost its reason — such a row lands in the
+// denominator rather than inventing a failure that never happened.
+const DashboardFailureDailySchema = z.object({
+  date: z.string().default(""),
+  failure_reason: z.string().default(""),
+  task_count: z.number().default(0),
+}).loose();
+
+export const DashboardFailureDailyListSchema = z.array(DashboardFailureDailySchema);
+
+const DashboardFailureByAgentSchema = z.object({
+  agent_id: z.string().default(""),
+  failure_reason: z.string().default(""),
+  task_count: z.number().default(0),
+}).loose();
+
+export const DashboardFailureByAgentListSchema = z.array(
+  DashboardFailureByAgentSchema,
+);
+
 // ---------------------------------------------------------------------------
 // Runtime usage schemas — the runtime-detail page's four usage endpoints
 // (`/api/runtimes/:id/usage*`). Same leniency rules as the dashboard
@@ -821,6 +980,7 @@ const RuntimeUsageSchema = z.object({
   output_tokens: z.number().default(0),
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
+  ...CostSplitShape,
 }).loose();
 
 export const RuntimeUsageListSchema = z.array(RuntimeUsageSchema);
@@ -840,6 +1000,7 @@ const RuntimeUsageByAgentSchema = z.object({
   output_tokens: z.number().default(0),
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
+  ...CostSplitShape,
   task_count: z.number().default(0),
 }).loose();
 
@@ -852,6 +1013,7 @@ const RuntimeUsageByHourSchema = z.object({
   output_tokens: z.number().default(0),
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
+  ...CostSplitShape,
   task_count: z.number().default(0),
 }).loose();
 

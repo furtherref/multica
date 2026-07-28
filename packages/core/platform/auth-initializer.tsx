@@ -65,6 +65,8 @@ export function AuthInitializer({
           // Old servers / forks without OnlyOffice omit this — false hides the
           // office-attachment preview Eye rather than showing a broken one.
           officePreviewEnabled: cfg.office_preview_enabled === true,
+          // Absent/false on the managed cloud and older servers → section hidden.
+          vcsIntegrationAvailable: cfg.vcs_integration_available === true,
         });
         configStore.getState().setDaemonConfig({
           daemonServerUrl: cfg.daemon_server_url,

@@ -5,8 +5,10 @@
  *
  * Single modal for every previewable kind. Handles 8 PreviewKinds:
  *
- *   - image : <img className="object-contain"> centered in the modal frame.
- *             Replaces the previous standalone ImageLightbox.
+ *   - image : <img> on the shared ZoomCanvas — fit on open, then wheel /
+ *             drag / pinch / double-click / keyboard zoom, same controls as
+ *             the Mermaid viewer. Replaces the previous standalone
+ *             ImageLightbox.
  *   - pdf   : <iframe src={download_url}> — relies on Chromium's PDFium
  *             plugin. On desktop, requires webPreferences.plugins=true
  *             (see apps/desktop/src/main/index.ts).
@@ -61,6 +63,7 @@ import {
 } from "lucide-react";
 import type { Attachment } from "@multica/core/types";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
+import { cn } from "@multica/ui/lib/utils";
 import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
 import { useT } from "../i18n";
 import { useNavigation } from "../navigation";
@@ -73,6 +76,9 @@ import {
 } from "./utils/preview";
 import { useDownloadAttachment } from "./use-download-attachment";
 import { useAttachmentHtmlText } from "./hooks/use-attachment-html-text";
+import { useZoomCanvas, type ZoomCanvasApi } from "./hooks/use-zoom-canvas";
+import { ZoomCanvas, ZoomControls } from "./zoom-canvas";
+import type { Size } from "./utils/zoom-transform";
 import { HtmlPreviewBody } from "./html-preview-body";
 import { CodeBlockStatic } from "./code-block-static";
 import { OfficeAttachmentPreview } from "./office-attachment-preview";
@@ -293,7 +299,6 @@ export function AttachmentPreviewModal({
   open,
   onClose,
 }: AttachmentPreviewModalProps) {
-  const { t } = useT("editor");
   const download = useDownloadAttachment();
   const state = normalize(source);
   const [fullscreen, setFullscreen] = useState(false);
@@ -334,10 +339,6 @@ export function AttachmentPreviewModal({
     }
   };
 
-  const fullscreenLabel = fullscreen
-    ? t(($) => $.file_card.exit_full_screen)
-    : t(($) => $.file_card.enter_full_screen);
-
   // Open-in-new-tab mirrors HtmlAttachmentPreview's inline toolbar: only the
   // `html` kind has a dedicated full-page route (/attachments/{id}/preview).
   // Gated on slug + attachmentId for the same reason — URL-only sources
@@ -358,7 +359,10 @@ export function AttachmentPreviewModal({
     onClose();
   };
 
-  if (typeof document === "undefined") return null;
+  // Unmount rather than hide when closed: the panel owns the image zoom state,
+  // so tearing it down is what makes every open re-fit instead of restoring a
+  // stale zoom from the last time this attachment was viewed.
+  if (typeof document === "undefined" || !open) return null;
 
   return createPortal(
     <div
@@ -369,7 +373,6 @@ export function AttachmentPreviewModal({
       aria-label={state.filename}
     >
       <Rnd
-
         // Remount on fullscreen toggle so Rnd picks up the new size/position
         // without animating from the previous bounds.
         key={fullscreen ? "fullscreen" : "windowed"}
@@ -398,74 +401,229 @@ export function AttachmentPreviewModal({
           className="flex h-full flex-col"
           onClick={(e) => e.stopPropagation()}
         >
-          <div
-            className={`${DRAG_HANDLE_CLASS} flex items-center gap-2 border-b border-border bg-muted/30 px-4 py-2 ${fullscreen ? "" : "cursor-move"}`}
-          >
-            <FileText className="size-4 shrink-0 text-muted-foreground" />
-            <p className="truncate text-sm font-medium">{state.filename}</p>
-            <span className="ml-1 shrink-0 text-xs text-muted-foreground">
-              {fileTypeLabel(state.filename, state.contentType)}
-            </span>
-            {/* `[-webkit-app-region:no-drag]` keeps these clickable when the
-                modal goes fullscreen on desktop — without it, the Electron
-                window's top-48px drag region swallows the click. */}
-            <div className="ml-auto flex items-center gap-1 [-webkit-app-region:no-drag]">
-              {canOpenInNewTab && (
-                <button
-                  type="button"
-                  className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                  title={t(($) => $.attachment.open_in_new_tab)}
-                  aria-label={t(($) => $.attachment.open_in_new_tab)}
-                  onClick={handleOpenInNewTab}
-                  onMouseDown={(e) => e.stopPropagation()}
-                >
-                  <ExternalLink className="size-4" />
-                </button>
-              )}
-              <button
-                type="button"
-                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                title={t(($) => $.image.download)}
-                aria-label={t(($) => $.image.download)}
-                onClick={handleDownload}
-                onMouseDown={(e) => e.stopPropagation()}
-              >
-                <Download className="size-4" />
-              </button>
-              <button
-                type="button"
-                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                title={fullscreenLabel}
-                aria-label={fullscreenLabel}
-                onClick={() => setFullscreen((value) => !value)}
-                onMouseDown={(e) => e.stopPropagation()}
-              >
-                {fullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
-              </button>
-              <button
-                type="button"
-                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                title={t(($) => $.attachment.close)}
-                aria-label={t(($) => $.attachment.close)}
-                onClick={onClose}
-                onMouseDown={(e) => e.stopPropagation()}
-              >
-                <X className="size-4" />
-              </button>
-            </div>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto bg-background">
-            <PreviewContent
-              kind={kind}
-              source={source}
-              state={state}
-              onDownload={handleDownload}
-            />
-          </div>
+          <PreviewPanel
+            kind={kind}
+            source={source}
+            state={state}
+            fullscreen={fullscreen}
+            onToggleFullscreen={() => setFullscreen((value) => !value)}
+            onClose={onClose}
+            onDownload={handleDownload}
+            onOpenInNewTab={canOpenInNewTab ? handleOpenInNewTab : undefined}
+          />
         </div>
       </Rnd>
     </div>,
     document.body,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Panel — header + content area
+// ---------------------------------------------------------------------------
+
+// Header chrome and the content area live together because the image kind's
+// zoom controls sit in the header while the canvas they drive is the body:
+// one owner for that shared state, mounted and destroyed with the open modal.
+function PreviewPanel({
+  kind,
+  source,
+  state,
+  fullscreen,
+  onToggleFullscreen,
+  onClose,
+  onDownload,
+  onOpenInNewTab,
+}: {
+  kind: PreviewKind | null;
+  source: PreviewSource;
+  state: PreviewState;
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
+  onClose: () => void;
+  onDownload: () => void;
+  onOpenInNewTab?: () => void;
+}) {
+  const { t } = useT("editor");
+  const fullscreenLabel = fullscreen
+    ? t(($) => $.file_card.exit_full_screen)
+    : t(($) => $.file_card.enter_full_screen);
+
+  // Natural size is carried with the URL it was measured from, so a panel
+  // reused for a different attachment can never fit the new image against the
+  // old one's dimensions.
+  const [measured, setMeasured] = useState<{ url: string; size: Size } | null>(
+    null,
+  );
+  const natural =
+    kind === "image" && measured?.url === state.mediaUrl ? measured.size : null;
+  const canvas = useZoomCanvas({ content: natural });
+
+  const handleNaturalSize = useCallback(
+    (url: string, size: Size) => {
+      setMeasured((previous) =>
+        previous?.url === url &&
+        previous.size.width === size.width &&
+        previous.size.height === size.height
+          ? previous
+          : { url, size },
+      );
+    },
+    [],
+  );
+
+  return (
+    <>
+      <div
+        className={`${DRAG_HANDLE_CLASS} flex items-center gap-2 border-b border-border bg-muted/30 px-4 py-2 ${fullscreen ? "" : "cursor-move"}`}
+      >
+        <FileText className="size-4 shrink-0 text-muted-foreground" />
+        <p className="truncate text-sm font-medium">{state.filename}</p>
+        <span className="ml-1 shrink-0 text-xs text-muted-foreground">
+          {fileTypeLabel(state.filename, state.contentType)}
+        </span>
+        {/* `onMouseDown` stops the drag-handle from claiming a press meant for
+            a control. `[-webkit-app-region:no-drag]` keeps these clickable when
+            the modal goes fullscreen on desktop — without it, the Electron
+            window's top-48px drag region swallows the click. */}
+        <div
+          className="ml-auto flex items-center gap-1 [-webkit-app-region:no-drag]"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {/* Only once the image has been measured: without a natural size
+              there is no canvas behind these buttons to drive. */}
+          {natural && <ZoomControls canvas={canvas} className="mr-1" />}
+          {onOpenInNewTab && (
+            <button
+              type="button"
+              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              title={t(($) => $.attachment.open_in_new_tab)}
+              aria-label={t(($) => $.attachment.open_in_new_tab)}
+              onClick={onOpenInNewTab}
+            >
+              <ExternalLink className="size-4" />
+            </button>
+          )}
+          <button
+            type="button"
+            className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            title={t(($) => $.image.download)}
+            aria-label={t(($) => $.image.download)}
+            onClick={onDownload}
+          >
+            <Download className="size-4" />
+          </button>
+          <button
+            type="button"
+            className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            title={fullscreenLabel}
+            aria-label={fullscreenLabel}
+            onClick={onToggleFullscreen}
+          >
+            {fullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+          </button>
+          <button
+            type="button"
+            className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            title={t(($) => $.attachment.close)}
+            aria-label={t(($) => $.attachment.close)}
+            onClick={onClose}
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+      </div>
+      {/* Image gets a flex column: the canvas sizes itself with `flex: 1 1
+          auto` and its content is absolutely positioned, so in a plain block
+          parent it would collapse to zero height and show nothing. It also
+          clips and handles its own wheel events — letting this wrapper scroll
+          too would fight the pan. Every other kind keeps the block scroller;
+          making them flex items would let tall text previews shrink to fit
+          instead of scrolling. */}
+      <div
+        className={cn(
+          "min-h-0 flex-1 bg-background",
+          kind === "image" ? "flex flex-col overflow-hidden" : "overflow-auto",
+        )}
+      >
+        {kind === "image" ? (
+          <ImagePreview
+            state={state}
+            canvas={canvas}
+            natural={natural}
+            onNaturalSize={handleNaturalSize}
+          />
+        ) : (
+          <PreviewContent
+            kind={kind}
+            source={source}
+            state={state}
+            onDownload={onDownload}
+          />
+        )}
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Image — zoom canvas
+// ---------------------------------------------------------------------------
+
+function ImagePreview({
+  state,
+  canvas,
+  natural,
+  onNaturalSize,
+}: {
+  state: PreviewState;
+  canvas: ZoomCanvasApi;
+  natural: Size | null;
+  onNaturalSize: (url: string, size: Size) => void;
+}) {
+  const { t } = useT("editor");
+  const url = state.mediaUrl;
+
+  const readNaturalSize = useCallback(
+    (image: HTMLImageElement | null) => {
+      // naturalWidth is 0 for an image that hasn't decoded yet, and also for
+      // an SVG that declares only a viewBox — Chromium gives those no
+      // intrinsic size at all. Both fall back to the letterboxed branch;
+      // the first recovers on load, the second stays there.
+      if (!image || image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
+      onNaturalSize(url, {
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+      });
+    },
+    [onNaturalSize, url],
+  );
+
+  return (
+    <ZoomCanvas
+      canvas={canvas}
+      content={natural}
+      label={t(($) => $.image.canvas_label)}
+      className="bg-black/40"
+      autoFocus
+    >
+      <img
+        // A cached image is already `complete` before React attaches onLoad,
+        // so that event never fires — measure from the ref as well.
+        ref={readNaturalSize}
+        onLoad={(e) => readNaturalSize(e.currentTarget)}
+        src={url}
+        alt={state.filename}
+        className={cn(
+          "select-none",
+          natural
+            ? "block size-full"
+            : "max-h-full max-w-full rounded-lg object-contain",
+        )}
+        // Native image dragging would hijack the pan gesture.
+        draggable={false}
+      />
+    </ZoomCanvas>
   );
 }
 
@@ -475,14 +633,15 @@ export function AttachmentPreviewModal({
 
 // Dispatch on PreviewKind. New cases go here; remember that the modal frame
 // (header, close, Download CTA, ESC handling) is shared — sub-renderers only
-// own the content area.
+// own the content area. `image` is handled by PreviewPanel itself because its
+// toolbar and canvas share zoom state.
 function PreviewContent({
   kind,
   source,
   state,
   onDownload,
 }: {
-  kind: PreviewKind | null;
+  kind: Exclude<PreviewKind, "image"> | null;
   source: PreviewSource;
   state: PreviewState;
   onDownload: () => void;
@@ -516,16 +675,6 @@ function PreviewContent({
   }
 
   switch (kind) {
-    case "image":
-      return (
-        <div className="flex h-full w-full items-center justify-center bg-black/40 p-4">
-          <img
-            src={state.mediaUrl}
-            alt={state.filename}
-            className="h-full w-full rounded-lg object-contain"
-          />
-        </div>
-      );
     case "pdf":
       return (
         <iframe

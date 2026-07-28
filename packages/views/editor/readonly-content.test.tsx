@@ -480,7 +480,7 @@ describe("ReadonlyContent Mermaid rendering", () => {
       return found!;
     });
 
-    expect(document.querySelector(".mermaid-viewer-canvas")).toBeNull();
+    expect(document.querySelector(".zoom-canvas")).toBeNull();
 
     fireEvent.click(expandButton);
 
@@ -498,7 +498,7 @@ describe("ReadonlyContent Mermaid rendering", () => {
 
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => {
-      expect(document.querySelector(".mermaid-viewer-canvas")).toBeNull();
+      expect(document.querySelector(".zoom-canvas")).toBeNull();
     });
   });
 

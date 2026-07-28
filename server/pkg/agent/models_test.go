@@ -116,6 +116,45 @@ func TestClaudeStaticModelsExposesSonnet5(t *testing.T) {
 	}
 }
 
+func TestClaudeStaticModelsExposesOpus5(t *testing.T) {
+	models := claudeStaticModels()
+	ids := map[string]Model{}
+	defaults := 0
+	for _, m := range models {
+		ids[m.ID] = m
+		if m.Default {
+			defaults++
+		}
+	}
+
+	opus, ok := ids["claude-opus-5"]
+	if !ok {
+		t.Fatalf("missing Claude Opus 5 in: %+v", models)
+	}
+	if opus.Label != "Claude Opus 5" || opus.Provider != "anthropic" || opus.Default {
+		t.Errorf("unexpected Opus 5 entry: %+v", opus)
+	}
+	// Opus stays a deliberate opt-in: Sonnet remains the everyday workhorse
+	// the catalog badges as its default pick.
+	if defaults != 1 || !ids["claude-sonnet-4-6"].Default {
+		t.Errorf("expected Sonnet 4.6 to remain the sole default, got defaults=%d models=%+v", defaults, models)
+	}
+}
+
+// TestClaudeOpus5AcceptedByProviderCompatibilityGate pins the other half of
+// catalog membership: ModelKnownIncompatibleWithProvider erases a saved model
+// that a runtime's maintained catalog doesn't advertise, so an unlisted
+// `claude-opus-5` would be silently dropped from an agent on save.
+func TestClaudeOpus5AcceptedByProviderCompatibilityGate(t *testing.T) {
+	t.Parallel()
+	if ModelKnownIncompatibleWithProvider("claude", "claude-opus-5") {
+		t.Error("claude-opus-5 must be accepted by the claude provider gate")
+	}
+	if !ModelKnownIncompatibleWithProvider("codex", "claude-opus-5") {
+		t.Error("claude-opus-5 must still be rejected for the codex provider")
+	}
+}
+
 func TestCodexStaticModelsMatchVerifiedFallbackCatalog(t *testing.T) {
 	// This fallback is used for Codex <0.122.0 and whenever dynamic bundled
 	// discovery fails. Keep the latest verified visible models plus 5.3 Codex
@@ -975,6 +1014,140 @@ func TestParseHermesSessionNewModelsMissingField(t *testing.T) {
 func TestParseHermesSessionNewModelsGarbage(t *testing.T) {
 	if got := parseACPSessionNewModels([]byte("not json")); got != nil {
 		t.Errorf("expected nil for non-JSON, got %+v", got)
+	}
+}
+
+// MUL-5239: kimi-code 0.29 dropped the `models` block and advertises the
+// same catalog through ACP `configOptions`. Without this the picker showed
+// an empty catalog for an online kimi runtime.
+func TestParseACPSessionNewModelsFromConfigOptions(t *testing.T) {
+	// Trimmed copy of a real kimi 0.29 session/new result.
+	raw := []byte(`{
+      "sessionId": "session_abc",
+      "configOptions": [
+        {
+          "type": "select",
+          "id": "model",
+          "name": "Model",
+          "category": "model",
+          "currentValue": "kimi-code/k3",
+          "options": [
+            {"value": "kimi-code/kimi-for-coding", "name": "K2.7 Coding"},
+            {"value": "kimi-code/kimi-for-coding-highspeed", "name": "K2.7 Coding Highspeed"},
+            {"value": "kimi-code/k3", "name": "K3"}
+          ]
+        },
+        {
+          "type": "select",
+          "id": "thinking",
+          "category": "thought_level",
+          "currentValue": "high",
+          "options": [
+            {"value": "low", "name": "Low"},
+            {"value": "high", "name": "High"},
+            {"value": "max", "name": "Max"}
+          ]
+        }
+      ]
+    }`)
+	models := parseACPSessionNewModels(raw)
+	if len(models) != 3 {
+		t.Fatalf("expected 3 models from configOptions, got %d: %+v", len(models), models)
+	}
+	if models[0].ID != "kimi-code/kimi-for-coding" || models[0].Label != "K2.7 Coding" {
+		t.Errorf("unexpected first model: %+v", models[0])
+	}
+	// `kimi-code/k3` has no colon, so it must not be split into a provider
+	// group off the slash.
+	if models[2].Provider != "" {
+		t.Errorf("slash-form model id must not derive a provider: %+v", models[2])
+	}
+	if !models[2].Default {
+		t.Errorf("currentValue entry must be marked default: %+v", models[2])
+	}
+	for _, m := range models {
+		if m.ID == "low" || m.ID == "high" || m.ID == "max" {
+			t.Errorf("thinking-level option leaked into the model catalog: %+v", m)
+		}
+	}
+}
+
+// The `models` block stays authoritative: an agent emitting both shapes
+// must not have its catalog replaced by configOptions.
+func TestParseACPSessionNewModelsPrefersModelsBlockOverConfigOptions(t *testing.T) {
+	raw := []byte(`{
+      "sessionId": "session_abc",
+      "models": {
+        "availableModels": [{"modelId": "nous:anthropic/claude-opus-4.7", "name": "Opus"}],
+        "currentModelId": "nous:anthropic/claude-opus-4.7"
+      },
+      "configOptions": [
+        {"id": "model", "category": "model", "currentValue": "other/one",
+         "options": [{"value": "other/one", "name": "Other"}]}
+      ]
+    }`)
+	models := parseACPSessionNewModels(raw)
+	if len(models) != 1 || models[0].ID != "nous:anthropic/claude-opus-4.7" {
+		t.Fatalf("models block must win over configOptions, got %+v", models)
+	}
+}
+
+func TestParseACPSessionNewModelsConfigOptionsSnakeCaseAndCategoryOnly(t *testing.T) {
+	// No `id: "model"` — the option is identified by category alone — and
+	// the response uses snake_case keys.
+	raw := []byte(`{
+      "session_id": "session_abc",
+      "config_options": [
+        {
+          "id": "primary_model",
+          "category": "MODEL",
+          "current_value": "kimi-code/k3",
+          "options": [
+            {"value": "kimi-code/k3", "name": "K3"},
+            {"value": "kimi-code/k3", "name": "duplicate"},
+            {"value": "  ", "name": "blank"},
+            {"value": "kimi-code/kimi-for-coding", "name": ""}
+          ]
+        }
+      ]
+    }`)
+	models := parseACPSessionNewModels(raw)
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models (duplicate and blank dropped), got %d: %+v", len(models), models)
+	}
+	if !models[0].Default {
+		t.Errorf("snake_case current_value should mark default: %+v", models[0])
+	}
+	if models[1].Label != "kimi-code/kimi-for-coding" {
+		t.Errorf("missing name should fall back to the model id, got %+v", models[1])
+	}
+}
+
+func TestParseACPSessionNewModelsIgnoresNonModelConfigOptions(t *testing.T) {
+	// session/new with configOptions but no model picker must still yield an
+	// empty catalog rather than inventing one from the thinking levels.
+	raw := []byte(`{
+      "sessionId": "session_abc",
+      "configOptions": [
+        {"id": "thinking", "category": "thought_level", "currentValue": "high",
+         "options": [{"value": "low", "name": "Low"}, {"value": "high", "name": "High"}]}
+      ]
+    }`)
+	if got := parseACPSessionNewModels(raw); len(got) != 0 {
+		t.Errorf("expected empty catalog, got %+v", got)
+	}
+}
+
+func TestACPResultTopLevelKeys(t *testing.T) {
+	// Diagnostic line must expose key names only — never the values that
+	// carry session ids or catalog contents.
+	keys := acpResultTopLevelKeys([]byte(`{"sessionId":"session_secret","configOptions":[],"modes":{}}`))
+	got := strings.Join(keys, ",")
+	if got != "configOptions,modes,sessionId" {
+		t.Errorf("unexpected keys: %q", got)
+	}
+	if acpResultTopLevelKeys([]byte("not json")) != nil {
+		t.Error("expected nil for non-JSON result")
 	}
 }
 
