@@ -1204,8 +1204,26 @@ describe("ApiClient", () => {
 
     it("falls back to the legacy full-list endpoint when the paged route 404s", async () => {
       const legacy = [
-        { id: "m1", role: "user", content: "hi", created_at: "2026-06-01T00:00:00Z" },
-        { id: "m2", role: "assistant", content: "yo", created_at: "2026-06-01T00:00:01Z" },
+        {
+          id: "m1",
+          chat_session_id: "session-1",
+          role: "user",
+          content: "hi",
+          task_id: null,
+          created_at: "2026-06-01T00:00:00Z",
+          quick_actions: [],
+        },
+        {
+          id: "m2",
+          chat_session_id: "session-1",
+          role: "assistant",
+          content: "yo",
+          task_id: "task-1",
+          created_at: "2026-06-01T00:00:01Z",
+          quick_actions: [
+            { label: "Continue", prompt: "Continue with the next step", primary: true },
+          ],
+        },
       ];
       const fetchMock = vi
         .fn()
@@ -1224,6 +1242,36 @@ describe("ApiClient", () => {
         "https://api.example.test/api/chat/sessions/session-1/messages",
       );
       expect(page).toEqual({ messages: legacy, limit: 50, has_more: false, next_cursor: null });
+    });
+
+    it("keeps a valid reply when its optional quick actions are malformed", async () => {
+      const malformed = [{
+        id: "m1",
+        chat_session_id: "session-1",
+        role: "assistant",
+        content: "safe reply",
+        task_id: "task-1",
+        created_at: "2026-06-01T00:00:00Z",
+        quick_actions: [{ label: 42, prompt: false }],
+      }];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(malformed, 200)));
+
+      const client = new ApiClient("https://api.example.test");
+      await expect(client.listChatMessages("session-1")).resolves.toEqual([
+        expect.objectContaining({ content: "safe reply", quick_actions: [] }),
+      ]);
+    });
+
+    it("falls back to an empty page for a malformed paged response", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(jsonResponse({ messages: "broken" }, 200)),
+      );
+
+      const client = new ApiClient("https://api.example.test");
+      await expect(
+        client.listChatMessagesPage("session-1", { limit: 25 }),
+      ).resolves.toEqual({ messages: [], limit: 25, has_more: false, next_cursor: null });
     });
 
     it("does NOT fall back on a cursor request — a 404 there propagates", async () => {
@@ -1528,5 +1576,154 @@ describe("ApiClient", () => {
       expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ content: "hello" });
       expect(JSON.parse(fetchMock.mock.calls[1]![1]?.body as string)).toEqual({ content: "again" });
     });
+  });
+});
+
+describe("ApiClient model discovery response schema", () => {
+  const completed = {
+    id: "req-1",
+    runtime_id: "rt-1",
+    status: "completed",
+    supported: true,
+    created_at: "2026-07-29T00:00:00Z",
+    updated_at: "2026-07-29T00:00:01Z",
+    models: [{ id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" }],
+  };
+
+  function stubJSON(body: unknown) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+  }
+
+  it("parses a live completed discovery", async () => {
+    stubJSON(completed);
+
+    const result = await new ApiClient("https://api.example.test")
+      .initiateListModels("rt-1");
+
+    expect(result).toMatchObject({
+      status: "completed",
+      supported: true,
+      models: [{ id: "claude-sonnet-4-6" }],
+    });
+  });
+
+  it("keeps the cache markers on a server-cached snapshot", async () => {
+    stubJSON({ ...completed, cached: true, cached_at: "2026-07-29T00:00:00Z" });
+
+    const result = await new ApiClient("https://api.example.test")
+      .initiateListModels("rt-1");
+
+    expect(result.cached).toBe(true);
+    expect(result.cached_at).toBe("2026-07-29T00:00:00Z");
+  });
+
+  // The picker drives a state machine off `status`, so a malformed body must
+  // become an explicit failure — not a fabricated empty catalog, and not an
+  // endless "discovering models" spinner.
+  it("degrades a malformed initiate response to an explicit failure", async () => {
+    stubJSON({ status: 7, models: "nope" });
+
+    const result = await new ApiClient("https://api.example.test")
+      .initiateListModels("rt-1");
+
+    expect(result.status).toBe("failed");
+    expect(result.supported).toBe(true);
+    expect(result.error).toBe("invalid model discovery response");
+    expect(result.runtime_id).toBe("rt-1");
+  });
+
+  it("degrades a malformed poll response to an explicit failure", async () => {
+    stubJSON("not-an-object");
+
+    const result = await new ApiClient("https://api.example.test")
+      .getListModelsResult("rt-1", "req-9");
+
+    expect(result.status).toBe("failed");
+    expect(result.id).toBe("req-9");
+    expect(result.runtime_id).toBe("rt-1");
+  });
+
+  it("stays usable against a backend that omits supported", async () => {
+    const { supported: _omitted, ...withoutSupported } = completed;
+    stubJSON(withoutSupported);
+
+    const result = await new ApiClient("https://api.example.test")
+      .getListModelsResult("rt-1", "req-1");
+
+    expect(result.supported).toBe(true);
+    expect(result.status).toBe("completed");
+  });
+});
+
+/**
+ * Mixed-version contract for subtree unsubscribe (MUL-5483).
+ *
+ * Web/desktop staging deploys on merge while the backend is deployed by hand,
+ * so this client routinely runs against an older server. Subtree unsubscribe
+ * must therefore be carried by its own PATH, never by a body field: Go's JSON
+ * decoder drops unknown fields, so an old server would unsubscribe only the
+ * root and still answer 200 — telling the user the whole tree was muted while
+ * every child kept notifying. An unknown path 404s, which surfaces as a
+ * rejected mutation the user can act on.
+ */
+describe("ApiClient unsubscribe endpoints", () => {
+  function stubOK() {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  function requestOf(fetchMock: ReturnType<typeof vi.fn>) {
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    return { url, body: JSON.parse(String(init.body ?? "{}")) as Record<string, unknown> };
+  }
+
+  it("sends the subtree variant to its own endpoint", async () => {
+    const fetchMock = stubOK();
+
+    await new ApiClient("https://api.example.test")
+      .unsubscribeFromIssueSubtree("issue-1", "user-1", "member");
+
+    const { url, body } = requestOf(fetchMock);
+    expect(url).toBe("https://api.example.test/api/issues/issue-1/unsubscribe/subtree");
+    expect(body).toEqual({ user_id: "user-1", user_type: "member" });
+  });
+
+  it("never encodes subtree as a body field on the shared endpoint", async () => {
+    const fetchMock = stubOK();
+
+    await new ApiClient("https://api.example.test")
+      .unsubscribeFromIssue("issue-1", "user-1", "member");
+
+    const { url, body } = requestOf(fetchMock);
+    expect(url).toBe("https://api.example.test/api/issues/issue-1/unsubscribe");
+    // A `subtree` key here would be silently ignored by an older backend,
+    // which is the exact silent-success failure this split exists to prevent.
+    expect(body).not.toHaveProperty("subtree");
+  });
+
+  it("rejects when the backend does not know the subtree route", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: "not found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test")
+        .unsubscribeFromIssueSubtree("issue-1", "user-1", "member"),
+    ).rejects.toBeInstanceOf(ApiError);
   });
 });

@@ -934,6 +934,38 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByText("Updated")).toBeInTheDocument();
   });
 
+  // Details is creator + immutable timestamps, so it ranks below the
+  // execution log, which is what people actually open the sidebar for.
+  it("orders the Details section after the execution log", async () => {
+    mockApiObj.listTasksByIssue.mockResolvedValue([
+      {
+        id: "task-past",
+        agent_id: "agent-1",
+        runtime_id: "runtime-1",
+        issue_id: "issue-1",
+        status: "completed",
+        priority: 0,
+        dispatched_at: null,
+        started_at: "2026-06-08T08:00:00Z",
+        completed_at: "2026-06-08T08:05:00Z",
+        result: null,
+        error: null,
+        created_at: "2026-06-08T08:00:00Z",
+        trigger_summary: "Started from comment",
+      },
+    ]);
+
+    renderIssueDetail();
+
+    const executionLog = await screen.findByText("Execution log");
+    const details = screen.getByText("Details");
+
+    // DOCUMENT_POSITION_FOLLOWING: Details comes after the execution log.
+    expect(
+      executionLog.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("shows 'not found' message when issue does not exist", async () => {
     mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
 
@@ -1469,6 +1501,37 @@ describe("IssueDetail (shared)", () => {
         ).toContain("bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]");
       });
     });
+  });
+
+  it("marks a reply-resolved thread as resolved on the quick-jump rail", async () => {
+    // A resolution on a REPLY leaves the thread expanded, so it flattens to a
+    // plain `comment` item, not a `resolved-bar`. The rail must still read it
+    // as resolved — proof the flag comes from deriveThreadResolution and not
+    // from the fold state.
+    mockApiObj.listTimeline.mockResolvedValue([
+      ...mockTimeline,
+      {
+        type: "comment",
+        id: "reply-1",
+        actor_type: "member",
+        actor_id: "user-1",
+        content: "That fixed it",
+        parent_id: "comment-1",
+        created_at: "2026-01-18T00:00:00Z",
+        updated_at: "2026-01-18T00:00:00Z",
+        comment_type: "comment",
+        resolved_at: "2026-01-19T00:00:00Z",
+      } as TimelineEntry,
+    ]);
+
+    renderIssueDetail();
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Started working on this (resolved)" }),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: "I can help with this" })).toBeInTheDocument();
   });
 
   it("sends empty description when editor is cleared", async () => {

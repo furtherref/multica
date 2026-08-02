@@ -23,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/pelletier/go-toml/v2"
 )
 
 func createDaemonTestRepo(t *testing.T) string {
@@ -321,6 +322,65 @@ func TestConfigureCodexTaskShellEnvironment(t *testing.T) {
 			t.Fatalf("error = %v, want missing CODEX_HOME", err)
 		}
 	})
+}
+
+// TestCodexTaskShellEnvInheritsRealHome pins the MUL-5578 contract at the layer
+// where the daemon assembles the environment a Codex task actually launches
+// with: HOME and the XDG base dirs reach the task's shell tools from the
+// *inherited* daemon process environment, so `gh`, `aws`, `kubectl`, and npm
+// resolve the daemon user's real config inside a task.
+//
+// This guards the pass-through, not runTask's decision not to inject a HOME of
+// its own — that decision lives inline in runTask and has no unit seam.
+func TestCodexTaskShellEnvInheritsRealHome(t *testing.T) {
+	t.Parallel()
+
+	codexHome := t.TempDir()
+	inherited := []string{
+		"HOME=/home/daemon-user",
+		"XDG_CONFIG_HOME=/home/daemon-user/.config",
+		"XDG_CACHE_HOME=/home/daemon-user/.cache",
+		"XDG_DATA_HOME=/home/daemon-user/.local/share",
+		"XDG_STATE_HOME=/home/daemon-user/.local/state",
+		"PATH=/usr/local/bin:/usr/bin",
+	}
+	// What runTask layers on top for a Codex task: task identity plus the
+	// task-scoped CODEX_HOME, and — since MUL-5578 — no HOME/XDG entry.
+	explicit := map[string]string{
+		"CODEX_HOME":         codexHome,
+		"MULTICA_TOKEN":      "mat_task",
+		"MULTICA_SERVER_URL": "https://task.example",
+	}
+
+	if err := configureCodexTaskShellEnvironment("codex", codexHome, inherited, explicit, nil, slog.Default()); err != nil {
+		t.Fatalf("configureCodexTaskShellEnvironment: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	var parsed struct {
+		ShellEnvironmentPolicy struct {
+			IncludeOnly []string `toml:"include_only"`
+		} `toml:"shell_environment_policy"`
+	}
+	if err := toml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parse config.toml: %v\n%s", err, data)
+	}
+	include := parsed.ShellEnvironmentPolicy.IncludeOnly
+
+	// The daemon user's real home must survive into the task's shell tools, or
+	// gh / aws / kubectl / npm stop resolving their config there.
+	for _, want := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"} {
+		if !slices.Contains(include, want) {
+			t.Errorf("include_only missing %q, got %v", want, include)
+		}
+	}
+	// CODEX_HOME is the one home-shaped variable the daemon does own.
+	if !slices.Contains(include, "CODEX_HOME") {
+		t.Errorf("include_only missing CODEX_HOME, got %v", include)
+	}
 }
 
 func TestCodexShellAuthorizedCustomEnvNamesUsesDaemonBlocklist(t *testing.T) {
@@ -2405,7 +2465,7 @@ func TestShouldRetryWithFreshSession_CompatPathIsBackendScoped(t *testing.T) {
 		})
 	}
 
-	detectable := []string{"claude", "codebuddy", "qwen", "codex", "grok", "hermes", "kimi", "kiro", "qoder", "traecli", "pi", "openclaw"}
+	detectable := []string{"claude", "codebuddy", "qwen", "codex", "grok", "hermes", "kimi", "kiro", "qoder", "qoderclicn", "traecli", "pi", "openclaw"}
 	for _, provider := range detectable {
 		t.Run(provider+" does not retry", func(t *testing.T) {
 			t.Parallel()
@@ -2421,6 +2481,55 @@ func TestShouldRetryWithFreshSession_CompatPathIsBackendScoped(t *testing.T) {
 			t.Fatal("a backend not listed as undetectable must not inherit the compat path")
 		}
 	})
+}
+
+// TestShouldRetryWithFreshSession_UnresumableHistoryIsBackendAgnostic pins the
+// DECISION layer for GH #6066 / GH #5760: given the same provider error, every
+// supported backend gets the same verdict, so recovery is not a property of
+// whichever adapter happened to get a bug report. ResumeRejected is false for
+// all of them here — nothing rejected the resume; the transcript loaded and the
+// provider refused to replay it.
+//
+// Scope, deliberately: this feeds each backend a hand-built agent.Result, so it
+// proves the shared decision ignores the provider NAME. It does not prove all
+// 17 adapters surface an upstream error into Result.Error in the first place —
+// #5760 is the counter-example, where the Kimi/ACP adapter swallowed the error
+// and reported completed. The fix therefore covers every backend that surfaces
+// the error; adapter-level surfacing is tracked separately (#5785 for ACP).
+//
+// The safety half is asserted in the same loop: tools > 0 must still veto the
+// retry for every backend, because re-running a turn that already posted a
+// comment or wrote a commit duplicates that side effect. Those tasks recover
+// on the next trigger instead — classifyPoisonedError retires the session at
+// report time.
+func TestShouldRetryWithFreshSession_UnresumableHistoryIsBackendAgnostic(t *testing.T) {
+	t.Parallel()
+
+	// Both real-world wordings, neither of which the pre-fix detector matched.
+	errors := map[string]string{
+		"gh6066": "Invalid request: the message at position 37 with role 'assistant' must not be empty",
+		"gh5760": "kimi provider error: provider.api_error: 400 the message at position 43 with role 'assistant' must not be empty",
+	}
+
+	for _, provider := range agent.SupportedTypes {
+		for label, errMsg := range errors {
+			t.Run(provider+"/"+label+" retries fresh", func(t *testing.T) {
+				t.Parallel()
+				result := agent.Result{Status: "failed", Error: errMsg, SessionID: "poisoned-id"}
+				if !shouldRetryWithFreshSession(result, "poisoned-id", 0, provider) {
+					t.Fatalf("%s: an unresumable history must trigger the fresh-session retry on every backend", provider)
+				}
+			})
+
+			t.Run(provider+"/"+label+" respects the tool gate", func(t *testing.T) {
+				t.Parallel()
+				result := agent.Result{Status: "failed", Error: errMsg, SessionID: "poisoned-id"}
+				if shouldRetryWithFreshSession(result, "poisoned-id", 1, provider) {
+					t.Fatalf("%s: a run that already used a tool must never be re-run automatically", provider)
+				}
+			})
+		}
+	}
 }
 
 func TestExecuteAndDrain_CodexInactivityReportsToolResultTranscript(t *testing.T) {
@@ -4615,5 +4724,88 @@ func TestConvertDisabledRuntimeSkillsForEnvScopesToClaimedRuntime(t *testing.T) 
 	got := convertDisabledRuntimeSkillsForEnv(agentData, "runtime-1", "claude")
 	if len(got) != 1 || got[0].Key != "review" || got[0].Name != "Review" {
 		t.Fatalf("unexpected scoped runtime skill policy: %+v", got)
+	}
+}
+
+// nestedPatchSecretBackend emits a Codex-shaped file-edit payload carrying a
+// credential nested inside changes[] — the legacy protocol reports a deletion
+// as the whole outgoing file, so deleting a .env puts its contents here.
+type nestedPatchSecretBackend struct{}
+
+func (nestedPatchSecretBackend) Execute(
+	_ context.Context,
+	_ string,
+	_ agent.ExecOptions,
+) (*agent.Session, error) {
+	msgCh := make(chan agent.Message, 2)
+	resCh := make(chan agent.Result, 1)
+
+	msgCh <- agent.Message{
+		Type:   agent.MessageToolUse,
+		Tool:   "patch_apply",
+		CallID: "patch-1",
+		Input: map[string]any{
+			"changes": []any{
+				map[string]any{
+					"path":    ".env",
+					"kind":    "delete",
+					"content": "GITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn\n",
+				},
+			},
+		},
+	}
+	close(msgCh)
+	resCh <- agent.Result{Status: "completed", Output: "done"}
+	close(resCh)
+
+	return &agent.Session{Messages: msgCh, Result: resCh}, nil
+}
+
+// TestExecuteAndDrain_RedactsNestedToolInputBeforeSending pins the daemon side
+// of the redaction contract. The server scrubs again on ingest, but that is the
+// remote end: a daemon that self-updated ahead of the server, or one talking to
+// a server mid-rollout, must not put whole-file edit contents on the wire in
+// cleartext. Deployment order is not a control we have, so this side has to be
+// safe on its own.
+func TestExecuteAndDrain_RedactsNestedToolInputBeforeSending(t *testing.T) {
+	t.Parallel()
+
+	d, rec := newTranscriptRecorder(t)
+
+	if _, _, err := d.executeAndDrain(
+		context.Background(),
+		nestedPatchSecretBackend{},
+		"p",
+		agent.ExecOptions{},
+		slog.Default(),
+		"task-redact",
+		"",
+		new(atomic.Int32),
+	); err != nil {
+		t.Fatalf("executeAndDrain: %v", err)
+	}
+
+	msgs := rec.snapshot()
+	var toolUse *TaskMessageData
+	for i := range msgs {
+		if msgs[i].Type == "tool_use" {
+			toolUse = &msgs[i]
+			break
+		}
+	}
+	if toolUse == nil {
+		t.Fatalf("no tool_use message reported: %+v", msgs)
+	}
+
+	blob, err := json.Marshal(toolUse.Input)
+	if err != nil {
+		t.Fatalf("marshal reported input: %v", err)
+	}
+	if strings.Contains(string(blob), "ghp_ABCDEFGH") {
+		t.Fatalf("nested token left the daemon unredacted: %s", blob)
+	}
+	// The surrounding structure must survive, or the transcript loses the edit.
+	if !strings.Contains(string(blob), ".env") {
+		t.Fatalf("redaction destroyed the change metadata: %s", blob)
 	}
 }

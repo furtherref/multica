@@ -289,4 +289,58 @@ describe("useDownloadAttachment (desktop)", () => {
     expect(downloadURL).not.toHaveBeenCalled();
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
   });
+
+  // MUL-5292: in proxy mode the backend answers with a scoped capability URL —
+  // still server-relative, but carrying `?exp=&sig=`. The query is what makes
+  // the request authenticate itself, so it must survive the resolve step and
+  // reach the native downloader intact. This fork reaches `download_url` only
+  // when the public storage `url` is absent, so the capability URL is pinned on
+  // that fallback path rather than upstream's primary one.
+  it("preserves the capability query when falling back to a relative proxy-mode download_url", async () => {
+    const downloadURL = vi.fn();
+    (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
+      downloadURL,
+    };
+    getBaseUrlMock.mockReturnValue("https://api.example.test");
+    getAttachmentMock.mockResolvedValueOnce({
+      id: "att-1",
+      url: "",
+      download_url: "/api/attachments/att-1/signed-download?exp=1800000060&sig=deadbeef",
+      filename: "file.md",
+    });
+
+    const { result } = renderHook(() => useDownloadAttachment());
+
+    await act(async () => {
+      await result.current("att-1");
+    });
+
+    expect(downloadURL).toHaveBeenCalledWith(
+      "https://api.example.test/api/attachments/att-1/signed-download?exp=1800000060&sig=deadbeef",
+    );
+  });
+
+  it("trims a trailing slash on the API base when resolving a relative download_url", async () => {
+    const downloadURL = vi.fn();
+    (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
+      downloadURL,
+    };
+    getBaseUrlMock.mockReturnValue("https://api.example.test/");
+    getAttachmentMock.mockResolvedValueOnce({
+      id: "att-1",
+      url: "",
+      download_url: "/api/attachments/att-1/download",
+      filename: "file.md",
+    });
+
+    const { result } = renderHook(() => useDownloadAttachment());
+
+    await act(async () => {
+      await result.current("att-1");
+    });
+
+    expect(downloadURL).toHaveBeenCalledWith(
+      "https://api.example.test/api/attachments/att-1/download",
+    );
+  });
 });

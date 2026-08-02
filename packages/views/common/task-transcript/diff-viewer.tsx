@@ -241,7 +241,7 @@ export function DiffViewer({
   return (
     <div className="overflow-hidden rounded">
       <div className="flex items-center justify-between border-b bg-muted/60 px-3 py-1.5">
-        <span className="text-[10px] text-muted-foreground">
+        <span className="text-micro text-muted-foreground">
           {hasDiffStructure ? t(($) => $.transcript.file_changes) : t(($) => $.transcript.file_content)}
         </span>
         <div className="flex items-center gap-1.5">
@@ -279,11 +279,11 @@ export function DiffViewer({
       </div>
 
       {!hasDiffStructure ? (
-        <div className="p-3 text-[11px] text-muted-foreground">
+        <div className="p-3 text-micro text-muted-foreground">
           {t(($) => $.transcript.no_visual_diff)}
         </div>
       ) : (
-        <div className="max-h-96 overflow-auto p-3 text-[11px] font-mono leading-relaxed">
+        <div className="max-h-96 overflow-auto p-3 text-micro font-mono leading-relaxed">
           {mode === "unified" ? (
             <div className="whitespace-pre-wrap break-all">
               {displayLines.map((line, i) => (
@@ -347,7 +347,7 @@ export function DiffViewer({
           {truncated && (
             <button
               type="button"
-              className="mt-1 flex items-center gap-1 text-[10px] text-primary hover:underline"
+              className="mt-1 flex items-center gap-1 text-micro text-primary hover:underline"
               onClick={() => setExpanded(true)}
             >
               <ChevronDown className="size-3" />
@@ -357,7 +357,7 @@ export function DiffViewer({
           {expanded && isLong && (
             <button
               type="button"
-              className="mt-1 flex items-center gap-1 text-[10px] text-primary hover:underline"
+              className="mt-1 flex items-center gap-1 text-micro text-primary hover:underline"
               onClick={() => setExpanded(false)}
             >
               <ChevronUp className="size-3" />

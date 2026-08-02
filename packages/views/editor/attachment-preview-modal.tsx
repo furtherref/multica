@@ -478,8 +478,8 @@ function PreviewPanel({
         className={`${DRAG_HANDLE_CLASS} flex items-center gap-2 border-b border-border bg-muted/30 px-4 py-2 ${fullscreen ? "" : "cursor-move"}`}
       >
         <FileText className="size-4 shrink-0 text-muted-foreground" />
-        <p className="truncate text-sm font-medium">{state.filename}</p>
-        <span className="ml-1 shrink-0 text-xs text-muted-foreground">
+        <p className="truncate text-body font-medium">{state.filename}</p>
+        <span className="ml-1 shrink-0 text-caption text-muted-foreground">
           {fileTypeLabel(state.filename, state.contentType)}
         </span>
         {/* `onMouseDown` stops the drag-handle from claiming a press meant for
@@ -774,7 +774,7 @@ function TextBackedPreview({
 
   if (query.isLoading) {
     return (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+      <div className="flex h-full items-center justify-center gap-2 text-body text-muted-foreground">
         <Loader2 className="size-4 animate-spin" />
         {t(($) => $.attachment.preview_loading)}
       </div>

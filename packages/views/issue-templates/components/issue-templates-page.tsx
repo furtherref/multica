@@ -31,13 +31,13 @@ function PageHeaderBar({
     <PageHeader className="justify-between px-5">
       <div className="flex items-center gap-2">
         <FileText className="h-4 w-4 text-muted-foreground" />
-        <h1 className="text-sm font-medium">{t(($) => $.page.title)}</h1>
+        <h1 className="text-body font-medium">{t(($) => $.page.title)}</h1>
         {totalCount > 0 && (
-          <span className="font-mono text-xs tabular-nums text-muted-foreground/70">
+          <span className="font-mono text-caption tabular-nums text-muted-foreground">
             {totalCount}
           </span>
         )}
-        <p className="ml-2 hidden text-xs text-muted-foreground md:block">
+        <p className="ml-2 hidden text-caption text-muted-foreground md:block">
           {t(($) => $.page.tagline)}
         </p>
       </div>
@@ -65,7 +65,7 @@ function CardToolbar({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder={t(($) => $.page.search_placeholder)}
-          className="h-8 w-72 pl-8 text-sm"
+          className="h-8 w-72 pl-8 text-body"
         />
       </div>
     </div>
@@ -79,8 +79,8 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
       <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
         <FileText className="h-6 w-6 text-muted-foreground" />
       </div>
-      <h2 className="mt-4 text-base font-semibold">{t(($) => $.page.empty.title)}</h2>
-      <p className="mt-1 max-w-md text-sm text-muted-foreground">
+      <h2 className="mt-4 text-title-sm font-semibold">{t(($) => $.page.empty.title)}</h2>
+      <p className="mt-1 max-w-md text-body text-muted-foreground">
         {t(($) => $.page.empty.description)}
       </p>
       <Button type="button" onClick={onCreate} size="sm" className="mt-5">
@@ -168,10 +168,10 @@ export function IssueTemplatesPage() {
         <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-16 text-center">
           <AlertCircle className="h-8 w-8 text-destructive" />
           <div>
-            <p className="text-sm font-medium">
+            <p className="text-body font-medium">
               {t(($) => $.page.list_error.title)}
             </p>
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-1 text-caption text-muted-foreground">
               {listError instanceof Error
                 ? listError.message
                 : t(($) => $.page.list_error.fallback)}
@@ -202,9 +202,9 @@ export function IssueTemplatesPage() {
             <CardToolbar search={search} setSearch={setSearch} />
             {filtered.length === 0 ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-16 text-center text-muted-foreground">
-                <Search className="h-8 w-8 text-muted-foreground/40" />
-                <p className="text-sm">{t(($) => $.page.no_matches.title)}</p>
-                <p className="max-w-xs text-xs">
+                <Search className="h-8 w-8 text-faint-foreground" />
+                <p className="text-body">{t(($) => $.page.no_matches.title)}</p>
+                <p className="max-w-xs text-caption">
                   {t(($) => $.page.no_matches.with_query, { query: search })}
                 </p>
               </div>

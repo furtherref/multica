@@ -94,6 +94,7 @@ type Task struct {
 	ChatMessage                   string                 `json:"chat_message,omitempty"`                     // user message content for chat tasks
 	ChatMessageAttachments        []ChatAttachmentMeta   `json:"chat_message_attachments,omitempty"`         // attachments linked to the chat message; agent uses these to `multica attachment download <id>`
 	ChatIntro                     bool                   `json:"chat_intro,omitempty"`                       // true for the agent's proactive self-introduction chat (no user message); selects the self-introduction prompt in buildChatPrompt
+	RegenerateQuickActionsFor     string                 `json:"regenerate_quick_actions_for,omitempty"`     // set only by servers predating server-side quick-actions generation (MUL-5573). Read as a REFUSAL marker, never executed: see the guard in runTask
 	AutopilotRunID                string                 `json:"autopilot_run_id,omitempty"`                 // non-empty for autopilot run_only tasks
 	AutopilotID                   string                 `json:"autopilot_id,omitempty"`                     // autopilot that spawned this run
 	AutopilotTitle                string                 `json:"autopilot_title,omitempty"`                  // autopilot title used as task context
@@ -263,6 +264,11 @@ type TaskResult struct {
 	// session because its rollout was not in the store (MUL-5305). Forwarded to
 	// the terminal report so the server clears the resume pointer and flags the
 	// continuity gap for the next claim. Not part of the wire result itself.
-	SessionRolloutMissing bool             `json:"-"`
-	Usage                 []TaskUsageEntry `json:"usage,omitempty"` // per-model token usage
+	SessionRolloutMissing bool `json:"-"`
+	// RetiredSessionID names a session this run was told to resume and then
+	// abandoned as unresumable (GH #6066). Forwarded on every terminal path,
+	// including the completed one: a fresh-session retry that SUCCEEDS is
+	// precisely when the abandoned id would otherwise stay selectable.
+	RetiredSessionID string           `json:"-"`
+	Usage            []TaskUsageEntry `json:"usage,omitempty"` // per-model token usage
 }

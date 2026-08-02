@@ -98,14 +98,14 @@ function MethodChooser({ onChoose }: { onChoose: (m: Method) => void }) {
             <Icon className="h-4 w-4" />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium">
+            <div className="text-body font-medium">
               {t(($) => $.create.method_card[`${titleKey}_title`])}
             </div>
-            <div className="mt-0.5 text-xs text-muted-foreground">
+            <div className="mt-0.5 text-caption text-muted-foreground">
               {t(($) => $.create.method_card[`${titleKey}_desc`])}
             </div>
           </div>
-          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
+          <ChevronRight className="h-4 w-4 shrink-0 text-faint-foreground transition-colors group-hover:text-muted-foreground" />
         </button>
       ))}
     </div>
@@ -162,7 +162,7 @@ function ManualForm({
         <div className="space-y-1.5">
           <Label
             htmlFor="create-skill-name"
-            className="text-xs text-muted-foreground"
+            className="text-caption text-muted-foreground"
           >
             {t(($) => $.create.manual.name_label)}
           </Label>
@@ -180,7 +180,7 @@ function ManualForm({
               if (e.key === "Enter") submit();
             }}
           />
-          <p className="text-xs text-muted-foreground">
+          <p className="text-caption text-muted-foreground">
             {t(($) => $.create.manual.name_hint)}
           </p>
         </div>
@@ -188,7 +188,7 @@ function ManualForm({
         <div className="space-y-1.5">
           <Label
             htmlFor="create-skill-desc"
-            className="text-xs text-muted-foreground"
+            className="text-caption text-muted-foreground"
           >
             <Pencil className="h-3 w-3" />
             {t(($) => $.create.manual.description_label)}
@@ -206,7 +206,7 @@ function ManualForm({
         {error && (
           <div
             role="alert"
-            className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-caption text-destructive"
           >
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
@@ -280,11 +280,11 @@ function SourceCard({
         active ? "border-primary bg-primary/5" : ""
       }`}
     >
-      <div className="text-xs font-medium">{label}</div>
+      <div className="text-caption font-medium">{label}</div>
       <button
         type="button"
         onClick={() => openExternal(browseUrl)}
-        className="mt-0.5 block max-w-full truncate text-left font-mono text-xs text-brand underline decoration-brand/40 underline-offset-2 hover:decoration-brand"
+        className="mt-0.5 block max-w-full truncate text-left font-mono text-caption text-brand underline decoration-brand/40 underline-offset-2 hover:decoration-brand"
       >
         {exampleHost}
       </button>
@@ -341,7 +341,7 @@ function UrlForm({
         className="flex-1 min-h-0 space-y-4 overflow-y-auto px-5 py-4"
       >
         <div className="space-y-1.5">
-          <Label htmlFor="import-url" className="text-xs text-muted-foreground">
+          <Label htmlFor="import-url" className="text-caption text-muted-foreground">
             {t(($) => $.create.url.url_label)}
           </Label>
           <Input
@@ -353,7 +353,7 @@ function UrlForm({
               setError("");
             }}
             placeholder="https://clawhub.ai/owner/skill"
-            className="font-mono text-sm"
+            className="font-mono text-body"
             onKeyDown={(e) => {
               if (e.key === "Enter") submit();
             }}
@@ -361,7 +361,7 @@ function UrlForm({
         </div>
 
         <div>
-          <p className="mb-2 text-xs text-muted-foreground">
+          <p className="mb-2 text-caption text-muted-foreground">
             {t(($) => $.create.url.supported_sources)}
           </p>
           <div className="grid grid-cols-3 gap-2">
@@ -389,7 +389,7 @@ function UrlForm({
         {error && (
           <div
             role="alert"
-            className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-caption text-destructive"
           >
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
@@ -470,26 +470,26 @@ function UploadBulkSummary({ results }: { results: UploadBulkResult[] }) {
     <div className="space-y-4 py-2">
       <div className="grid grid-cols-3 gap-2 text-center">
         <div className="rounded-md bg-green-50 px-3 py-2 dark:bg-green-950/30">
-          <div className="text-lg font-semibold text-green-700 dark:text-green-400">
+          <div className="text-title font-semibold text-green-700 dark:text-green-400">
             {succeeded.length}
           </div>
-          <div className="text-xs text-muted-foreground">
+          <div className="text-caption text-muted-foreground">
             {t(($) => $.create.upload.bulk_summary_imported)}
           </div>
         </div>
         <div className="rounded-md bg-yellow-50 px-3 py-2 dark:bg-yellow-950/30">
-          <div className="text-lg font-semibold text-yellow-700 dark:text-yellow-400">
+          <div className="text-title font-semibold text-yellow-700 dark:text-yellow-400">
             {skipped.length}
           </div>
-          <div className="text-xs text-muted-foreground">
+          <div className="text-caption text-muted-foreground">
             {t(($) => $.create.upload.bulk_summary_skipped)}
           </div>
         </div>
         <div className="rounded-md bg-red-50 px-3 py-2 dark:bg-red-950/30">
-          <div className="text-lg font-semibold text-red-700 dark:text-red-400">
+          <div className="text-title font-semibold text-red-700 dark:text-red-400">
             {failed.length}
           </div>
-          <div className="text-xs text-muted-foreground">
+          <div className="text-caption text-muted-foreground">
             {t(($) => $.create.upload.bulk_summary_failed)}
           </div>
         </div>
@@ -499,7 +499,7 @@ function UploadBulkSummary({ results }: { results: UploadBulkResult[] }) {
         {results.map((r, i) => (
           <div
             key={i}
-            className="flex items-center gap-2 rounded px-2 py-1.5 text-xs"
+            className="flex items-center gap-2 rounded px-2 py-1.5 text-caption"
           >
             {r.status === "success" && (
               <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-green-600" />
@@ -813,13 +813,13 @@ function UploadForm({
             : "border-muted-foreground/25 hover:border-muted-foreground/40",
         )}
       >
-        <FileArchive className="h-8 w-8 text-muted-foreground/50" />
-        <p className="text-sm text-muted-foreground">
+        <FileArchive className="h-8 w-8 text-faint-foreground" />
+        <p className="text-body text-muted-foreground">
           {dragOver
             ? t(($) => $.create.upload.drop_zone_active)
             : t(($) => $.create.upload.drop_zone)}
         </p>
-        <p className="text-xs text-muted-foreground/60">
+        <p className="text-caption text-muted-foreground">
           {t(($) => $.create.upload.or)}
         </p>
         <div className="flex gap-2">
@@ -858,7 +858,7 @@ function UploadForm({
           <div className="space-y-4 py-4">
             <div className="text-center">
               <Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" />
-              <p className="mt-3 text-sm font-medium">
+              <p className="mt-3 text-body font-medium">
                 {t(($) => $.create.upload.bulk_progress, {
                   completed: bulkState.completed,
                   total: bulkState.total,
@@ -870,7 +870,7 @@ function UploadForm({
               {bulkState.results.map((r, i) => (
                 <div
                   key={i}
-                  className="flex items-center gap-2 rounded px-2 py-1 text-xs"
+                  className="flex items-center gap-2 rounded px-2 py-1 text-caption"
                 >
                   {r.status === "success" && (
                     <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-green-600" />
@@ -907,7 +907,7 @@ function UploadForm({
     return (
       <>
         <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
-          <p className="mb-2 text-xs text-muted-foreground">
+          <p className="mb-2 text-caption text-muted-foreground">
             {bulkState.phase === "done"
               ? t(($) => $.create.upload.bulk_complete_hint)
               : t(($) => $.create.upload.bulk_cancelled_hint)}
@@ -941,7 +941,7 @@ function UploadForm({
         {parsing && (
           <div className="flex flex-col items-center justify-center gap-2 py-8 text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />
-            <p className="text-sm">{t(($) => $.create.upload.parsing)}</p>
+            <p className="text-body">{t(($) => $.create.upload.parsing)}</p>
           </div>
         )}
 
@@ -949,7 +949,7 @@ function UploadForm({
         {bundle && !parsing && (
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">
+              <Label className="text-caption text-muted-foreground">
                 {t(($) => $.create.upload.parsed_name)}
               </Label>
               <Input
@@ -960,7 +960,7 @@ function UploadForm({
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">
+              <Label className="text-caption text-muted-foreground">
                 <Pencil className="h-3 w-3" />
                 {t(($) => $.create.upload.parsed_description)}
               </Label>
@@ -975,19 +975,19 @@ function UploadForm({
               />
             </div>
             {bundle.files.length > 0 && (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-caption text-muted-foreground">
                 {t(($) => $.create.upload.parsed_files, {
                   count: bundle.files.length,
                 })}
               </p>
             )}
             {bundle.truncated && (
-              <p className="text-xs text-destructive">
+              <p className="text-caption text-destructive">
                 {t(($) => $.create.upload.truncated_warning)}
               </p>
             )}
             {bundle.skippedBinaryCount > 0 && (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-caption text-muted-foreground">
                 {t(($) => $.create.upload.binary_skipped_warning, {
                   count: bundle.skippedBinaryCount,
                 })}
@@ -996,7 +996,7 @@ function UploadForm({
             <button
               type="button"
               onClick={resetAll}
-              className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              className="text-caption text-muted-foreground underline underline-offset-2 hover:text-foreground"
             >
               {t(($) => $.create.upload.change_file)}
             </button>
@@ -1014,7 +1014,7 @@ function UploadForm({
               <button
                 type="button"
                 onClick={toggleAll}
-                className="text-xs font-medium text-muted-foreground hover:text-foreground"
+                className="text-caption font-medium text-muted-foreground hover:text-foreground"
               >
                 {t(($) => $.create.upload.select_all, {
                   count: bundles.length,
@@ -1049,28 +1049,28 @@ function UploadForm({
                       className="pointer-events-none mt-0.5"
                     />
                     <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium truncate">
+                      <div className="text-body font-medium truncate">
                         {b.name}
                       </div>
                       {b.description && (
-                        <p className="mt-0.5 text-xs text-muted-foreground line-clamp-2">
+                        <p className="mt-0.5 text-caption text-muted-foreground line-clamp-2">
                           {b.description}
                         </p>
                       )}
                       {b.files.length > 0 && (
-                        <p className="mt-0.5 text-xs text-muted-foreground/60">
+                        <p className="mt-0.5 text-caption text-muted-foreground">
                           {t(($) => $.create.upload.parsed_files, {
                             count: b.files.length,
                           })}
                         </p>
                       )}
                       {b.truncated && (
-                        <p className="mt-0.5 text-xs text-destructive">
+                        <p className="mt-0.5 text-caption text-destructive">
                           {t(($) => $.create.upload.truncated_warning)}
                         </p>
                       )}
                       {b.skippedBinaryCount > 0 && (
-                        <p className="mt-0.5 text-xs text-muted-foreground">
+                        <p className="mt-0.5 text-caption text-muted-foreground">
                           {t(($) => $.create.upload.binary_skipped_warning, {
                             count: b.skippedBinaryCount,
                           })}
@@ -1084,7 +1084,7 @@ function UploadForm({
             <button
               type="button"
               onClick={resetAll}
-              className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              className="text-caption text-muted-foreground underline underline-offset-2 hover:text-foreground"
             >
               {t(($) => $.create.upload.change_file)}
             </button>
@@ -1094,7 +1094,7 @@ function UploadForm({
         {error && (
           <div
             role="alert"
-            className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-caption text-destructive"
           >
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>{error}</span>
@@ -1204,7 +1204,7 @@ export function CreateSkillDialog({
                         setMethod("chooser");
                         setUploadWide(false);
                       }}
-                      className="-ml-1 rounded-sm p-1 text-muted-foreground opacity-70 transition-opacity hover:bg-accent/60 hover:opacity-100"
+                      className="-ml-1 rounded-sm p-1 text-faint-foreground transition-colors hover:bg-accent/60 hover:text-muted-foreground"
                       aria-label={t(($) => $.create.back_aria)}
                     >
                       <ArrowLeft className="h-3.5 w-3.5" />
@@ -1215,10 +1215,10 @@ export function CreateSkillDialog({
               </Tooltip>
             )}
             <div className="min-w-0">
-              <DialogTitle className="truncate text-base font-medium">
+              <DialogTitle className="truncate text-title-sm font-medium">
                 {t(($) => $.create.method[method].title)}
               </DialogTitle>
-              <p className="mt-0.5 text-xs text-muted-foreground">
+              <p className="mt-0.5 text-caption text-muted-foreground">
                 {t(($) => $.create.method[method].desc)}
               </p>
             </div>
@@ -1229,7 +1229,7 @@ export function CreateSkillDialog({
                 <button
                   type="button"
                   onClick={onClose}
-                  className="rounded-sm p-1 text-muted-foreground opacity-70 transition-opacity hover:bg-accent/60 hover:opacity-100"
+                  className="rounded-sm p-1 text-faint-foreground transition-colors hover:bg-accent/60 hover:text-muted-foreground"
                   aria-label={t(($) => $.create.close_aria)}
                 >
                   <XIcon className="h-3.5 w-3.5" />

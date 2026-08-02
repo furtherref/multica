@@ -25,9 +25,14 @@ type Backend interface {
 type ExecOptions struct {
 	Cwd   string
 	Model string
-	// SystemPrompt is consumed only by providers that can pass or safely inline
-	// developer/system instructions. Hermes ACP intentionally ignores it and
-	// relies on cwd-scoped context files such as AGENTS.md instead.
+	// SystemPrompt carries the Multica runtime brief for the few providers
+	// that cannot pick it up from disk. The daemon leaves it empty for every
+	// other provider (see daemon.providerNeedsInlineSystemPrompt), because the
+	// brief is already delivered as a per-task context file in the workdir —
+	// CLAUDE.md, AGENTS.md, CODEBUDDY.md or QWEN.md depending on the runtime.
+	//
+	// A backend must therefore NOT assume this is populated, and adding a new
+	// backend that only reads SystemPrompt will silently receive nothing.
 	SystemPrompt              string
 	ThreadName                string
 	MaxTurns                  int
@@ -201,7 +206,7 @@ type Result struct {
 
 // Config configures a Backend instance.
 type Config struct {
-	ExecutablePath string            // path to CLI binary (claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor, kimi, kiro-cli, agy, qodercli, traecli, grok, qwen)
+	ExecutablePath string            // path to CLI binary (claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor, kimi, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen)
 	CLIVersion     string            // detected version paired with ExecutablePath; observation only, never used to choose behavior
 	Env            map[string]string // extra environment variables
 	Logger         *slog.Logger
@@ -212,18 +217,19 @@ type Config struct {
 }
 
 // New creates a Backend for the given agent type.
-// Supported types: "claude", "codebuddy", "codex", "copilot", "opencode", "deveco", "openclaw", "hermes", "pi", "cursor", "kimi", "kiro", "antigravity", "qoder", "traecli", "grok", "qwen".
+// Supported types: "claude", "codebuddy", "codex", "copilot", "opencode", "deveco", "openclaw", "hermes", "pi", "cursor", "kimi", "kiro", "antigravity", "qoder", "qoderclicn", "traecli", "grok", "qwen".
 //
 // SupportedTypes is the canonical whitelist of agent types eligible to back a
 // custom runtime profile. It MUST stay in lockstep with the
 // runtime_profile.protocol_family CHECK constraint (migration 120, widened by
 // migration 134 to add qoder, migration 136 to add traecli, migration 175 to
-// add deveco, migration 179 to add grok, and migration 202 to add qwen): a
+// add deveco, migration 179 to add grok, migration 202 to add qwen, and
+// migration 242 to add qoderclicn): a
 // custom runtime profile may only
 // be based on a backend Multica officially supports.
-// qoder is exposed here so Qoder CN (`qoderclicn`) users can point the Qoder
-// backend at a non-default binary instead of misrouting through Kiro/ACP with
-// incompatible arguments (#4883). traecli (Trae) has a New backend, launch
+// qoder and qoderclicn share the same ACP backend; keeping both provider keys
+// lets the daemon auto-detect and register the international and China-region
+// binaries independently. traecli (Trae) has a New backend, launch
 // header and provider branding but was previously missing from this whitelist,
 // so the family picker rejected it (#4945). grok is the xAI Grok Build CLI
 // ACP backend (`grok agent --always-approve stdio`). qwen is Qwen Code's
@@ -243,6 +249,7 @@ var SupportedTypes = []string{
 	"kiro",
 	"antigravity",
 	"qoder",
+	"qoderclicn",
 	"traecli",
 	"grok",
 	"qwen",
@@ -319,8 +326,8 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &kiroBackend{cfg: cfg}, nil
 	case "antigravity":
 		return &antigravityBackend{cfg: cfg}, nil
-	case "qoder":
-		return &qoderBackend{cfg: cfg}, nil
+	case "qoder", "qoderclicn":
+		return &qoderBackend{cfg: cfg, defaultExecutable: qoderDefaultBinary(agentType)}, nil
 	case "traecli":
 		return &traecliBackend{cfg: cfg}, nil
 	case "grok":
@@ -328,7 +335,7 @@ func New(agentType string, cfg Config) (Backend, error) {
 	case "qwen":
 		return &qwenBackend{cfg: cfg}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent type: %q (supported: claude, codebuddy, codex, copilot, opencode, deveco, openclaw, hermes, pi, cursor, kimi, kiro, antigravity, qoder, traecli, grok, qwen)", agentType)
+		return nil, fmt.Errorf("unknown agent type: %q (supported: claude, codebuddy, codex, copilot, opencode, deveco, openclaw, hermes, pi, cursor, kimi, kiro, antigravity, qoder, qoderclicn, traecli, grok, qwen)", agentType)
 	}
 }
 
@@ -358,6 +365,7 @@ var launchHeaders = map[string]string{
 	"opencode":    "opencode run (json)",
 	"pi":          "pi (json mode)",
 	"qoder":       "qodercli --acp",
+	"qoderclicn":  "qoderclicn --acp",
 	"traecli":     "traecli acp serve",
 	"grok":        "grok agent stdio",
 	"qwen":        "qwen -p (stream-json)",

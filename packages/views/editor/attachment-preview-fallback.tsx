@@ -14,10 +14,10 @@ export function UnsupportedFallback({
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
       <FileText className="size-8 text-muted-foreground" />
-      <p className="text-sm text-muted-foreground">{message}</p>
+      <p className="text-body text-muted-foreground">{message}</p>
       <button
         type="button"
-        className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-sm transition-colors hover:bg-muted"
+        className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-body transition-colors hover:bg-muted"
         onClick={onDownload}
       >
         <Download className="size-4" />

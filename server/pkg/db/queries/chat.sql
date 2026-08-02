@@ -136,6 +136,29 @@ SET session_id = COALESCE(sqlc.narg('session_id'), session_id),
     updated_at = now()
 WHERE id = sqlc.arg('id');
 
+-- name: ClearChatSessionSessionIfMatches :exec
+-- Drops the chat session's resume pointer, but only while it still points at
+-- the exact session the caller proved unresumable.
+--
+-- The claim handler reads chat_session.session_id FIRST and only falls back to
+-- GetLastChatTaskSession when it is empty, so a poisoned pointer here bypasses
+-- every filter that query applies. Declining to OVERWRITE the pointer on a
+-- resume-unsafe failure — which is all the fail path used to do — leaves the
+-- dead session in place and the next turn resumes it (GH #6066).
+--
+-- The session_id + runtime_id predicate is what makes this safe to run in the
+-- fail transaction: a concurrent turn that has already written a NEW pointer
+-- does not match, so its healthy session survives instead of being cleared by
+-- a slower sibling's failure. work_dir is deliberately left alone — the
+-- directory is still reusable, only the conversation is not.
+UPDATE chat_session
+SET session_id = NULL,
+    runtime_id = NULL,
+    updated_at = now()
+WHERE id = sqlc.arg('id')
+  AND session_id = sqlc.arg('session_id')
+  AND runtime_id = sqlc.arg('runtime_id');
+
 -- name: LockChatSessionForDelete :one
 -- Acquires an exclusive (FOR UPDATE) row lock on chat_session(id). Used by
 -- the delete path so that a concurrent SendChatMessage cannot enqueue a new
@@ -185,16 +208,17 @@ UPDATE chat_session SET updated_at = now()
 WHERE id = $1;
 
 -- name: CreateChatMessage :one
--- message_kind defaults to 'message' via COALESCE so every existing caller
+-- message_kind and quick_actions default via COALESCE so every existing caller
 -- (which omits it) keeps writing ordinary messages; the empty-reply path passes
 -- 'no_response' to mark a visible turn with no text output (MUL-4351).
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
-    message_kind, channel_media_pending_until, channel_ingested
+    message_kind, quick_actions, channel_media_pending_until, channel_ingested
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
     COALESCE(sqlc.narg(message_kind)::text, 'message'),
+    COALESCE(sqlc.narg(quick_actions)::jsonb, '[]'::jsonb),
     -- The media deadline is DB-clock time: every consumer compares it against
     -- SQL now() (GetChannelMediaPendingUntil, the deferred promote, the
     -- trailing-message guard), so the writer must use the same clock. The
@@ -387,19 +411,70 @@ RETURNING *;
 -- excluded because replaying those sessions deterministically reproduces the
 -- same terminal state. Keep this list in sync with resumeUnsafeFailureReason
 -- and GetLastTaskSession.
-SELECT session_id, work_dir, runtime_id FROM agent_task_queue
-WHERE chat_session_id = $1
+--
+-- The regex pair mirrors GetLastTaskSession's provider-agnostic guard for an
+-- empty message baked into the conversation history: both must match, and
+-- both track emptyContentRe / historyMessageLocatorRe in
+-- pkg/taskfailure/resume.go (GH #6066).
+--
+-- Selection is per-session, not per-row, and retired sessions are excluded —
+-- both mirroring GetLastTaskSession, which this query had drifted away from.
+-- A plain row-level filter reopens the poisoning wormhole GH #5975 closed on
+-- the issue side: it drops the newest poisoned row for a session and then
+-- happily falls back to an OLDER completed row carrying the same dead
+-- session_id. Judging each session by its LATEST terminal state means a newer
+-- poisoned row invalidates the whole session, while a genuinely different
+-- healthy session stays eligible.
+WITH retired_sessions AS (
+    SELECT DISTINCT r.retired_session_id AS session_id
+    FROM agent_task_queue r
+    WHERE r.chat_session_id = $1
+      AND r.retired_session_id IS NOT NULL
+), latest_per_session AS (
+    SELECT DISTINCT ON (t.session_id)
+        t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error, t.completed_at
+    FROM agent_task_queue t
+    WHERE t.chat_session_id = $1
+      AND t.session_id IS NOT NULL
+      AND t.status IN ('completed', 'failed')
+    ORDER BY t.session_id, t.completed_at DESC
+)
+SELECT session_id, work_dir, runtime_id FROM latest_per_session
+WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   AND (
     status = 'completed'
     OR (
       status = 'failed'
       AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
+      AND NOT (COALESCE(error, '') ~* 'must not be empty|must be non-?empty|must have non-?empty|non-?empty content|cannot be empty|should not be empty'
+               AND COALESCE(error, '') ~* 'role[^a-z0-9]{0,2}assistant|assistant message|message at position|messages\.[0-9]|messages\[[0-9]')
     )
   )
-  AND session_id IS NOT NULL
 ORDER BY completed_at DESC
 LIMIT 1;
+
+-- name: HasActiveChatTaskForSession :one
+-- True while ANY task — a normal user turn OR a background quick-actions
+-- regenerate — is in flight for the session (contrast GetPendingChatTask, which
+-- hides regenerate passes from the UI). A quick-actions refresh is refused when
+-- this is true: a running turn is about to change the latest reply, so the
+-- target we'd resume is already stale even before its assistant row lands; and a
+-- second concurrent regenerate would double-spend quota on the same turn. Read
+-- inside the same session lock as the enqueue so it cannot race a sibling insert
+-- (MUL-5149 review §1/§2).
+--
+-- 'deferred' is included: an auto-retry armed with a backoff fire_at is inserted
+-- deferred (CreateRetryTask), and provider_network's final chat attempt waits
+-- ~5s that way. During that window the failed turn has written no assistant row,
+-- so the latest-persisted check still points at the OLD turn — omitting deferred
+-- would let a refresh resume a session the retry is about to advance and attach
+-- the new turn's suggestions to the old one (MUL-5149 re-review §1).
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE chat_session_id = $1
+    AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+) AS has_active;
 
 -- name: GetPendingChatTask :one
 -- Returns the most recent in-flight task for a chat session, if any.
@@ -409,6 +484,10 @@ LIMIT 1;
 -- without "resetting to 0s".
 SELECT id, status, created_at FROM agent_task_queue
 WHERE chat_session_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+  -- Background quick-actions regeneration passes are invisible to the chat UI:
+  -- they own no assistant turn and must not raise the StatusPill or disable the
+  -- composer (MUL-5149 refresh follow-up).
+  AND regenerate_quick_actions_for IS NULL
 ORDER BY created_at DESC
 LIMIT 1;
 
@@ -429,6 +508,9 @@ FROM agent_task_queue atq
 JOIN chat_session cs ON cs.id = atq.chat_session_id
 WHERE atq.chat_session_id IS NOT NULL
   AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+  -- Exclude background quick-actions regeneration passes: they own no assistant
+  -- turn and must not surface as "running" chat work (MUL-5149 refresh follow-up).
+  AND atq.regenerate_quick_actions_for IS NULL
   AND cs.workspace_id = $1
   AND cs.creator_id = $2
 ORDER BY atq.created_at DESC;
@@ -449,6 +531,9 @@ SELECT EXISTS (
   JOIN chat_session cs ON cs.id = atq.chat_session_id
   WHERE atq.chat_session_id IS NOT NULL
     AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+    -- Background quick-actions regeneration passes own no visible turn and must
+    -- never light the FAB "running" indicator (MUL-5149 refresh follow-up).
+    AND atq.regenerate_quick_actions_for IS NULL
     AND cs.workspace_id = sqlc.arg(workspace_id)
     AND cs.creator_id = sqlc.arg(creator_id)
     AND cs.agent_id = ANY(sqlc.arg(agent_ids)::uuid[])
@@ -585,3 +670,32 @@ WHERE chat_session_id IN (
     JOIN agent a ON a.id = cs.agent_id
     WHERE a.runtime_id = $1 AND a.kind = 'system'
 );
+
+-- name: GetChatMessageByTaskAssistant :one
+-- The completed turn's assistant outcome row, for the quick-actions
+-- supplement path (daemon suggestion pass finishing after chat:done).
+SELECT * FROM chat_message
+WHERE task_id = $1 AND role = 'assistant'
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: GetLatestAssistantChatMessageForSession :one
+-- The session's most recent assistant turn, used as the regeneration target
+-- when the user clicks "refresh" on the quick-actions row (MUL-5149). Only rows
+-- with a task_id qualify — the daemon suggest supplement keys off task_id and
+-- a resume needs a real completed turn to resume from.
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND role = 'assistant' AND task_id IS NOT NULL
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: SetChatMessageQuickActionsByTask :one
+UPDATE chat_message
+SET quick_actions = $2
+WHERE id = (
+    SELECT inner_msg.id FROM chat_message AS inner_msg
+    WHERE inner_msg.task_id = $1 AND inner_msg.role = 'assistant'
+    ORDER BY inner_msg.created_at DESC
+    LIMIT 1
+)
+RETURNING *;

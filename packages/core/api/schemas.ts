@@ -14,7 +14,9 @@ import type {
   BillingTopupsPage,
   BillingTransactionsPage,
   CancelTaskResponse,
+  ChatMessage,
   ChatDraftRestoresResponse,
+  Comment,
   CreateAgentFromTemplateResponse,
   CreateBillingCheckoutSessionResponse,
   CreateBillingPortalSessionResponse,
@@ -27,6 +29,8 @@ import type {
   Label,
   IssueProperty,
   ListPropertiesResponse,
+  QuickAction,
+  ListQuickActionsResponse,
   IssuePropertiesResponse,
   IssueTableGroupDescriptor,
   IssueTableFacetsResponse,
@@ -39,6 +43,7 @@ import type {
   ListWebhookDeliveriesResponse,
   NotificationPreferenceResponse,
   ResourceLabelsResponse,
+  RuntimeModelListRequest,
   SearchIssuesResponse,
   SearchProjectsResponse,
   Squad,
@@ -235,6 +240,63 @@ export const EMPTY_ISSUE_PROPERTY: IssueProperty = {
   updated_at: "",
 };
 
+// Quick actions (MUL-5465). `visibility` and `status` stay z.string() rather
+// than z.enum: they are server-driven, and a newer server adding a value must
+// degrade to the UI's default branch, not blank the whole list.
+export const QuickActionSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  name: z.string(),
+  description: z.string().optional().default(""),
+  assignee_type: z.string(),
+  assignee_id: z.string(),
+  prompt: z.string().optional().default(""),
+  visibility: z.string().optional().default("public"),
+  status: z.string().optional().default("active"),
+  last_used_at: z.string().nullable().optional().default(null),
+  use_count: z.number().optional().default(0),
+  created_by_id: z.string().optional().default(""),
+  created_at: z.string(),
+  updated_at: z.string(),
+  target_name: z.string().optional(),
+  // Both default to the pessimistic reading on an older server: "not known to
+  // be public" and "not known to be missing" keep the settings row honest
+  // rather than asserting a state the server never sent.
+  target_public: z.boolean().optional().default(false),
+  target_missing: z.boolean().optional().default(false),
+}).loose();
+
+export const EMPTY_QUICK_ACTION: QuickAction = {
+  id: "",
+  workspace_id: "",
+  name: "",
+  description: "",
+  assignee_type: "agent",
+  assignee_id: "",
+  prompt: "",
+  visibility: "public",
+  status: "active",
+  last_used_at: null,
+  use_count: 0,
+  created_by_id: "",
+  created_at: "",
+  updated_at: "",
+  target_public: false,
+  target_missing: true,
+};
+
+export const ListQuickActionsResponseSchema = z.object({
+  quick_actions: z.array(QuickActionSchema).default([]),
+}).loose();
+
+export const EMPTY_LIST_QUICK_ACTIONS_RESPONSE: ListQuickActionsResponse = {
+  quick_actions: [],
+};
+
+export const QuickActionRenderSchema = z.object({
+  content: z.string().default(""),
+}).loose();
+
 export const ListPropertiesResponseSchema = z.object({
   properties: z.array(IssuePropertySchema).default([]),
   total: z.number().default(0),
@@ -344,6 +406,41 @@ const ReactionSchema = z.object({
 // into the fallback `[]`.
 const AttachmentSchema = z.object({
   id: z.string(),
+}).loose();
+
+const ChatQuickActionSchema = z.object({
+  label: z.string(),
+  prompt: z.string(),
+  primary: z.boolean().optional(),
+}).loose();
+
+export const ChatMessageSchema = z.object({
+  id: z.string(),
+  chat_session_id: z.string(),
+  role: z.enum(["user", "assistant"]).catch("assistant"),
+  content: z.string().default(""),
+  task_id: z.string().nullable().default(null),
+  created_at: z.string().default(""),
+  attachments: z.array(AttachmentSchema).optional(),
+  failure_reason: z.string().nullable().optional(),
+  elapsed_ms: z.number().nullable().optional(),
+  message_kind: z.enum(["message", "no_response"]).catch("message").optional(),
+  // Optional additive data degrades independently: a malformed suggestion
+  // must not hide the assistant reply that contains it.
+  quick_actions: z.array(ChatQuickActionSchema).catch([]).optional().default([]),
+}).loose();
+
+export const ChatMessageListSchema = z.array(ChatMessageSchema).default([]);
+export const EMPTY_CHAT_MESSAGE_LIST: ChatMessage[] = [];
+
+export const ChatMessagesPageSchema = z.object({
+  messages: z.array(ChatMessageSchema).default([]),
+  limit: z.number().default(50),
+  has_more: z.boolean().default(false),
+  next_cursor: z.object({
+    created_at: z.string(),
+    id: z.string(),
+  }).loose().nullable().optional(),
 }).loose();
 
 // Standalone attachment lookup (`GET /api/attachments/{id}`) is the source of
@@ -514,9 +611,31 @@ export const CommentSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   source_task_id: z.string().nullable().optional(),
+  // Set only on comments a quick action produced (MUL-5465). Server-only.
+  quick_action_id: z.string().nullable().optional(),
 }).loose();
 
 export const CommentsListSchema = z.array(CommentSchema);
+
+// Degraded placeholder for a comment response that failed schema validation.
+// The empty id is the caller's signal that nothing usable came back — the run
+// UI treats it as "could not read the result" rather than a successful run.
+export const EMPTY_COMMENT: Comment = {
+  id: "",
+  issue_id: "",
+  author_type: "member",
+  author_id: "",
+  content: "",
+  type: "comment",
+  parent_id: null,
+  reactions: [],
+  attachments: [],
+  created_at: "",
+  updated_at: "",
+  resolved_at: null,
+  resolved_by_type: null,
+  resolved_by_id: null,
+};
 
 const CommentTriggerPreviewAgentSchema = z.object({
   id: z.string(),
@@ -794,7 +913,7 @@ const IssueTableFacetValueSchema = z.object({
 }).loose();
 
 const IssueTableFacetSchema = z.object({
-  kind: z.enum(["status", "priority", "assignee", "creator", "project", "label", "property"]),
+  kind: z.enum(["status", "priority", "assignee", "creator", "project", "label", "property", "working_agents"]),
   property_id: z.string().optional(),
   values: z.array(IssueTableFacetValueSchema).default([]),
 }).loose();
@@ -1838,4 +1957,81 @@ export const CreateBillingPortalSessionResponseSchema = z.object({
 
 export const EMPTY_CREATE_BILLING_PORTAL_SESSION_RESPONSE: CreateBillingPortalSessionResponse = {
   url: "",
+};
+
+// ---------------------------------------------------------------------------
+// Runtime model discovery (`POST /api/runtimes/:id/models`,
+// `GET /api/runtimes/:id/models/:requestId`). Both endpoints return the same
+// request record, and the UI drives a state machine off `status`, so the two
+// fields that decide behaviour are pinned: `status` gates the polling loop and
+// `supported` gates whether the picker is usable at all. Everything else stays
+// lenient per the rules at the top of this file.
+//
+// `status` deliberately stays `z.string()` (a newer server may add a state);
+// `resolveRuntimeModels` treats anything it does not recognise as an explicit
+// failure rather than a completed-but-empty catalog. `supported` defaults to
+// true so a server old enough to omit it keeps the picker enabled instead of
+// rendering "managed by runtime" off an `undefined`.
+//
+// `cached` / `cached_at` are additive markers for a snapshot served from the
+// server-side catalog cache (MUL-5444); an older backend omits them.
+// ---------------------------------------------------------------------------
+
+const RuntimeModelThinkingLevelSchema = z.object({
+  value: z.string(),
+  label: z.string().default(""),
+  description: z.string().optional(),
+}).loose();
+
+const RuntimeModelThinkingSchema = z.object({
+  supported_levels: z.array(RuntimeModelThinkingLevelSchema).default([]),
+  default_level: z.string().optional(),
+}).loose();
+
+const RuntimeModelServiceTierSchema = z.object({
+  id: z.string(),
+  name: z.string().default(""),
+  description: z.string().optional(),
+}).loose();
+
+// A model entry with no `id` is unselectable — `onChange(m.id)` would persist
+// an empty model — so `id` is required and a malformed entry drops the whole
+// response to the fallback rather than rendering a dead row.
+const RuntimeModelSchema = z.object({
+  id: z.string(),
+  label: z.string().default(""),
+  provider: z.string().optional(),
+  default: z.boolean().optional(),
+  thinking: RuntimeModelThinkingSchema.nullable().optional()
+    .transform((v) => v ?? undefined),
+  service_tiers: z.array(RuntimeModelServiceTierSchema).optional(),
+}).loose();
+
+export const RuntimeModelListRequestSchema = z.object({
+  id: z.string().default(""),
+  runtime_id: z.string().default(""),
+  status: z.string(),
+  models: z.array(RuntimeModelSchema).optional(),
+  supported: z.boolean().default(true),
+  error: z.string().optional(),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+  cached: z.boolean().optional(),
+  cached_at: z.string().optional(),
+}).loose();
+
+// Fallback for an unparseable model-discovery response. `failed` is the only
+// honest choice: `completed` would fabricate an empty catalog (and silently
+// clear a saved model when `supported` is read as false), while `pending`
+// would spin the picker until the client-side poll timeout. `failed` surfaces
+// "discovery failed" immediately and leaves the creatable manual-entry field
+// working, which is the same degradation as a real discovery failure.
+export const MALFORMED_RUNTIME_MODEL_LIST_REQUEST: RuntimeModelListRequest = {
+  id: "",
+  runtime_id: "",
+  status: "failed",
+  supported: true,
+  error: "invalid model discovery response",
+  created_at: "",
+  updated_at: "",
 };

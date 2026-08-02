@@ -13,6 +13,11 @@ import (
 	"time"
 )
 
+// kiroReaderDrainGrace bounds how long the turn waits for trailing ACP
+// notifications after the session/prompt response. A var, not a const, so
+// tests can shorten it. Mirrors qoderReaderDrainGrace / traecliReaderDrainGrace.
+var kiroReaderDrainGrace = 2 * time.Second
+
 // kiroBlockedArgs are flags hardcoded by the daemon that must not be
 // overridden by user-configured custom_args. `acp` is the protocol subcommand,
 // and --trust-all-tools covers Kiro's CLI-level tool gate while
@@ -104,8 +109,10 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
 
-	var outputMu sync.Mutex
-	var output strings.Builder
+	// Kiro streams interim narration and the final answer as the same
+	// AgentMessageChunk type; the tracker keeps only the post-tool-call block
+	// for Result.Output while retaining the full text for error detection.
+	var deliverable acpDeliverableTracker
 	var streamingCurrentTurn atomic.Bool
 	// Completion-preservation state for the -32603 close-handshake guard.
 	//
@@ -132,6 +139,7 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	var lastFinishingResultStatus string // "", "completed", or "failed"
 
 	promptDone := make(chan hermesPromptResult, 1)
+	activity := make(chan struct{}, 1)
 
 	c := &hermesClient{
 		cfg:          b.cfg,
@@ -140,6 +148,12 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		pendingTools: make(map[string]*pendingToolCall),
 		acceptNotification: func(string) bool {
 			return streamingCurrentTurn.Load()
+		},
+		onActivity: func() {
+			select {
+			case activity <- struct{}{}:
+			default:
+			}
 		},
 		onMessage: func(msg Message) {
 			if !streamingCurrentTurn.Load() {
@@ -174,11 +188,7 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 					finishingMu.Unlock()
 				}
 			}
-			if msg.Type == MessageText {
-				outputMu.Lock()
-				output.WriteString(msg.Content)
-				outputMu.Unlock()
-			}
+			deliverable.observe(msg)
 			trySend(msgCh, msg)
 		},
 		onPromptDone: func(result hermesPromptResult) {
@@ -432,6 +442,7 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 				c.usageMu.Unlock()
 			default:
 			}
+			waitForACPNotificationQuiescence(runCtx, activity, readerDone, acpNotificationQuietTime, kiroReaderDrainGrace)
 		}
 
 		duration := time.Since(startTime)
@@ -445,17 +456,17 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		// provider-error sniffer; see hermes.go for the failure mode.
 		<-stderrDone
 
-		outputMu.Lock()
-		finalOutput := output.String()
-		outputMu.Unlock()
+		finalOutput, providerErrorOutput := deliverable.result()
 
 		// Promote completed→failed when stderr or the agent text
 		// stream show a terminal upstream-LLM failure (HTTP 4xx /
 		// rate-limit / expired token). See the helper docs for the
 		// full signal set; the key safety property is that transient
 		// per-attempt warnings followed by a successful retry stay
-		// "completed".
-		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, finalOutput, providerErr)
+		// "completed". It reads the full text stream, not the
+		// deliverable, so a give-up turn that lands before a tool call
+		// stays visible.
+		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, providerErrorOutput, providerErr)
 
 		c.usageMu.Lock()
 		u := c.usage

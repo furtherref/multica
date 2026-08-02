@@ -166,9 +166,9 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
           </Button>
         </div>
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
-          <AlertCircle className="h-8 w-8 text-muted-foreground/40" />
-          <p className="text-sm font-medium">{t(($) => $.detail.not_found.title)}</p>
-          <p className="max-w-xs text-xs text-muted-foreground">
+          <AlertCircle className="h-8 w-8 text-faint-foreground" />
+          <p className="text-body font-medium">{t(($) => $.detail.not_found.title)}</p>
+          <p className="max-w-xs text-caption text-muted-foreground">
             {error instanceof Error ? error.message : t(($) => $.detail.not_found.fallback)}
           </p>
           <AppLink
@@ -194,7 +194,7 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
           {t(($) => $.detail.all_templates)}
         </Button>
         <ChevronRight className="h-3 w-3 text-muted-foreground" />
-        <span className="truncate font-mono text-xs text-foreground">
+        <span className="truncate font-mono text-caption text-foreground">
           {template.name}
         </span>
         <Button
@@ -212,19 +212,19 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
         <section className="flex min-w-0 flex-1 flex-col">
           <div className="space-y-4 overflow-y-auto px-6 py-5">
             <div className="space-y-1.5">
-              <Label htmlFor="issue-template-detail-name" className="text-xs text-muted-foreground">
+              <Label htmlFor="issue-template-detail-name" className="text-caption text-muted-foreground">
                 {t(($) => $.fields.name)}
               </Label>
               <Input
                 id="issue-template-detail-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="h-9 max-w-xl text-lg font-semibold"
+                className="h-9 max-w-xl text-title font-semibold"
               />
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="issue-template-detail-title" className="text-xs text-muted-foreground">
+              <Label htmlFor="issue-template-detail-title" className="text-caption text-muted-foreground">
                 <FileText className="h-3 w-3" />
                 {t(($) => $.fields.issue_title)}
               </Label>
@@ -238,7 +238,7 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
 
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <Label className="text-xs text-muted-foreground">
+                <Label className="text-caption text-muted-foreground">
                   {t(($) => $.fields.issue_content)}
                 </Label>
                 <Tooltip>
@@ -271,14 +271,14 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
                   value={issueContent}
                   onChange={(e) => setIssueContent(e.target.value)}
                   rows={18}
-                  className="min-h-72 resize-y font-mono text-xs"
+                  className="min-h-72 resize-y font-mono text-caption"
                 />
               ) : (
                 <div className="rounded-md border px-4 py-3 min-h-72">
                   {issueContent ? (
                     <ReadonlyContent content={issueContent} />
                   ) : (
-                    <p className="text-sm text-muted-foreground italic">
+                    <p className="text-body text-muted-foreground italic">
                       {t(($) => $.detail.no_content)}
                     </p>
                   )}
@@ -294,7 +294,7 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
               className="flex items-center gap-2 border-t bg-muted/30 px-4 py-2"
             >
               <span className="h-1.5 w-1.5 rounded-full bg-brand" />
-              <span className="text-xs text-muted-foreground">
+              <span className="text-caption text-muted-foreground">
                 {t(($) => $.detail.save_bar.unsaved)}
               </span>
               <div className="ml-auto flex items-center gap-1.5">
@@ -328,10 +328,10 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
 
         <aside className="flex w-72 shrink-0 flex-col gap-4 overflow-y-auto border-l bg-muted/20 px-4 py-4">
           <div>
-            <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            <h3 className="mb-2 text-caption font-medium uppercase tracking-wider text-muted-foreground">
               {t(($) => $.detail.sidebar.metadata)}
             </h3>
-            <dl className="space-y-1.5 text-xs">
+            <dl className="space-y-1.5 text-caption">
               <div className="flex gap-2">
                 <dt className="min-w-20 text-muted-foreground">
                   {t(($) => $.detail.sidebar.source)}
@@ -394,7 +394,7 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
               {t(($) => $.detail.delete_dialog.description, { name: template.name })}
             </DialogDescription>
           </DialogHeader>
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-caption text-destructive">
             {t(($) => $.detail.delete_dialog.warning)}
           </div>
           <DialogFooter>

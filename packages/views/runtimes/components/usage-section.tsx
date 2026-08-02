@@ -106,7 +106,7 @@ function Segmented<T extends string | number>({
           type="button"
           disabled={disabled}
           onClick={() => onChange(o.value)}
-          className={`rounded-sm px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
+          className={`rounded-sm px-2.5 py-1 text-caption font-medium transition-colors disabled:cursor-not-allowed ${
             o.value === value
               ? "bg-background text-foreground shadow-sm"
               : "text-muted-foreground hover:text-foreground"
@@ -194,7 +194,7 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
           26 weeks), and its tab disables this control to telegraph that. */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <span className="text-xs uppercase tracking-wider text-muted-foreground">
+          <span className="text-caption uppercase tracking-wider text-muted-foreground">
             {t(($) => $.usage.dimension_label)}
           </span>
           <Segmented
@@ -209,7 +209,7 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
           />
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-xs uppercase tracking-wider text-muted-foreground">
+          <span className="text-caption uppercase tracking-wider text-muted-foreground">
             {t(($) => $.usage.period_label)}
           </span>
           <Segmented
@@ -379,7 +379,7 @@ function WhenChart({
     <div className="rounded-lg border bg-card p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
-          <h4 className="text-sm font-semibold">{t(($) => $.usage.when_title)}</h4>
+          <h4 className="text-body font-semibold">{t(($) => $.usage.when_title)}</h4>
           {/* Cost / Tokens metric toggle — only meaningful when the chart
               actually has two series-types to switch between. */}
           {metricToggleVisible && (
@@ -400,7 +400,7 @@ function WhenChart({
           <button
             type="button"
             onClick={() => setShowHeatmap((v) => !v)}
-            className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+            className={`rounded-md border px-2.5 py-1 text-caption font-medium transition-colors ${
               showHeatmap
                 ? "border-foreground bg-foreground text-background"
                 : "border-border text-muted-foreground hover:text-foreground"
@@ -416,7 +416,7 @@ function WhenChart({
       </div>
 
       {showHeatmap && (
-        <p className="mb-2 text-center text-xs text-muted-foreground">
+        <p className="mb-2 text-center text-caption text-muted-foreground">
           {t(($) => $.usage.heatmap_caption)}
         </p>
       )}
@@ -515,27 +515,27 @@ function EmptyChartState({ usage }: { usage: RuntimeUsage[] }) {
 
   return (
     <div className="flex aspect-[3/1] flex-col items-center justify-center gap-2 rounded-md border border-dashed bg-muted/20 p-6 text-center">
-      <BarChart3 className="h-5 w-5 text-muted-foreground/50" />
+      <BarChart3 className="h-5 w-5 text-faint-foreground" />
       {!hasTokens ? (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-caption text-muted-foreground">
           {t(($) => $.usage.empty_no_usage)}
         </p>
       ) : unmapped.length > 0 ? (
         // CTA lives in the page-level UnmappedPricingNotice above. Keep the
         // chart-area copy descriptive only so the two surfaces don't bicker.
         <>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-caption text-muted-foreground">
             {t(($) => $.usage.empty_pricing_missing)}
           </p>
-          <p className="font-mono text-[11px] text-foreground">
+          <p className="font-mono text-micro text-foreground">
             {unmapped.join(", ")}
           </p>
-          <p className="text-[11px] text-muted-foreground/70">
+          <p className="text-micro text-muted-foreground">
             {t(($) => $.usage.empty_pricing_hint)}
           </p>
         </>
       ) : (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-caption text-muted-foreground">
           {t(($) => $.usage.empty_zero_cost)}
         </p>
       )}
@@ -574,7 +574,7 @@ function CustomPricingBar({ usage }: { usage: RuntimeUsage[] }) {
     <div
       role={hasGap ? "alert" : undefined}
       className={cn(
-        "flex flex-wrap items-center gap-3 rounded-lg border px-3 py-2 text-xs",
+        "flex flex-wrap items-center gap-3 rounded-lg border px-3 py-2 text-caption",
         hasGap ? "border-warning/30 bg-warning/10" : "bg-muted/20",
       )}
     >
@@ -585,7 +585,7 @@ function CustomPricingBar({ usage }: { usage: RuntimeUsage[] }) {
             <p className="text-foreground">
               {t(($) => $.usage.unmapped_notice, { count: unmapped.length })}
             </p>
-            <p className="truncate font-mono text-[11px] text-muted-foreground">
+            <p className="truncate font-mono text-micro text-muted-foreground">
               {unmapped.join(", ")}
             </p>
           </div>
@@ -633,7 +633,7 @@ function ChartLegend({ includeCacheRead = false }: { includeCacheRead?: boolean 
     { label: t(($) => $.usage.legend_cache_write), color: "var(--color-chart-3)" },
   ];
   return (
-    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+    <div className="flex items-center gap-3 text-caption text-muted-foreground">
       {items.map((it) => (
         <span key={it.label} className="inline-flex items-center gap-1.5">
           <span
@@ -706,7 +706,7 @@ function CostByBlock({
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
         <div className="flex items-center gap-3">
-          <h4 className="text-sm font-semibold">
+          <h4 className="text-body font-semibold">
             {tab === "owner"
               ? t(($) => $.usage.cost_by_title_owner)
               : tab === "agent"
@@ -725,7 +725,7 @@ function CostByBlock({
             }
           />
         </div>
-        <span className="text-xs text-muted-foreground">{caption}</span>
+        <span className="text-caption text-muted-foreground">{caption}</span>
       </div>
       <div className="pt-4">
         {tab === "owner" && (
@@ -742,7 +742,7 @@ function CostByBlock({
                       initials="—"
                       size="md"
                     />
-                    <span className="truncate text-sm font-medium text-muted-foreground">
+                    <span className="truncate text-body font-medium text-muted-foreground">
                       {t(($) => $.usage.cost_by_owner_none)}
                     </span>
                   </div>
@@ -752,7 +752,7 @@ function CostByBlock({
               return (
                 <div className="flex min-w-0 items-center gap-2">
                   <ActorAvatar actorType="member" actorId={key} size="md" enableHoverCard />
-                  <span className="cursor-pointer truncate text-sm font-medium">
+                  <span className="cursor-pointer truncate text-body font-medium">
                     {member?.name ?? t(($) => $.usage.cost_by_owner_former)}
                   </span>
                 </div>
@@ -768,7 +768,7 @@ function CostByBlock({
               return (
                 <div className="flex min-w-0 items-center gap-2">
                   <ActorAvatar actorType="agent" actorId={key} size="md" enableHoverCard />
-                  <span className="cursor-pointer truncate text-sm font-medium">
+                  <span className="cursor-pointer truncate text-body font-medium">
                     {agent?.name ?? key}
                   </span>
                 </div>
@@ -780,7 +780,7 @@ function CostByBlock({
           <CostByList
             rows={byModel}
             renderKey={(key) => (
-              <span className="truncate font-mono text-xs text-foreground">
+              <span className="truncate font-mono text-caption text-foreground">
                 {key}
               </span>
             )}
@@ -806,7 +806,7 @@ function CostByList({
   const { t } = useT("runtimes");
   if (rows.length === 0) {
     return (
-      <p className="py-4 text-center text-xs text-muted-foreground">
+      <p className="py-4 text-center text-caption text-muted-foreground">
         {emptyHint ?? t(($) => $.usage.empty_no_usage)}
       </p>
     );
@@ -828,10 +828,10 @@ function CostByList({
                 style={{ width: `${pct}%` }}
               />
             </div>
-            <div className="text-right text-xs tabular-nums text-muted-foreground">
+            <div className="text-right text-caption tabular-nums text-muted-foreground">
               {formatTokens(row.tokens)}
             </div>
-            <div className="text-right text-sm font-medium tabular-nums">
+            <div className="text-right text-body font-medium tabular-nums">
               ${row.cost.toFixed(2)}
             </div>
           </div>
@@ -855,7 +855,7 @@ function FoldedRow({ usage }: { usage: RuntimeUsage[] }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        className="inline-flex items-center gap-1 text-caption text-muted-foreground transition-colors hover:text-foreground"
       >
         <ChevronRight
           className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`}
@@ -881,7 +881,7 @@ function DailyBreakdownTable({ usage }: { usage: RuntimeUsage[] }) {
   }
   return (
     <div className="rounded-lg border">
-      <div className="grid grid-cols-[100px_1fr_80px_80px_80px_80px] gap-2 border-b px-3 py-2 text-xs font-medium text-muted-foreground">
+      <div className="grid grid-cols-[100px_1fr_80px_80px_80px_80px] gap-2 border-b px-3 py-2 text-caption font-medium text-muted-foreground">
         <div>{t(($) => $.usage.table_date)}</div>
         <div>{t(($) => $.usage.table_model)}</div>
         <div className="text-right">{t(($) => $.usage.table_input)}</div>
@@ -894,7 +894,7 @@ function DailyBreakdownTable({ usage }: { usage: RuntimeUsage[] }) {
           rows.map((row, i) => (
             <div
               key={`${date}-${row.model}-${i}`}
-              className="grid grid-cols-[100px_1fr_80px_80px_80px_80px] gap-2 px-3 py-1.5 text-xs"
+              className="grid grid-cols-[100px_1fr_80px_80px_80px_80px] gap-2 px-3 py-1.5 text-caption"
             >
               <div className="text-muted-foreground">{date}</div>
               <div className="truncate font-mono">{row.model}</div>
@@ -936,8 +936,8 @@ function UsageEmpty() {
   const { t } = useT("runtimes");
   return (
     <div className="flex flex-col items-center rounded-lg border border-dashed py-8">
-      <BarChart3 className="h-5 w-5 text-muted-foreground/40" />
-      <p className="mt-2 text-xs text-muted-foreground">
+      <BarChart3 className="h-5 w-5 text-faint-foreground" />
+      <p className="mt-2 text-caption text-muted-foreground">
         {t(($) => $.usage.no_data)}
       </p>
     </div>

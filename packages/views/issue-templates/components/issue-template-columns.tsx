@@ -48,7 +48,7 @@ export function useIssueTemplateColumns(): ColumnDef<IssueTemplateRow>[] {
       header: t(($) => $.table.updated),
       size: COL_WIDTHS.updated,
       cell: ({ row }) => (
-        <span className="whitespace-nowrap text-xs text-muted-foreground">
+        <span className="whitespace-nowrap text-caption text-muted-foreground">
           {timeAgo(row.original.template.updated_at)}
         </span>
       ),
@@ -59,7 +59,7 @@ export function useIssueTemplateColumns(): ColumnDef<IssueTemplateRow>[] {
       size: COL_WIDTHS.chevron,
       enableResizing: false,
       cell: () => (
-        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
+        <ChevronRight className="h-4 w-4 shrink-0 text-faint-foreground transition-colors group-hover:text-muted-foreground" />
       ),
     },
   ];
@@ -74,13 +74,13 @@ function IssueTemplateNameCell({ row }: { row: IssueTemplateRow }) {
     <div className="min-w-0">
       <div className="flex min-w-0 items-center gap-2">
         <span className="block min-w-0 truncate font-medium">{template.name}</span>
-        <span className="inline-flex shrink-0 items-center gap-0.5 font-mono text-xs text-muted-foreground/70">
+        <span className="inline-flex shrink-0 items-center gap-0.5 font-mono text-caption text-muted-foreground">
           <FileText className="h-3 w-3" />
         </span>
       </div>
       <div
-        className={`mt-0.5 max-w-xl truncate text-xs ${
-          summary ? "text-muted-foreground" : "italic text-muted-foreground/50"
+        className={`mt-0.5 max-w-xl truncate text-caption ${
+          summary ? "text-muted-foreground" : "italic text-muted-foreground"
         }`}
       >
         {summary || t(($) => $.table.no_content)}
@@ -105,12 +105,12 @@ function SourceCell({
 
   return (
     <div className="min-w-0">
-      <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+      <div className="flex min-w-0 items-center gap-1.5 text-caption text-muted-foreground">
         <Pencil className="h-3 w-3 shrink-0" />
         <span className="block min-w-0 truncate">{label}</span>
       </div>
       {creator && (
-        <div className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+        <div className="mt-1 flex min-w-0 items-center gap-1.5 text-caption text-muted-foreground">
           <ActorAvatar
             name={creator.name}
             initials={creator.name.slice(0, 2).toUpperCase()}

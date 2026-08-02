@@ -56,10 +56,10 @@ export function CreateIssueTemplateDialog({
       <DialogContent className="flex max-h-[82vh] flex-col overflow-hidden p-0 sm:max-w-2xl">
         <div className="flex h-12 shrink-0 items-center justify-between border-b px-5">
           <div>
-            <DialogTitle className="text-sm font-semibold">
+            <DialogTitle className="text-body font-semibold">
               {t(($) => $.create.title)}
             </DialogTitle>
-            <p className="mt-0.5 text-xs text-muted-foreground">
+            <p className="mt-0.5 text-caption text-muted-foreground">
               {t(($) => $.create.description)}
             </p>
           </div>
@@ -77,7 +77,7 @@ export function CreateIssueTemplateDialog({
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
           <div className="space-y-1.5">
-            <Label htmlFor="issue-template-name" className="text-xs text-muted-foreground">
+            <Label htmlFor="issue-template-name" className="text-caption text-muted-foreground">
               {t(($) => $.fields.name)}
             </Label>
             <Input
@@ -93,7 +93,7 @@ export function CreateIssueTemplateDialog({
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="issue-template-title" className="text-xs text-muted-foreground">
+            <Label htmlFor="issue-template-title" className="text-caption text-muted-foreground">
               <FileText className="h-3 w-3" />
               {t(($) => $.fields.issue_title)}
             </Label>
@@ -109,7 +109,7 @@ export function CreateIssueTemplateDialog({
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="issue-template-content" className="text-xs text-muted-foreground">
+            <Label htmlFor="issue-template-content" className="text-caption text-muted-foreground">
               {t(($) => $.fields.issue_content)}
             </Label>
             <Textarea
@@ -118,14 +118,14 @@ export function CreateIssueTemplateDialog({
               onChange={(e) => setIssueContent(e.target.value)}
               placeholder={t(($) => $.create.issue_content_placeholder)}
               rows={10}
-              className="resize-none font-mono text-xs"
+              className="resize-none font-mono text-caption"
             />
           </div>
 
           {error && (
             <div
               role="alert"
-              className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive"
+              className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-caption text-destructive"
             >
               <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <span>{error}</span>

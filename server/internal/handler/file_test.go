@@ -691,7 +691,7 @@ func TestAttachmentToResponse_NonCloudFrontUsesDownloadEndpoint(t *testing.T) {
 		t.Fatalf("GetAttachment: %v", err)
 	}
 
-	resp := testHandler.attachmentToResponse(att)
+	resp := testHandler.attachmentToResponse(att, attachmentURLModeSigned)
 	if resp.URL != "http://rustfs:9000/test-bucket/private.txt" {
 		t.Fatalf("stored url changed: %q", resp.URL)
 	}
@@ -737,7 +737,9 @@ func TestDownloadAttachment_MetadataURLBareNavigationPassesMiddleware(t *testing
 	if err != nil {
 		t.Fatalf("GetAttachment: %v", err)
 	}
-	downloadURL := testHandler.attachmentToResponse(att).DownloadURL
+	// Signed mode is what a bare navigation needs: it pre-binds authorization
+	// into DownloadURL, which is the whole point of this test.
+	downloadURL := testHandler.attachmentToResponse(att, attachmentURLModeSigned).DownloadURL
 
 	req := httptest.NewRequest("GET", downloadURL, nil)
 	req.Header.Set("X-User-ID", testUserID)
@@ -1699,7 +1701,7 @@ func TestBuildMarkdownURL_PublicCdnAbsoluteURLReusedVerbatim(t *testing.T) {
 		t.Fatalf("GetAttachment: %v", err)
 	}
 
-	resp := testHandler.attachmentToResponse(att)
+	resp := testHandler.attachmentToResponse(att, attachmentURLModeSigned)
 	if resp.MarkdownURL != "https://cdn.multica.test/uploads/abc.png" {
 		t.Fatalf("markdown_url = %q, want raw a.Url passthrough", resp.MarkdownURL)
 	}
@@ -1733,7 +1735,7 @@ func TestBuildMarkdownURL_PrivateBucketWithoutCdnDomainRoutesThroughAPIEndpoint(
 		t.Fatalf("GetAttachment: %v", err)
 	}
 
-	resp := testHandler.attachmentToResponse(att)
+	resp := testHandler.attachmentToResponse(att, attachmentURLModeSigned)
 	want := "https://api.multica.test/api/attachments/" + id + "/download"
 	if resp.MarkdownURL != want {
 		t.Fatalf("markdown_url = %q, want absolute API endpoint %q (private bucket without explicit CDN must not persist raw S3 URL)", resp.MarkdownURL, want)
@@ -1760,7 +1762,7 @@ func TestBuildMarkdownURL_CloudFrontSignedModeNeverPersistsRawStorageURL(t *test
 		t.Fatalf("GetAttachment: %v", err)
 	}
 
-	resp := testHandler.attachmentToResponse(att)
+	resp := testHandler.attachmentToResponse(att, attachmentURLModeSigned)
 	want := "https://api.multica.test/api/attachments/" + id + "/download"
 	if resp.MarkdownURL != want {
 		t.Fatalf("markdown_url = %q, want absolute API endpoint %q", resp.MarkdownURL, want)
@@ -1793,7 +1795,7 @@ func TestBuildMarkdownURL_RelativeStorageURLPrefixedWithPublicURL(t *testing.T) 
 		t.Fatalf("GetAttachment: %v", err)
 	}
 
-	resp := testHandler.attachmentToResponse(att)
+	resp := testHandler.attachmentToResponse(att, attachmentURLModeSigned)
 	want := "https://api.multica.test/api/attachments/" + id + "/download"
 	if resp.MarkdownURL != want {
 		t.Fatalf("markdown_url = %q, want absolute API endpoint %q", resp.MarkdownURL, want)
@@ -1819,7 +1821,7 @@ func TestBuildMarkdownURL_PublicURLUnsetFallsBackToSiteRelative(t *testing.T) {
 		t.Fatalf("GetAttachment: %v", err)
 	}
 
-	resp := testHandler.attachmentToResponse(att)
+	resp := testHandler.attachmentToResponse(att, attachmentURLModeSigned)
 	want := "/api/attachments/" + id + "/download"
 	if resp.MarkdownURL != want {
 		t.Fatalf("markdown_url = %q, want site-relative fallback %q", resp.MarkdownURL, want)
@@ -1845,7 +1847,7 @@ func TestBuildMarkdownURL_StripsTrailingSlashOnPublicURL(t *testing.T) {
 		t.Fatalf("GetAttachment: %v", err)
 	}
 
-	resp := testHandler.attachmentToResponse(att)
+	resp := testHandler.attachmentToResponse(att, attachmentURLModeSigned)
 	want := "https://api.multica.test/api/attachments/" + id + "/download"
 	if resp.MarkdownURL != want {
 		t.Fatalf("markdown_url = %q, want exactly one separator %q", resp.MarkdownURL, want)

@@ -108,6 +108,10 @@ import type {
   IssueProperty,
   IssuePropertyValue,
   CreatePropertyRequest,
+  QuickAction,
+  CreateQuickActionRequest,
+  UpdateQuickActionRequest,
+  ListQuickActionsResponse,
   UpdatePropertyRequest,
   ListPropertiesResponse,
   IssuePropertiesResponse,
@@ -188,6 +192,8 @@ import {
   AttachmentResponseSchema,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
+  ChatMessageListSchema,
+  ChatMessagesPageSchema,
   ChildIssuesResponseSchema,
   CommentsListSchema,
   CommentTriggerPreviewSchema,
@@ -208,6 +214,7 @@ import {
   EMPTY_AGENT_TEMPLATE_SUMMARY_LIST,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
+  EMPTY_CHAT_MESSAGE_LIST,
   EMPTY_CLOUD_RUNTIME_NODE,
   EMPTY_CLOUD_RUNTIME_NODE_LIST,
   EMPTY_CREATE_AGENT_FROM_TEMPLATE_RESPONSE,
@@ -287,6 +294,13 @@ import {
   IssuePropertySchema,
   ListPropertiesResponseSchema,
   IssuePropertiesResponseSchema,
+  QuickActionSchema,
+  ListQuickActionsResponseSchema,
+  QuickActionRenderSchema,
+  EMPTY_QUICK_ACTION,
+  EMPTY_LIST_QUICK_ACTIONS_RESPONSE,
+  CommentSchema,
+  EMPTY_COMMENT,
   EMPTY_ISSUE_PROPERTY,
   EMPTY_LIST_PROPERTIES_RESPONSE,
   EMPTY_ISSUE_PROPERTIES_RESPONSE,
@@ -302,6 +316,8 @@ import {
   EMPTY_GITHUB_CONNECT_RESPONSE,
   EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE,
   EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE,
+  RuntimeModelListRequestSchema,
+  MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
 } from "./schemas";
 import {
   EMPTY_ISSUE_TEMPLATE_DETAIL,
@@ -406,6 +422,20 @@ export class PreviewUnsupportedError extends Error {
  * Must stay in sync with protocol.AppCapabilityChatDraftRestoreV1.
  */
 export const CHAT_DRAFT_RESTORE_CAPABILITY = "chat-draft-restore-v1";
+
+/**
+ * Body shared by both unsubscribe endpoints: an omitted target means "the
+ * caller", which the server resolves from the request actor.
+ */
+function subscriberTarget(
+  userId?: string,
+  userType?: string,
+): Record<string, string> {
+  const body: Record<string, string> = {};
+  if (userId) body.user_id = userId;
+  if (userType) body.user_type = userType;
+  return body;
+}
 
 export class ApiClient {
   private baseUrl: string;
@@ -1057,13 +1087,37 @@ export class ApiClient {
     });
   }
 
-  async unsubscribeFromIssue(issueId: string, userId?: string, userType?: string): Promise<void> {
-    const body: Record<string, string> = {};
-    if (userId) body.user_id = userId;
-    if (userType) body.user_type = userType;
+  async unsubscribeFromIssue(
+    issueId: string,
+    userId?: string,
+    userType?: string,
+  ): Promise<void> {
     await this.fetch(`/api/issues/${issueId}/unsubscribe`, {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify(subscriberTarget(userId, userType)),
+    });
+  }
+
+  /**
+   * Leaves this issue and every descendant, and keeps future children of the
+   * tree from re-subscribing the user — the escape hatch for an agent-built
+   * tree that keeps growing (MUL-5483).
+   *
+   * Deliberately its own endpoint rather than a `subtree` flag on
+   * `unsubscribeFromIssue`. Web/desktop staging ships on merge while the
+   * backend is deployed by hand, so this client regularly runs against an
+   * older server; one that predates the feature would ignore an unknown body
+   * field, unsubscribe only the root, and still answer 200. A distinct path
+   * 404s there, which surfaces as a failed mutation instead of a silent lie.
+   */
+  async unsubscribeFromIssueSubtree(
+    issueId: string,
+    userId?: string,
+    userType?: string,
+  ): Promise<void> {
+    await this.fetch(`/api/issues/${issueId}/unsubscribe/subtree`, {
+      method: "POST",
+      body: JSON.stringify(subscriberTarget(userId, userType)),
     });
   }
 
@@ -1182,10 +1236,10 @@ export class ApiClient {
   }
 
   /**
-   * Returns the plaintext `custom_env` map for an agent. Agent owner
-   * or workspace owner/admin only; calls from agent-actor sessions get
-   * a 403. Every successful call writes an `agent_env_revealed`
-   * activity_log row server-side. MUL-2600.
+   * Returns the plaintext `custom_env` map for an agent. Admits the
+   * agent's owner or a workspace owner/admin (MUL-5438); calls from
+   * agent-actor sessions get a 403. Every successful call writes an
+   * `agent_env_revealed` activity_log row server-side. MUL-2600.
    */
   async getAgentEnv(id: string): Promise<AgentEnvResponse> {
     return this.fetch(`/api/agents/${id}/env`);
@@ -1195,8 +1249,8 @@ export class ApiClient {
    * Replaces an agent's `custom_env` wholesale. Values equal to
    * `"****"` are preserved server-side (the **** guard) so a partial
    * UI edit doesn't overwrite real secrets with the masked
-   * placeholder. Agent owner or workspace owner/admin only; agent
-   * actors get a 403. Every successful call writes an
+   * placeholder. Admits the agent's owner or a workspace owner/admin
+   * (MUL-5438); agent actors get a 403. Every successful call writes an
    * `agent_env_updated` activity_log row. MUL-2600.
    */
   async updateAgentEnv(id: string, data: UpdateAgentEnvRequest): Promise<AgentEnvResponse> {
@@ -1693,15 +1747,40 @@ export class ApiClient {
     return this.fetch(`/api/runtimes/${runtimeId}/update/${updateId}`);
   }
 
+  // Both discovery endpoints feed a UI state machine (poll while
+  // pending/running, then render or fail), so the response is validated rather
+  // than cast: an unparseable body degrades to an explicit "failed" record that
+  // shows the discovery error and keeps manual model entry usable, instead of a
+  // fabricated empty catalog or an endless spinner (MUL-5444).
   async initiateListModels(runtimeId: string): Promise<RuntimeModelListRequest> {
-    return this.fetch(`/api/runtimes/${runtimeId}/models`, { method: "POST" });
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/models`, {
+      method: "POST",
+    });
+    return parseWithFallback<RuntimeModelListRequest>(
+      raw,
+      RuntimeModelListRequestSchema,
+      { ...MALFORMED_RUNTIME_MODEL_LIST_REQUEST, runtime_id: runtimeId },
+      { endpoint: "POST /api/runtimes/{id}/models" },
+    );
   }
 
   async getListModelsResult(
     runtimeId: string,
     requestId: string,
   ): Promise<RuntimeModelListRequest> {
-    return this.fetch(`/api/runtimes/${runtimeId}/models/${requestId}`);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/models/${requestId}`,
+    );
+    return parseWithFallback<RuntimeModelListRequest>(
+      raw,
+      RuntimeModelListRequestSchema,
+      {
+        ...MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
+        id: requestId,
+        runtime_id: runtimeId,
+      },
+      { endpoint: "GET /api/runtimes/{id}/models/{requestId}" },
+    );
   }
 
   async initiateListLocalSkills(
@@ -1826,6 +1905,10 @@ export class ApiClient {
 
   async markInboxRead(id: string): Promise<InboxItem> {
     return this.fetch(`/api/inbox/${id}/read`, { method: "POST" });
+  }
+
+  async markInboxUnread(id: string): Promise<InboxItem> {
+    return this.fetch(`/api/inbox/${id}/unread`, { method: "POST" });
   }
 
   async archiveInbox(id: string): Promise<InboxItem> {
@@ -2214,6 +2297,26 @@ export class ApiClient {
     await this.fetch(`/api/chat/sessions/${id}`, { method: "DELETE" });
   }
 
+  // Refresh the quick-action suggestions for a session's latest assistant turn.
+  // Fire-and-forget: the server enqueues a background regeneration pass and the
+  // refreshed pills arrive over the chat:quick_actions realtime event, so the
+  // caller anchors its pending placeholder on the turn it already knows rather
+  // than on this response.
+  // Refresh the quick actions for the given assistant turn. Sends the message
+  // id the caller is refreshing so the server can atomically confirm it is still
+  // the session's latest turn (409 otherwise) — that keeps the client's pending
+  // marker aligned with the turn chat:quick_actions will resolve, with no
+  // response reconciliation needed even under a WS-before-HTTP race (MUL-5149).
+  async regenerateChatQuickActions(
+    sessionId: string,
+    messageId: string,
+  ): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/quick-actions/regenerate`, {
+      method: "POST",
+      body: JSON.stringify({ message_id: messageId }),
+    });
+  }
+
   async updateChatSession(
     id: string,
     data: { title: string } | { project_id: string | null },
@@ -2255,7 +2358,10 @@ export class ApiClient {
   }
 
   async listChatMessages(sessionId: string): Promise<ChatMessage[]> {
-    return this.fetch(`/api/chat/sessions/${sessionId}/messages`);
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${sessionId}/messages`);
+    return parseWithFallback(raw, ChatMessageListSchema, EMPTY_CHAT_MESSAGE_LIST, {
+      endpoint: "GET /api/chat/sessions/:id/messages",
+    });
   }
 
   async listChatMessagesPage(
@@ -2269,8 +2375,16 @@ export class ApiClient {
       query.set("before_id", params.before.id);
     }
     try {
-      return await this.fetch(
+      const raw: unknown = await this.fetch(
         `/api/chat/sessions/${sessionId}/messages/page?${query.toString()}`,
+      );
+      return parseWithFallback(
+        raw,
+        ChatMessagesPageSchema,
+        { messages: [], limit, has_more: false, next_cursor: null },
+        {
+          endpoint: "GET /api/chat/sessions/:id/messages/page",
+        },
       );
     } catch (err) {
       // Deployment-order compatibility: a backend deployed before this endpoint
@@ -2294,7 +2408,10 @@ export class ApiClient {
     content: string,
     attachmentIds?: string[],
   ): Promise<SendChatMessageResponse> {
-    const body: { content: string; attachment_ids?: string[] } = { content };
+    const body: {
+      content: string;
+      attachment_ids?: string[];
+    } = { content };
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
     }
@@ -2417,6 +2534,29 @@ export class ApiClient {
     return parseWithFallback(raw, OfficeConfigResponseSchema, EMPTY_OFFICE_CONFIG, {
       endpoint: "GET /api/attachments/{id}/office-config",
     });
+  }
+
+  // Fetches the raw bytes of an attachment through the unified download
+  // endpoint.
+  //
+  // This is the last-resort inline-media path for deployments where the
+  // server has no natively-loadable URL to offer. `GET /api/attachments/{id}`
+  // only upgrades `download_url` to a signed storage URL under CloudFront
+  // signing or presign mode; in **proxy** mode (self-hosted MinIO or any
+  // storage endpoint on an internal host, which the default `auto` mode
+  // classifies as proxy) it returns the auth-gated API path again. Clients
+  // that cannot ride the session cookie on a native `<img>` resource fetch —
+  // Desktop's file:// renderer, the mobile webview, split-origin web — get
+  // the bytes here and render them from an object URL instead.
+  //
+  // Routes through `fetchRaw` so it inherits the standard auth headers,
+  // 401 → handleUnauthorized recovery, request-id logging and ApiError shape.
+  // Callers must only reach for this once the metadata refresh has shown
+  // there is no signed URL: in the other modes the endpoint 302s to storage,
+  // where CORS is not configured for a JS fetch.
+  async getAttachmentBlob(id: string): Promise<Blob> {
+    const res = await this.fetchRaw(`/api/attachments/${id}/download`);
+    return res.blob();
   }
 
   // Projects
@@ -2544,6 +2684,89 @@ export class ApiClient {
     return parseWithFallback(raw, ListPropertiesResponseSchema, EMPTY_LIST_PROPERTIES_RESPONSE, {
       endpoint: "GET /api/properties",
     });
+  }
+
+  /**
+   * Quick actions catalog — one projection for every caller.
+   *
+   * The server hides nothing beyond `private` ownership; whether the caller
+   * may RUN an action is answered by runQuickAction, not here. There is
+   * deliberately no "runnable only" mode: filtering the sidebar by permission
+   * made two people looking at one issue see different sidebars with no
+   * explanation.
+   *
+   * A backend predating quick actions 404s here; treat that as an empty
+   * catalog so the sidebar section and settings tab simply do not render.
+   */
+  async listQuickActions(opts?: { includeArchived?: boolean }): Promise<ListQuickActionsResponse> {
+    const suffix = opts?.includeArchived === true ? "?include_archived=true" : "";
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(`/api/quick-actions${suffix}`);
+    } catch (error) {
+      if (error instanceof Error && "status" in error && (error as { status?: number }).status === 404) {
+        return EMPTY_LIST_QUICK_ACTIONS_RESPONSE;
+      }
+      throw error;
+    }
+    return parseWithFallback(raw, ListQuickActionsResponseSchema, EMPTY_LIST_QUICK_ACTIONS_RESPONSE, {
+      endpoint: "GET /api/quick-actions",
+    });
+  }
+
+  async createQuickAction(data: CreateQuickActionRequest): Promise<QuickAction> {
+    const raw = await this.fetch<unknown>(`/api/quick-actions`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, QuickActionSchema, EMPTY_QUICK_ACTION, {
+      endpoint: "POST /api/quick-actions",
+    });
+  }
+
+  async updateQuickAction(id: string, data: UpdateQuickActionRequest): Promise<QuickAction> {
+    const raw = await this.fetch<unknown>(`/api/quick-actions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, QuickActionSchema, EMPTY_QUICK_ACTION, {
+      endpoint: "PATCH /api/quick-actions/{id}",
+    });
+  }
+
+  async deleteQuickAction(id: string): Promise<void> {
+    await this.fetch<void>(`/api/quick-actions/${id}`, { method: "DELETE" });
+  }
+
+  /**
+   * Run a quick action against one issue. The response is a Comment carrying
+   * `trigger_outcomes` — the same shape POST /comments returns — so callers
+   * reuse one result handler and inherit `queued` / `coalesced` / `deferred` /
+   * `blocked` instead of a parallel vocabulary that would drift.
+   */
+  async runQuickAction(issueId: string, quickActionId: string): Promise<Comment> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/quick-actions/${quickActionId}/run`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, CommentSchema, EMPTY_COMMENT, {
+      endpoint: "POST /api/issues/{id}/quick-actions/{quickActionId}/run",
+    });
+  }
+
+  /**
+   * What a quick action WOULD post, without posting it. Backs the composer
+   * hand-off (⌥-click and the `/` menu) so the user can edit before sending.
+   * Returns "" when the response cannot be read — callers must treat an empty
+   * string as "insert nothing" rather than clearing the composer.
+   */
+  async renderQuickAction(issueId: string, quickActionId: string): Promise<string> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/quick-actions/${quickActionId}/render`, {
+      method: "POST",
+    });
+    const parsed = parseWithFallback(raw, QuickActionRenderSchema, { content: "" }, {
+      endpoint: "POST /api/issues/{id}/quick-actions/{quickActionId}/render",
+    });
+    return parsed.content;
   }
 
   async createProperty(data: CreatePropertyRequest): Promise<IssueProperty> {

@@ -49,7 +49,7 @@ export function TaskStatusPill({
 
   return (
     <div
-      className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground"
+      className="flex items-center gap-1.5 px-1 text-caption text-muted-foreground"
       aria-live="polite"
     >
       <AgentActivityLabel
@@ -57,7 +57,7 @@ export function TaskStatusPill({
         taskMessages={taskMessages}
         availability={availability}
       />
-      <span className="opacity-70 shrink-0">
+      <span className="opacity-70 shrink-0 tabular-nums">
         · {formatElapsedSecs(elapsedSecs)}
       </span>
     </div>

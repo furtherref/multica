@@ -28,8 +28,8 @@ import (
 //     skip sections they have no use for (Mentions, Comment Formatting,
 //     Issue Metadata, Sub-issue, ...).
 //  2. Per-section prose compression — Available Commands, Issue
-//     Metadata, Mentions, Sub-issue Creation, Comment Formatting,
-//     Always Use CLI, Background Task Safety, Task Initiator,
+//     Body Formatting, Metadata, Mentions, Sub-issue Creation,
+//     Comment Formatting, Always Use CLI, Background Task Safety, Task Initiator,
 //     Repositories, Output are all tightened. Every test-asserted phrase
 //     stays.
 //
@@ -257,7 +257,7 @@ func writeAvailableCommands(b *strings.Builder) {
 	b.WriteString("Prefer `--output json` for structured data. The default brief lists only the core agent loop and common issue create/update tasks; for everything else run `multica --help` or `multica <command> --help`.\n\n")
 	b.WriteString("### Core\n")
 	b.WriteString("- `multica issue get <id> --output json` — full issue.\n")
-	b.WriteString("- `multica issue comment list <issue-id> [--thread <comment-id> [--tail N] | --recent N] [--before <ts> --before-id <uuid>] [--since <RFC3339>] [--full] --output json` — thread-aware comment reads. Resolved threads come back folded by default on complete-thread reads (default list, `--recent`, `--thread` without `--tail`); pass `--full` to expand. Page older replies / threads with `--before`/`--before-id` (stderr labels: `Next reply cursor`, `Next thread cursor`); `--help` for full semantics.\n")
+	b.WriteString("- `multica issue comment list <issue-id> [--roots-only] [--summary] [--thread <comment-id> [--tail N] | --recent N] [--before <ts> --before-id <uuid>] [--since <RFC3339>] [--full] --output json` — thread-aware comment reads. `--recent N` caps THREADS, not comments: every returned thread carries its root plus EVERY descendant with no per-thread cap, so on an issue with fewer than N root threads it hands you the entire history apart from the resolved threads it folds. `--roots-only` (top-level comments with `reply_count` + `last_activity_at`) and `--summary` (clip each body to a preview) are how you bound a wide read; `--thread <id> --tail N` is how you bound a deep one. Resolved threads come back folded by default on complete-thread reads (default list, `--recent`, `--thread` without `--tail`); pass `--full` to expand. Page older replies / threads with `--before`/`--before-id` (stderr labels: `Next reply cursor`, `Next thread cursor`); `--help` for full semantics.\n")
 	b.WriteString("- `multica issue create --title \"...\" [--description-file <path>] [--priority X] [--status X] [--assignee X | --assignee-id <uuid>] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <RFC3339>] [--attachment <path>]` — create an issue. For agent-authored long descriptions prefer `--description-file <path>` (heredoc stdin can swallow trailing flags, #4182). Write that file inside your working directory (e.g. `./description.md`), never `/tmp` or shared paths, and treat a failed write as fatal — the CLI rejects a path outside the workdir so a stale file from another run can't leak in (MUL-4252).\n")
 	b.WriteString("- `multica issue update <id> [--title X] [--description-file <path>] [--priority X] [--status X] [--assignee X] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <RFC3339>]` — update fields; pass `--parent \"\"` to clear parent.\n")
 	b.WriteString("- `multica issue status <id> <status>` — flip status (todo / in_progress / in_review / done / blocked / backlog / cancelled).\n")
@@ -280,6 +280,15 @@ func writeAvailableCommandsQuickCreate(b *strings.Builder) {
 	b.WriteString("**Use `--output json` for structured data.** For anything beyond `issue create`, run `multica --help` or `multica <command> --help`.\n\n")
 	b.WriteString("### Core\n")
 	b.WriteString("- `multica issue create --title \"...\" [--description \"...\" | --description-file <path> | --description-stdin] [--priority X] [--status X] [--assignee X | --assignee-id <uuid>] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <RFC3339>] [--attachment <path>]` — Create a new issue; `--attachment` may be repeated. For agent-authored long descriptions, prefer `--description-file <path>` over `--description-stdin` (flags after a HEREDOC terminator can be silently swallowed, #4182). Write that file inside your working directory (e.g. `./description.md`), never `/tmp` or shared paths, and treat a failed write as fatal — the CLI rejects a path outside the workdir so a stale file from another run can't leak in (MUL-4252).\n\n")
+}
+
+// writeIssueBodyFormatting emits the default Markdown hierarchy for issue
+// descriptions. It is shared by every task kind because issue creation and
+// updates can be requested from issue, chat, autopilot, and quick-create
+// surfaces.
+func writeIssueBodyFormatting(b *strings.Builder) {
+	b.WriteString("## Issue Body Formatting\n\n")
+	b.WriteString("An issue title already serves as its H1. By default, do not add a Markdown H1 (`# ...`) to an issue body or description; start with prose or `##` subheadings instead. Only add an H1 when the user specifically requests one.\n\n")
 }
 
 // writeCommentFormatting emits the cross-platform file-first guardrail.
@@ -380,7 +389,11 @@ func writeWorkflowHeader(b *strings.Builder) {
 	b.WriteString("### Workflow\n\n")
 }
 
-// writeWorkflowChat emits the chat-mode workflow.
+// writeWorkflowChat emits the chat-mode workflow. Follow-up quick actions are
+// deliberately NOT taught here: the daemon generates them in a dedicated
+// post-completion suggestion pass (chat_suggest.go), because an optional
+// formatting instruction in this brief proved unreliable across providers and
+// long conversations.
 func writeWorkflowChat(b *strings.Builder) {
 	b.WriteString("**You are in chat mode.** A user is messaging you directly in a chat window.\n\n")
 	b.WriteString("- Respond conversationally and helpfully to the user's message\n")
@@ -446,6 +459,22 @@ func writeWorkflowAutopilot(b *strings.Builder, ctx TaskContextForEnv) {
 // "own the status arc" and "do not touch the status" can never be read as
 // peer instructions with no arbitration.
 //
+// Step 3 asks for a roots scan first, not `--recent 10` (MUL-5372). `--recent N`
+// caps THREADS, not comments: each returned thread carries its root plus every
+// descendant with no depth cap, so on an issue with fewer than N root threads it
+// returns the entire comment history. Because this step is mandatory and fires on
+// every run, making it the bulk read meant every reply turn re-read the whole
+// issue — and, on comment-triggered turns, duplicated the bounded thread read the
+// per-turn message had already pointed at (see daemon.buildCommentPrompt and
+// BuildColdCommentsHint). `--roots-only --summary` keeps the anti-stale property
+// that step exists for — the agent still sees every thread that exists — at a
+// fraction of the payload, and the drill-down stays explicit.
+//
+// The step names ONLY the two reads it mandates. Flag semantics — including the
+// `--recent N` saturation trap above — belong to `## Available Commands`, which
+// is the single discovery point for the comment-read surface; repeating them per
+// step is what made this one bloat in the first place.
+//
 // Ordinary agents own the full status arc for their issue: open with
 // in_progress, deliver with in_review. Squad leaders share the opening
 // in_progress step so the parent leaves todo as soon as coordination
@@ -466,7 +495,7 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("**Steps 1–6 — both modes**\n\n")
 	fmt.Fprintf(b, "1. Run `multica issue get %s --output json` to understand the issue context\n", ctx.IssueID)
 	fmt.Fprintf(b, "2. Run `multica issue metadata list %s --output json` to see what prior agents pinned — best-effort, empty `{}` and CLI failures are normal. See the `## Issue Metadata` section above for what to look for.\n", ctx.IssueID)
-	fmt.Fprintf(b, "3. Run `multica issue comment list %s --recent 10 --output json` to catch up on recent active comment threads — this is mandatory, not optional. Earlier comments often carry context the issue body lacks (e.g. which repo to work in, the prior agent's findings, the reason the issue was reassigned to you). Skipping this step is the most common cause of agents acting on stale or incomplete instructions. Resolved threads come back folded — `--full` to expand. If the recent window shows that older context is needed, page older threads with the stderr `Next thread cursor:` values and the matching `--before` / `--before-id` flags until you have enough history. In Reply mode the per-turn user message also tells you which thread to start from.\n", ctx.IssueID)
+	fmt.Fprintf(b, "3. Catch up on the comment history — this is mandatory, not optional, but read it in two bounded steps instead of one bulk pull. First scan every thread cheaply: `multica issue comment list %s --roots-only --summary --output json`, which tells you what discussion exists without paying for its contents. Then expand only the threads that matter: `multica issue comment list %s --thread <thread-id> --tail 30 --output json`. Earlier comments often carry context the issue body lacks (e.g. which repo to work in, the prior agent's findings, the reason the issue was reassigned to you). Skipping this step is the most common cause of agents acting on stale or incomplete instructions — so always run the scan, even when the trigger looks self-contained. In Reply mode the per-turn user message names the thread to expand first; the scan is how you decide whether any OTHER thread is also relevant. If these two reads genuinely are not enough, the rest of the read surface and its pagination cursors are documented once in `## Available Commands` above.\n", ctx.IssueID, ctx.IssueID)
 	// Gate on the model-visible set, not the full skill list: when every
 	// skill is disable-model-invocation the `## Skills` section is omitted,
 	// so the step text must not reference it (mirrors writeSkills). Skills
@@ -533,8 +562,24 @@ func writeSubIssueCreation(b *strings.Builder) {
 	b.WriteString("**Ordering with stages.** For phased plans, group children with `--stage <N>` (N ≥ 1) instead of hand-promoting the backlog chain — stage members run together, and the parent wakes once per stage. Use `--stage k --status backlog` for later stages, then `multica issue children <id>` to inspect groupings before promoting. Reach for stages whenever a plan has more than one step or a step must wait for a group.\n\n")
 }
 
-// writeSkills emits the Skills section listing skill names + descriptions.
-func writeSkills(b *strings.Builder, provider string, ctx TaskContextForEnv) {
+// writeSkills emits the Skills section: an index of invocable skill names.
+//
+// Names only, deliberately. Every runtime CLI discovers the SKILL.md files the
+// daemon writes and builds its own listing from their frontmatter, so repeating
+// the descriptions here bought a second, more expensive copy of what the model
+// already had — measured at ~3,100 tokens per brief on a real task, 40% of the
+// whole brief — and no extra routing signal (MUL-5529).
+//
+// The index itself stays because it is the one skill listing Multica controls.
+// Each CLI's own listing is theirs: its format, and whether it exists at all,
+// can change with any release.
+//
+// There is no per-provider branch. The old fallback told providers outside a
+// hardcoded list to read `.agent_context/skills/`, which was the wrong path for
+// every provider that actually reached it — grok and traecli write to
+// `.grok/skills` and `.traecli/skills` — while both discover natively and never
+// needed the pointer.
+func writeSkills(b *strings.Builder, ctx TaskContextForEnv) {
 	skills := modelVisibleSkills(ctx.AgentSkills)
 	if len(skills) == 0 {
 		return
@@ -548,26 +593,19 @@ func writeSkills(b *strings.Builder, provider string, ctx TaskContextForEnv) {
 	// reinforcement for runtimes that surface skills natively, essential
 	// for those that demote a forcing-function skill to "just another
 	// auto-discovered file".
+	//
+	// Step 1 points at the runtime's own listing rather than this section:
+	// since MUL-5529 the index below carries names only, and the
+	// descriptions live in each SKILL.md's frontmatter, which every runtime
+	// CLI already surfaces.
 	b.WriteString("**Discovery is not application.** The skills below are installed for you, but installing them does NOT apply them. Before you write or modify any code, move an issue to `in_review`, or post a code review, you MUST complete this protocol — it is mandatory, not optional:\n\n")
-	b.WriteString("1. Read each skill's description below.\n")
+	b.WriteString("1. Read the description of each skill listed below, from your runtime's own skill listing or the skill's `SKILL.md` frontmatter.\n")
 	b.WriteString("2. For every skill whose description matches your task (even a loose match), open its `SKILL.md` and read it in full.\n")
 	b.WriteString("3. Follow the references that `SKILL.md` points to that are relevant to your change. For any code-writing or code-review task this ALWAYS includes the applicable coding-standards reference (comments/Javadoc, naming, etc.), not only the task-type-specific reference (e.g. unit-test).\n")
 	b.WriteString("4. Comply with every required rule the skill states — rules marked Mandatory, must/required language, Principles, and checklist items alike (skills label requirements differently; do not assume a `Mandatory:` tag). If one cannot be met, state which one and why in your result comment.\n\n")
-	switch provider {
-	case "claude", "codebuddy", "codex", "copilot", "opencode", "deveco", "openclaw", "hermes", "pi", "cursor", "kimi", "kiro", "qoder", "antigravity", "qwen":
-		// Hermes discovers these from its per-task HERMES_HOME/skills (seeded by
-		// the daemon), so it needs the same "discovered automatically" framing
-		// as the other native-discovery runtimes rather than a path pointer.
-		b.WriteString("You have the following skills installed (discovered automatically):\n\n")
-	default:
-		b.WriteString("Detailed skill instructions are in `.agent_context/skills/`. Each subdirectory contains a `SKILL.md`.\n\n")
-	}
+	b.WriteString("You have the following skills installed (discovered automatically):\n\n")
 	for _, skill := range skills {
-		if desc := strings.TrimSpace(skill.Description); desc != "" {
-			fmt.Fprintf(b, "- **%s** — %s\n", skill.Name, desc)
-		} else {
-			fmt.Fprintf(b, "- **%s**\n", skill.Name)
-		}
+		fmt.Fprintf(b, "- **%s**\n", skill.Name)
 	}
 	b.WriteString("\n")
 }
@@ -577,6 +615,10 @@ func writeMentions(b *strings.Builder) {
 	b.WriteString("## Mentions\n\n")
 	b.WriteString("Mention links are **side-effecting actions**:\n\n")
 	b.WriteString("- `[MUL-123](mention://issue/<issue-id>)` — clickable link (no side effect)\n")
+	// Projects have no `MUL-123`-style identifier to autolink, so unless the
+	// agent writes this form (or pastes the project URL, which the reader's
+	// client unfurls into the same chip) a project reference stays dead text.
+	b.WriteString("- `[Project Name](mention://project/<project-id>)` — clickable link (no side effect)\n")
 	b.WriteString("- `[@Name](mention://member/<user-id>)` — **notifies a human**\n")
 	b.WriteString("- `[@Name](mention://agent/<agent-id>)` — **enqueues a new run for that agent**\n\n")
 	b.WriteString("### When NOT to use a mention link\n\n")
@@ -676,13 +718,14 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 //	Section               | comment | assign | autopilot | quick_create | chat
 //	----------------------+---------+--------+-----------+--------------+------
 //	Available Commands    |   full  |  full  |   full    |   minimal    | full
+//	Issue Body Formatting |    ✓    |   ✓    |     ✓     |      ✓       |  ✓
 //	Comment Formatting    |    ✓    |   ✓    |     —     |      —       |  —
 //	Repositories          |    △    |   △    |     △     |      —       |  △
 //	Project Context       |    △    |   △    |     △     |      △       |  △
 //	Issue Metadata        |    ✓    |   ✓    |     —     |      —       |  —
 //	Instruction Precedence|    —    |   ✓    |     —     |      —       |  —
 //	Sub-issue Creation    |    ✓    |   ✓    |     —     |      —       |  —
-//	Skills                |    ✓    |   ✓    |     ✓    |      —       |  ✓
+//	Skills                |    ✓    |   ✓    |     ✓    |      ✓       |  ✓
 //	Mentions              |    ✓    |   ✓    |     —     |      —       |  —
 //	Attachments           |    ✓    |   ✓    |     —     |      —       |  —
 //
@@ -710,6 +753,7 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	default:
 		writeAvailableCommands(&b)
 	}
+	writeIssueBodyFormatting(&b)
 
 	if kind == kindIssue {
 		writeCommentFormatting(&b)
@@ -745,9 +789,10 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 		writeSubIssueCreation(&b)
 	}
 
-	if kind != kindQuickCreate {
-		writeSkills(&b, provider, ctx)
-	}
+	// Every kind, quick-create included. Quick-create used to be skipped here
+	// and carried its own copy in issue_context.md instead; now that both are
+	// the same names-only index, the brief is the one that survives.
+	writeSkills(&b, ctx)
 
 	if kind == kindIssue {
 		writeMentions(&b)

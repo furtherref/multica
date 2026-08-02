@@ -64,8 +64,11 @@ func TestSkillsSectionEnforcesActivationProtocol(t *testing.T) {
 			"must/required language",
 			"Principles",
 			"checklist items",
-			// description rendered inline as the per-skill trigger signal
-			"- **Backend Standards** — Use when writing Java backend code",
+			// The index is names-only since MUL-5529, and the name is the
+			// on-disk slug so the brief, the directory and the SKILL.md
+			// frontmatter all agree. Descriptions now reach the model through
+			// each runtime CLI's own listing of that frontmatter.
+			"- **backend-standards**",
 		} {
 			if !strings.Contains(out, want) {
 				t.Errorf("[provider=%s] Skills section missing %q", provider, want)
@@ -106,18 +109,31 @@ func TestAssignmentWorkflowPointsToSkillProtocol(t *testing.T) {
 	}
 }
 
-// TestWriteContextFilesIncludesSkillDescription pins that issue_context.md's
-// Agent Skills listing carries each skill's description (the trigger signal),
-// not just the bare name — so the agent can match a skill to its task.
-func TestWriteContextFilesIncludesSkillDescription(t *testing.T) {
+// TestSkillIndexReachesTheBriefNotTheContextFile pins where an installed skill
+// is named for the model. MUL-5529 made the runtime brief the single listing
+// Multica renders and cut the duplicate out of issue_context.md — descriptions
+// now come from each SKILL.md's frontmatter, which every runtime CLI surfaces
+// itself. What this fork needs to stay true is the pairing: the brief must
+// still name the skill AND carry the forcing-function protocol that turns
+// "installed" into "read and applied", while issue_context.md carries neither.
+func TestSkillIndexReachesTheBriefNotTheContextFile(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
 	ctx := TaskContextForEnv{
 		IssueID: "desc-test",
 		AgentSkills: []SkillContextForEnv{
 			{Name: "Frontend Standards", Description: "Use when working on Vue3 frontend code", Content: "x"},
 		},
 	}
+
+	brief := buildMetaSkillContent("codex", ctx)
+	if !strings.Contains(brief, "- **frontend-standards**") {
+		t.Errorf("runtime brief missing the skill index entry; got:\n%s", brief)
+	}
+	if !strings.Contains(brief, "Discovery is not application") {
+		t.Errorf("runtime brief missing the skill activation protocol; got:\n%s", brief)
+	}
+
+	dir := t.TempDir()
 	if err := writeContextFiles(dir, "", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
@@ -125,8 +141,8 @@ func TestWriteContextFilesIncludesSkillDescription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read issue_context.md: %v", err)
 	}
-	if !strings.Contains(string(content), "- **Frontend Standards** — Use when working on Vue3 frontend code") {
-		t.Errorf("issue_context.md missing skill description; got:\n%s", content)
+	if strings.Contains(string(content), "frontend-standards") {
+		t.Errorf("issue_context.md must no longer duplicate the skill list (MUL-5529); got:\n%s", content)
 	}
 }
 
