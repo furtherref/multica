@@ -15,6 +15,17 @@ interface Props {
   availability: AgentAvailability | undefined;
 }
 
+// A deferred chat task is an older turn waiting for its retry backoff, not
+// active model work. Keep it authoritative over the stream-derived "running"
+// status so the pill never regresses to a misleading running label.
+export function effectiveTaskStatus(
+  status: string | undefined,
+  taskMessages: readonly TaskMessagePayload[],
+): string | undefined {
+  if (status === "deferred") return status;
+  return taskMessages.length > 0 ? "running" : status;
+}
+
 export function TaskStatusPill({
   pendingTask,
   taskMessages,
@@ -41,10 +52,9 @@ export function TaskStatusPill({
     return () => clearInterval(timer);
   }, []);
 
-  // Effective status — defense-in-depth derive on top of the cache. If any
-  // task_message has streamed in, the daemon has by definition started
-  // running; we trust that observation over a stale cache.
-  const status = taskMessages.length > 0 ? "running" : pendingTask.status;
+  // Effective status — streamed messages prove a task has started, except
+  // when the server has since moved that same task into retry backoff.
+  const status = effectiveTaskStatus(pendingTask.status, taskMessages);
   const elapsedSecs = Math.max(0, Math.floor((now - anchor) / 1000));
 
   return (

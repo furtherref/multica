@@ -43,6 +43,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -53,6 +54,8 @@ import {
   PreviewUnsupportedError,
 } from "@multica/core/api";
 import {
+  ChevronLeft,
+  ChevronRight,
   Download,
   ExternalLink,
   FileText,
@@ -76,6 +79,7 @@ import {
 } from "./utils/preview";
 import { useDownloadAttachment } from "./use-download-attachment";
 import { useAttachmentHtmlText } from "./hooks/use-attachment-html-text";
+import { useResignedInlineMediaURL } from "./hooks/use-inline-media-url";
 import { useZoomCanvas, type ZoomCanvasApi } from "./hooks/use-zoom-canvas";
 import { ZoomCanvas, ZoomControls } from "./zoom-canvas";
 import type { Size } from "./utils/zoom-transform";
@@ -166,10 +170,29 @@ function fileTypeLabel(filename: string, contentType: string): string {
 // Public props
 // ---------------------------------------------------------------------------
 
+/**
+ * Position of this preview inside a surface's image sequence (MUL-5752).
+ *
+ * `onPrev` / `onNext` are undefined AT the boundaries — the sequence does not
+ * wrap, so first/last simply disable the corresponding control. Supplied only
+ * by `ImageSequenceProvider`; a standalone preview leaves this unset and
+ * renders exactly as before.
+ */
+export interface PreviewSequence {
+  /** 0-based. Rendered as `index + 1` of `total`. */
+  index: number;
+  total: number;
+  onPrev?: () => void;
+  onNext?: () => void;
+}
+
 interface AttachmentPreviewModalProps {
   source: PreviewSource;
   open: boolean;
   onClose: () => void;
+  sequence?: PreviewSequence;
+  /** Fired when the image kind fails to load — lets a gallery skip the frame. */
+  onImageError?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +312,80 @@ function getFullscreenBounds(fallback: PreviewBounds): PreviewBounds {
 }
 
 // ---------------------------------------------------------------------------
+// Image swap without a blank frame
+// ---------------------------------------------------------------------------
+
+// Returns the last image URL that finished decoding, holding the previous one
+// on screen while the next downloads. Swapping `<img src>` (or remounting the
+// panel) the moment navigation happens blanks the canvas for the full
+// network+decode gap; decode-then-swap is the standard lightbox fix.
+//
+// On load failure the hook reports the error and keeps the last good frame —
+// when the whole remaining sequence is broken the reader stays on the last
+// image that worked (with the "unavailable" toast) instead of a broken glyph.
+//
+// Engines without `Image.decode()` (jsdom in tests) swap immediately: the old
+// pre-MUL-5752 behaviour, traded back for correctness there.
+function useSettledImageURL(
+  targetUrl: string,
+  enabled: boolean,
+  onLoadError?: () => void,
+): string {
+  const [settled, setSettled] = useState(targetUrl);
+  const onErrorRef = useRef(onLoadError);
+  onErrorRef.current = onLoadError;
+
+  useEffect(() => {
+    if (!enabled) return;
+    if (!targetUrl) {
+      setSettled(targetUrl);
+      return;
+    }
+    let cancelled = false;
+    const probe = new window.Image();
+    if (typeof probe.decode !== "function") {
+      setSettled(targetUrl);
+      return;
+    }
+    probe.src = targetUrl;
+    probe.decode().then(
+      () => {
+        if (!cancelled) setSettled(targetUrl);
+      },
+      () => {
+        // Rejection covers both load failure and undecodable bytes.
+        if (!cancelled) onErrorRef.current?.();
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [targetUrl, enabled]);
+
+  return enabled ? settled : targetUrl;
+}
+
+// Warms the browser cache for a sequence neighbour so paging to it swaps
+// without a visible wait: runs the same URL re-sign the panel itself would,
+// then fetches the bytes through a detached <img>. Renders nothing.
+export function PreviewImagePrefetch({ source }: { source: PreviewSource }) {
+  const state = normalize(source);
+  const url = useResignedInlineMediaURL(
+    state.attachmentId ?? undefined,
+    state.mediaUrl,
+    true,
+  );
+
+  useEffect(() => {
+    if (!url) return;
+    const probe = new window.Image();
+    probe.src = url;
+  }, [url]);
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Modal — frame + dispatch
 // ---------------------------------------------------------------------------
 
@@ -298,7 +395,10 @@ export function AttachmentPreviewModal({
   source,
   open,
   onClose,
-}: AttachmentPreviewModalProps) {
+  onExitComplete,
+  sequence,
+  onImageError,
+}: AttachmentPreviewModalProps & { onExitComplete?: () => void }) {
   const download = useDownloadAttachment();
   const state = normalize(source);
   const [fullscreen, setFullscreen] = useState(false);
@@ -310,14 +410,40 @@ export function AttachmentPreviewModal({
   const slug = useWorkspaceSlug();
   const navigation = useNavigation();
 
+  const onPrev = sequence?.onPrev;
+  const onNext = sequence?.onNext;
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      // Arrow navigation only when this preview is part of a sequence. The
+      // zoom canvas gives its horizontal arrows up in that case (see
+      // `horizontalArrowPan` below), so exactly one of the two responds.
+      // Modified presses stay with the browser / OS.
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (e.key === "ArrowLeft" && onPrev) {
+        e.preventDefault();
+        onPrev();
+      } else if (e.key === "ArrowRight" && onNext) {
+        e.preventDefault();
+        onNext();
+      }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [open, onClose]);
+  }, [open, onClose, onPrev, onNext]);
+
+  // Fork's window unmounts immediately on close (no exit animation to wait
+  // for — see the `!open` early return below), so "exit complete" is just
+  // the next render after `open` flips to false. `ImageSequenceProvider`
+  // uses this to clear its session once the modal has actually left the DOM.
+  useEffect(() => {
+    if (!open) onExitComplete?.();
+  }, [open, onExitComplete]);
 
   // When the modal is full-screen on macOS desktop, its header bar reaches the
   // window's top-left corner where the native traffic-light controls float
@@ -401,6 +527,17 @@ export function AttachmentPreviewModal({
           className="flex h-full flex-col"
           onClick={(e) => e.stopPropagation()}
         >
+          {/* Below the `open &&` gate on purpose: the panel's zoom state is
+              destroyed on close, so every open re-fits instead of restoring a
+              stale zoom from the last time this image was viewed.
+
+              Deliberately NOT keyed on the file: remounting the panel on
+              sequence navigation blanks the canvas for the whole
+              network+decode gap. The panel persists and swaps the image only
+              once the next one has decoded (`useSettledImageURL`). Zoom still
+              resets per image — `natural` passes through null on every swap,
+              so the canvas re-fits even across a run of same-resolution
+              screenshots. */}
           <PreviewPanel
             kind={kind}
             source={source}
@@ -410,6 +547,8 @@ export function AttachmentPreviewModal({
             onClose={onClose}
             onDownload={handleDownload}
             onOpenInNewTab={canOpenInNewTab ? handleOpenInNewTab : undefined}
+            sequence={sequence}
+            onImageError={onImageError}
           />
         </div>
       </Rnd>
@@ -434,6 +573,8 @@ function PreviewPanel({
   onClose,
   onDownload,
   onOpenInNewTab,
+  sequence,
+  onImageError,
 }: {
   kind: PreviewKind | null;
   source: PreviewSource;
@@ -443,11 +584,27 @@ function PreviewPanel({
   onClose: () => void;
   onDownload: () => void;
   onOpenInNewTab?: () => void;
+  sequence?: PreviewSequence;
+  onImageError?: () => void;
 }) {
   const { t } = useT("editor");
   const fullscreenLabel = fullscreen
     ? t(($) => $.file_card.exit_full_screen)
     : t(($) => $.file_card.enter_full_screen);
+
+  // Gallery navigation hands this panel an attachment the reader never
+  // clicked, so — unlike the click-through path, where <Attachment> had
+  // already upgraded the URL — the modal has to run the re-sign itself. A
+  // no-op for URLs that are already loadable (signed CDN, public storage).
+  const targetUrl = useResignedInlineMediaURL(
+    state.attachmentId ?? undefined,
+    state.mediaUrl,
+    kind === "image",
+  );
+  // The previous image stays on the canvas until this one has decoded — the
+  // swap itself is what used to flash. Also absorbs the re-sign URL upgrade
+  // (raw -> signed) without a second visible load.
+  const mediaUrl = useSettledImageURL(targetUrl, kind === "image", onImageError);
 
   // Natural size is carried with the URL it was measured from, so a panel
   // reused for a different attachment can never fit the new image against the
@@ -456,8 +613,14 @@ function PreviewPanel({
     null,
   );
   const natural =
-    kind === "image" && measured?.url === state.mediaUrl ? measured.size : null;
-  const canvas = useZoomCanvas({ content: natural });
+    kind === "image" && measured?.url === mediaUrl ? measured.size : null;
+  // Left / right arrows belong to the sequence when there is one; the canvas
+  // keeps them for panning otherwise. Vertical arrows always pan, and a
+  // zoomed image still pans horizontally by drag / wheel.
+  const canvas = useZoomCanvas({
+    content: natural,
+    horizontalArrowPan: !sequence,
+  });
 
   const handleNaturalSize = useCallback(
     (url: string, size: Size) => {
@@ -490,9 +653,42 @@ function PreviewPanel({
           className="ml-auto flex items-center gap-1 [-webkit-app-region:no-drag]"
           onMouseDown={(e) => e.stopPropagation()}
         >
-          {/* Only once the image has been measured: without a natural size
-              there is no canvas behind these buttons to drive. */}
-          {natural && <ZoomControls canvas={canvas} className="mr-1" />}
+          {/* Navigation leads the action cluster, arrows off the image
+              (they covered exactly the content being looked at) and the
+              counter between the arrows it describes. min-w keeps the
+              arrows from shifting as digit counts change. */}
+          {sequence && (
+            <div className="mr-1 flex shrink-0 items-center gap-0.5">
+              <SequenceButton
+                side="prev"
+                label={t(($) => $.image.previous)}
+                onClick={sequence.onPrev}
+              />
+              <span
+                className="min-w-10 select-none text-center text-caption tabular-nums text-muted-foreground"
+                aria-live="polite"
+              >
+                {t(($) => $.image.sequence_position, {
+                  index: sequence.index + 1,
+                  total: sequence.total,
+                })}
+              </span>
+              <SequenceButton
+                side="next"
+                label={t(($) => $.image.next)}
+                onClick={sequence.onNext}
+              />
+            </div>
+          )}
+          {/* Standalone preview keeps the original gate — no controls until
+              the image is measured, and none at all for content that has no
+              intrinsic size to drive. In a sequence they stay mounted
+              (disabled while un-measured) instead: `natural` passes through
+              null on every swap, and controls that vanish and reappear shift
+              the buttons to their right on every navigation. */}
+          {kind === "image" && (natural || sequence) && (
+            <ZoomControls canvas={canvas} className="mr-1" disabled={!natural} />
+          )}
           {onOpenInNewTab && (
             <button
               type="button"
@@ -542,16 +738,18 @@ function PreviewPanel({
           instead of scrolling. */}
       <div
         className={cn(
-          "min-h-0 flex-1 bg-background",
+          "relative min-h-0 flex-1 bg-background",
           kind === "image" ? "flex flex-col overflow-hidden" : "overflow-auto",
         )}
       >
         {kind === "image" ? (
           <ImagePreview
             state={state}
+            mediaUrl={mediaUrl}
             canvas={canvas}
             natural={natural}
             onNaturalSize={handleNaturalSize}
+            onError={onImageError}
           />
         ) : (
           <PreviewContent
@@ -567,22 +765,60 @@ function PreviewPanel({
 }
 
 // ---------------------------------------------------------------------------
+// Sequence controls
+// ---------------------------------------------------------------------------
+
+// Header chevrons in the same idiom as the download/close buttons. `onClick`
+// undefined means "boundary reached": the button stays mounted but disabled,
+// so the reader can see they are at one end instead of the control vanishing
+// and shifting the counter into its place. `enabled:hover` so the disabled
+// state gets no hover feedback (and no pointer-events-none — a disabled
+// control should still catch the cursor and read as "nothing here").
+function SequenceButton({
+  side,
+  label,
+  onClick,
+}: {
+  side: "prev" | "next";
+  label: string;
+  onClick?: () => void;
+}) {
+  const Icon = side === "prev" ? ChevronLeft : ChevronRight;
+  return (
+    <button
+      type="button"
+      className="rounded-md p-1.5 text-muted-foreground transition-colors enabled:hover:bg-secondary enabled:hover:text-foreground disabled:opacity-30"
+      title={label}
+      aria-label={label}
+      disabled={!onClick}
+      onClick={onClick}
+    >
+      <Icon className="size-4" />
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Image — zoom canvas
 // ---------------------------------------------------------------------------
 
 function ImagePreview({
   state,
+  mediaUrl,
   canvas,
   natural,
   onNaturalSize,
+  onError,
 }: {
   state: PreviewState;
+  mediaUrl: string;
   canvas: ZoomCanvasApi;
   natural: Size | null;
   onNaturalSize: (url: string, size: Size) => void;
+  onError?: () => void;
 }) {
   const { t } = useT("editor");
-  const url = state.mediaUrl;
+  const url = mediaUrl;
 
   const readNaturalSize = useCallback(
     (image: HTMLImageElement | null) => {
@@ -612,6 +848,7 @@ function ImagePreview({
         // so that event never fires — measure from the ref as well.
         ref={readNaturalSize}
         onLoad={(e) => readNaturalSize(e.currentTarget)}
+        onError={onError}
         src={url}
         alt={state.filename}
         className={cn(

@@ -39,6 +39,9 @@ interface TranscriptButtonProps {
   activity?: string;
   className?: string;
   title?: string;
+  renderButton?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   /**
    * Optional content rendered above the transcript event list. Used to
    * surface autopilot webhook payloads inline with the run history.
@@ -60,9 +63,14 @@ export function TranscriptButton({
   activity,
   className,
   title = "View transcript",
+  renderButton = true,
+  open: controlledOpen,
+  onOpenChange: controlledOnOpenChange,
   headerSlot,
 }: TranscriptButtonProps) {
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = controlledOnOpenChange ?? setUncontrolledOpen;
 
   // Two modes share one transcript surface:
   //   - A live card may hand us `items` directly (already accumulating via WS
@@ -119,9 +127,12 @@ export function TranscriptButton({
     setCatchupStatus("idle");
   }, [task.id]);
 
+  // Catch up on open, and again the moment the task reaches a terminal
+  // state — the shared cache can still be missing the final tail of
+  // messages a completed task never re-broadcasts over WS.
   useEffect(() => {
     if (open && canFetch) void runCatchup();
-  }, [open, canFetch, runCatchup]);
+  }, [open, canFetch, runCatchup, isLive]);
 
   const rawItems = useMemo(
     () => providedItems ?? buildTimeline(messages ?? []),
@@ -162,29 +173,31 @@ export function TranscriptButton({
     return () => {
       window.removeEventListener("multica:navigate", handleGlobalNavigate);
     };
-  }, [open]);
+  }, [open, setOpen]);
 
   return (
     <>
-      <Tooltip>
-        <TooltipTrigger
-          render={<button type="button" />}
-          onClick={handleClick}
-          disabled={awaitingFirstLoad}
-          aria-label={title}
-          className={cn(
-            "flex items-center justify-center rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors disabled:opacity-50",
-            className,
-          )}
-        >
-          {awaitingFirstLoad ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <ScrollText className="h-3.5 w-3.5" />
-          )}
-        </TooltipTrigger>
-        <TooltipContent>{title}</TooltipContent>
-      </Tooltip>
+      {renderButton ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={<button type="button" />}
+            onClick={handleClick}
+            disabled={awaitingFirstLoad}
+            aria-label={title}
+            className={cn(
+              "flex items-center justify-center rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors disabled:opacity-50",
+              className,
+            )}
+          >
+            {awaitingFirstLoad ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ScrollText className="h-3.5 w-3.5" />
+            )}
+          </TooltipTrigger>
+          <TooltipContent>{title}</TooltipContent>
+        </Tooltip>
+      ) : null}
 
       {dialogReady && (
         <AgentTranscriptDialog

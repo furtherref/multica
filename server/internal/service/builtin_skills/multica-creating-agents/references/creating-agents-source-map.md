@@ -67,8 +67,9 @@ only.
 | `description` ≤ 255 code points | 627–629 | `utf8.RuneCountInString(req.Description) > maxAgentDescriptionLength` → 400 |
 | `runtime_id` required | 631–633 | `if req.RuntimeID == ""` → 400 "runtime_id is required" |
 | `runtime_id` must resolve in workspace | 642–658 | parsed + `GetAgentRuntimeForWorkspace`; unknown → 400 "invalid runtime_id" |
-| `thinking_level` provider-level validation | 1142–1145 | `!agent.IsKnownThinkingValue(runtime.Provider, req.ThinkingLevel)` → 400; fixed providers use an enum, Codex/OpenCode/Copilot use safe-token syntax, and per-model gaps are deferred to daemon (MUL-2339) |
-| `service_tier` provider-level validation | 1146–1147 | `!agent.IsKnownServiceTier(runtime.Provider, req.ServiceTier)` → 400; non-empty values are Codex-only safe tokens; exact per-model support is daemon-owned |
+| `thinking_level` provider-level validation | 1205–1206 | `!agent.IsKnownThinkingValue(runtime.Provider, req.ThinkingLevel)` → 400; fixed providers use an enum, Codex/OpenCode/Copilot use safe-token syntax, and per-model gaps are deferred to daemon (MUL-2339) |
+| `thinking_level` rejection copy | `agent.go` `thinkingLevelRejection` / `existingThinkingLevelRejection` | Splits "runtime has no reasoning control" from "unrecognised token" so a runtime-capability 400 does not read as a typo; both carry-over branches point at `thinking_level=""` (MUL-5770) |
+| `service_tier` provider-level validation | `agent.go` create/update paths | Non-empty values are Codex-only safe tokens; exact per-model support is daemon-owned |
 | Defaults: `{}` config/env, `[]` args | 688–701 | `RuntimeConfig`→`{}`, `CustomEnv`→`{}`, `CustomArgs`→`[]` when nil, before insert |
 | `visibility` default | 635–636 | `if req.Visibility == "" { req.Visibility = "private" }` — access-control field, not the runtime prompt |
 | `max_concurrent_tasks` create/default validation | `agent.go`; `agent_validation.go`; `internal/agentconfig/concurrency.go` | Shared 1–50 validator; a missing or explicit `null` field defaults to 6, while an explicitly supplied numeric 0/out-of-range value returns 400 |
@@ -95,12 +96,13 @@ only.
 | Codex model-list entry point | `models.go` 94–103 | `ListModels("codex")` uses cached daemon-local discovery instead of returning the fallback catalog unconditionally |
 | Codex fallback catalog | `models.go` 301–354 | Used for Codex <0.122.0 and failed/malformed discovery; includes current verified visible models plus legacy `gpt-5.3-codex`, with a separate `Thinking` catalog on every model |
 | Codex discovery version gate | `thinking.go` 280, 306–337 | `codex debug models --bundled` is used only for parseable versions ≥0.122.0; unsupported versions and command/parse/empty failures return the static model + thinking fallback |
-| Codex catalog projection | `thinking.go` `parseCodexModelCatalog` (363) | Hidden models are excluded; visible `slug`/`display_name` rows, each row's `supported_reasoning_levels`/`default_reasoning_level`, and `service_tiers` metadata are preserved |
-| Copilot effort discovery | `thinking.go` 573–684 | `copilot --help`'s quoted `(choices: ...)` list is parsed into a uniform catalog shared by every discovered model (injected via `--reasoning-effort`); a CLI without the flag yields no levels so the daemon never injects it |
-| Per-model thinking validation | `thinking.go` `ValidateThinkingLevel` (745) | Accepts only values in the explicit model's `Thinking.SupportedLevels`; an empty Codex model fails closed because its effective `config.toml` model is unknown |
-| Per-model service-tier validation | `thinking.go` `ValidateServiceTier` (800) | Accepts only a tier advertised for the explicit Codex model; empty model fails closed because config.toml is unknown |
-| Dynamic Codex/OpenCode/Copilot thinking token gate | `thinking.go` `IsKnownThinkingValue` (885) | Server persistence accepts syntactically safe Codex/OpenCode/Copilot tokens so new catalog values do not require a Multica release; exact support remains a daemon-local per-model check |
-| Dynamic Codex service-tier token gate | `thinking.go` `IsKnownServiceTier` (903) | Server persistence accepts syntactically safe Codex tokens for service tier; other providers do not currently expose tiers |
+| Codex catalog projection | `thinking.go` `parseCodexModelCatalog` | Hidden models are excluded; visible `slug`/`display_name` rows, each row's `supported_reasoning_levels`/`default_reasoning_level`, and `service_tiers` metadata are preserved |
+| Copilot effort discovery | `thinking.go` | `copilot --help`'s quoted `(choices: ...)` list is parsed into a uniform catalog shared by every discovered model (injected via `--reasoning-effort`); a CLI without the flag yields no levels so the daemon never injects it |
+| Per-model thinking validation | `thinking.go` `ValidateThinkingLevel` | Accepts only values in the explicit model's `Thinking.SupportedLevels`; an empty Codex model fails closed because its effective `config.toml` model is unknown |
+| Per-model service-tier validation | `thinking.go` `ValidateServiceTier` | Accepts only a tier advertised for the explicit Codex model; empty model fails closed because config.toml is unknown |
+| Dynamic Codex/OpenCode/Copilot thinking token gate | `thinking.go` `IsKnownThinkingValue` | Server persistence accepts syntactically safe Codex/OpenCode/Copilot tokens so new catalog values do not require a Multica release; exact support remains a daemon-local per-model check |
+| Dynamic Codex service-tier token gate | `thinking.go` `IsKnownServiceTier` | Server persistence accepts syntactically safe Codex tokens for service tier; other providers do not currently expose tiers |
+| Runtime reasoning capability | `thinking.go` `ThinkingControlSupported` | True for the fixed-enum providers plus Codex/OpenCode. False for runtimes with no effort dial on the surface the daemon drives — Hermes' ACP adapter never carries `reasoning_config` onto a session, so its CLI-level `agent.reasoning_effort` cannot be reached from Multica (verified against Hermes Agent v0.18.2, MUL-5770) |
 | Daemon invalid-combination handling | `internal/daemon/daemon.go` 3860–3892 | Before execution, invalid `(provider, model, thinking_level)` combinations log a warning and omit the override rather than failing the task |
 
 ## Env endpoint — `server/internal/handler/agent_env.go`

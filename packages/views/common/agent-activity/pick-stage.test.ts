@@ -2,6 +2,10 @@ import { describe, it, expect } from "vitest";
 import { pickStageKeys } from "./pick-stage";
 
 describe("pickStageKeys", () => {
+  it("returns retrying while a deferred chat retry waits for backoff", () => {
+    expect(pickStageKeys("deferred", [], "offline")).toEqual({ stageKey: "retrying" });
+  });
+
   it("returns queued when status is queued and agent is online", () => {
     expect(pickStageKeys("queued", [], "online")).toEqual({ stageKey: "queued" });
   });

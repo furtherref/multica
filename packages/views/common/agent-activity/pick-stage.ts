@@ -9,6 +9,7 @@ import type { TaskMessagePayload } from "@multica/core/types";
 export type StageKey =
   | "offline"
   | "reconnecting"
+  | "retrying"
   | "queued"
   | "waiting_local_directory"
   | "starting_up"
@@ -67,6 +68,10 @@ export function pickStageKeys(
   // Highest-priority signal while running — overrides the message-derived stage.
   activity?: string,
 ): { stageKey: StageKey; toolKey?: ToolKey; static?: boolean } {
+  // A deferred chat task is an older turn waiting for its retry backoff, not
+  // active model work. Keep this ahead of availability hints so the specific
+  // retry state never degrades to a misleading queued/thinking label.
+  if (status === "deferred") return { stageKey: "retrying" };
   if (
     (status === "queued" || status === "dispatched") &&
     availability === "offline"
