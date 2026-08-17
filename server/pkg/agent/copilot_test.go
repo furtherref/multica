@@ -1494,7 +1494,7 @@ func TestAnnotateCopilotThinking(t *testing.T) {
 		{ID: "gpt-5.5", Provider: "openai"},
 		{ID: "claude-opus-4.7", Provider: "anthropic"},
 	}
-	annotateCopilotThinking(context.Background(), models, fake)
+	annotateCopilotThinking(context.Background(), models, NewCommand(fake, nil))
 
 	for _, m := range models {
 		if m.Thinking == nil {

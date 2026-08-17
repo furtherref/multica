@@ -26,6 +26,8 @@ const (
 	OutcomeDropped       Outcome = "dropped"
 	OutcomeNeedsBinding  Outcome = "needs_binding"
 	OutcomeIngested      Outcome = "ingested"
+	OutcomeFreshPending  Outcome = "fresh_pending"
+	OutcomeIssueUsage    Outcome = "issue_usage"
 	OutcomeAgentOffline  Outcome = "agent_offline"
 	OutcomeAgentArchived Outcome = "agent_archived"
 )
@@ -62,6 +64,10 @@ type Result struct {
 	// because the shared duplicate guard found the active IssueID above.
 	// Repliers render this as a business conflict, never as an internal error.
 	IssueDuplicate bool
+	// IssueUsageHadMedia marks a title-less /issue whose current inbound
+	// message also carried downloadable media. Repliers use it to tell the
+	// sender to include that media again with the corrected command.
+	IssueUsageHadMedia bool
 	// runScheduled reports whether this ingest scheduled a normal chat run.
 	// It is Router-internal state: repliers must continue to use Outcome.
 	runScheduled bool
@@ -72,9 +78,12 @@ type Result struct {
 // opaquely so the set's other ports (binder, replier, typing) reuse it without
 // a re-fetch; the Router never reads Platform.
 type ResolvedInstallation struct {
-	ID              pgtype.UUID
-	WorkspaceID     pgtype.UUID
-	AgentID         pgtype.UUID
+	ID          pgtype.UUID
+	WorkspaceID pgtype.UUID
+	AgentID     pgtype.UUID
+	// RouteRevision is an adapter-owned optimistic fence for platforms that
+	// route one installation to multiple agents. Zero means no such fence.
+	RouteRevision   int64
 	InstallerUserID pgtype.UUID
 	Active          bool
 	Platform        any
@@ -104,6 +113,8 @@ type AppendParams struct {
 	SessionID           pgtype.UUID
 	Sender              pgtype.UUID
 	InstallationID      pgtype.UUID
+	AgentID             pgtype.UUID
+	RouteRevision       int64
 	Message             channel.InboundMessage
 	ClaimToken          pgtype.UUID
 	MediaPendingSeconds float64
@@ -158,6 +169,15 @@ var (
 	// ErrSenderNotMember: the sender is bound but not a workspace member →
 	// non_workspace_member drop.
 	ErrSenderNotMember = errors.New("engine: sender not a workspace member")
+	// ErrTargetAgentArchived: a platform-specific route resolves to an archived
+	// agent. The route remains intact so restoring the agent restores delivery;
+	// the Router returns the normal archived-agent product outcome without
+	// creating a session or enqueueing work while the target is unavailable.
+	ErrTargetAgentArchived = errors.New("engine: routed agent is archived")
+	// ErrRouteChanged asks the Router to resolve the platform route again and
+	// retry the same claimed message. The durable append must return this before
+	// writing when an administrator changed the route revision concurrently.
+	ErrRouteChanged = errors.New("engine: route changed")
 	// ErrDuplicate: Claim found the message already processed / in flight →
 	// duplicate drop.
 	ErrDuplicate = errors.New("engine: duplicate message")
@@ -181,6 +201,15 @@ type IdentityResolver interface {
 	ResolveSender(ctx context.Context, inst ResolvedInstallation, msg channel.InboundMessage) (ResolvedIdentity, error)
 }
 
+// ValidatedInboundResolver runs only after the group-addressing and sender
+// identity/membership gates have passed. Platforms use this optional seam for
+// durable discovery that must never be triggered by rejected callbacks. It may
+// also finalize routing fields on the installation returned to the remaining
+// pipeline.
+type ValidatedInboundResolver interface {
+	ResolveValidatedInbound(ctx context.Context, inst ResolvedInstallation, identity ResolvedIdentity, msg channel.InboundMessage) (ResolvedInstallation, error)
+}
+
 // Deduper is the two-phase idempotency seam. Claim mints an owner-fence token
 // (ErrDuplicate when already processed / in flight); Mark/Release are fenced on
 // the token (a no-op on token mismatch is not an error).
@@ -195,6 +224,7 @@ type Deduper interface {
 // rotated mid-flight.
 type SessionBinder interface {
 	EnsureSession(ctx context.Context, p EnsureSessionParams) (pgtype.UUID, error)
+	MarkPendingFresh(ctx context.Context, sessionID pgtype.UUID) error
 	AppendMessage(ctx context.Context, p AppendParams) (AppendResult, error)
 	BindMedia(ctx context.Context, p BindMediaParams) error
 }
@@ -308,6 +338,7 @@ type TypingNotifier interface {
 type ResolverSet struct {
 	Installation InstallationResolver
 	Identity     IdentityResolver
+	Validated    ValidatedInboundResolver
 	Dedup        Deduper
 	Session      SessionBinder
 	Media        MediaResolver

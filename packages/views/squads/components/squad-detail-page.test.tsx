@@ -175,6 +175,7 @@ vi.mock("@multica/core/paths", () => ({
     squads: () => "/test-ws/squads",
     squadDetail: (id: string) => `/test-ws/squads/${id}`,
     agentDetail: (id: string) => `/test-ws/agents/${id}`,
+    newAgent: () => "/test-ws/agents/new",
   }),
 }));
 

@@ -36,7 +36,8 @@ func TestBuildSearchQuery_SingleTerm(t *testing.T) {
 	}
 
 	// Should exclude closed issues by default.
-	if !strings.Contains(query, "NOT IN ('done', 'cancelled', 'archive')") {
+	if !strings.Contains(query, "i.status != 'archive'") ||
+		!strings.Contains(query, "issue_effective_status(i.workspace_id, i.status) NOT IN ('done', 'cancelled')") {
 		t.Error("query should exclude done/cancelled/archive when includeClosed=false")
 	}
 }
@@ -79,7 +80,7 @@ func TestBuildSearchQuery_WithNumber(t *testing.T) {
 func TestBuildSearchQuery_IncludeClosed(t *testing.T) {
 	query, _ := buildSearchQuery("test", []string{"test"}, 0, false, true)
 
-	if strings.Contains(query, "NOT IN ('done', 'cancelled', 'archive')") {
+	if strings.Contains(query, "issue_effective_status(i.workspace_id, i.status) NOT IN ('done', 'cancelled')") {
 		t.Error("query should not exclude done/cancelled/archive when includeClosed=true")
 	}
 }

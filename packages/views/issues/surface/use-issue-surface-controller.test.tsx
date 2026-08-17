@@ -7,7 +7,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "@multica/core/api";
 import type { ApiClient } from "@multica/core/api/client";
-import { issueKeys, resolveListStatuses } from "@multica/core/issues/queries";
 import {
   getIssueSurfaceViewStore,
   pruneIssueSurfaceViewStates,
@@ -221,10 +220,8 @@ describe("useIssueSurfaceController", () => {
     await waitFor(() => expect(listIssueTableRows).toHaveBeenCalled());
 
     const expectedSort = { sort_by: "priority", sort_direction: "desc" } as const;
-    const expectedFilter = { project_id: "p1" };
 
     expect(result.current.scopeKey).toBe("project:p1");
-    expect(result.current.filter).toEqual(expectedFilter);
     expect(result.current.sort).toEqual(expectedSort);
     expect(result.current.tableQuerySpec).toEqual(
       expect.objectContaining({
@@ -305,9 +302,6 @@ describe("useIssueSurfaceController", () => {
     await waitFor(() => expect(listIssueTableRows).toHaveBeenCalled());
 
     expect(result.current.scopeKey).toBe("workspace:all");
-    expect(result.current.filter).toEqual({});
-    expect(result.current.loadMoreScope).toBeUndefined();
-    expect(result.current.loadMoreFilter).toBeUndefined();
     expect(result.current.tableQuerySpec.scope).toEqual({
       kind: "workspace",
     });
@@ -322,7 +316,7 @@ describe("useIssueSurfaceController", () => {
   // Fix wave 3b: the list-path fetch (statusIssuesQuery) must include the
   // archive bucket when the active status filter explicitly selects it, and
   // must key that fetch separately from the default (no-archive) view.
-  it("fetches the archive bucket and uses a distinguishing cache key when the status filter selects archive", async () => {
+  it("fetches the archive bucket via the Table channel when the status filter selects archive", async () => {
     const store = getIssueSurfaceViewStore("workspace:all:archive-filter");
     store.getState().toggleStatusFilter("archive");
 
@@ -341,25 +335,6 @@ describe("useIssueSurfaceController", () => {
       ),
     );
 
-    const defaultSort = { sort_by: "position", sort_direction: undefined } as const;
-    // The default (no-archive) key must NOT be the one this view populated.
-    expect(
-      qc.getQueryCache().find({
-        queryKey: issueKeys.listSorted("ws-1", defaultSort),
-        exact: true,
-      }),
-    ).toBeUndefined();
-    // The archive-inclusive key IS the one populated.
-    expect(
-      qc.getQueryCache().find({
-        queryKey: issueKeys.listSorted(
-          "ws-1",
-          defaultSort,
-          resolveListStatuses(["archive"]),
-        ),
-        exact: true,
-      }),
-    ).toBeDefined();
     expect(result.current.visibleStatuses).toEqual(["archive"]);
   });
 
@@ -415,12 +390,7 @@ describe("useIssueSurfaceController", () => {
     );
 
     await waitFor(() => expect(listIssueTableRows).toHaveBeenCalled());
-
-    const expectedFilter = { assignee_id: "user-1" };
     expect(result.current.scopeKey).toBe("my:user-1:assigned");
-    expect(result.current.filter).toEqual(expectedFilter);
-    expect(result.current.loadMoreScope).toBe("assigned");
-    expect(result.current.loadMoreFilter).toEqual(expectedFilter);
     expect(result.current.tableQuerySpec.scope).toEqual({
       kind: "my",
       relation: "assigned",
@@ -443,12 +413,7 @@ describe("useIssueSurfaceController", () => {
     );
 
     await waitFor(() => expect(listIssueTableRows).toHaveBeenCalled());
-
-    const expectedFilter = { assignee_id: "agent-1" };
     expect(result.current.scopeKey).toBe("actor:agent:agent-1:assigned");
-    expect(result.current.filter).toEqual(expectedFilter);
-    expect(result.current.loadMoreScope).toBe("actor:agent:agent-1:assigned");
-    expect(result.current.loadMoreFilter).toEqual(expectedFilter);
     expect(result.current.tableQuerySpec.scope).toEqual({
       kind: "assignee",
       actor: { type: "agent", id: "agent-1" },

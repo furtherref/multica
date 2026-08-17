@@ -387,7 +387,7 @@ func TestFailTaskSuppressesRetryOnArchivedIssue(t *testing.T) {
 	// retryEligible fires and wantRetry is true — CreateRetryTask's archive
 	// predicate (WHERE ... issue.status != 'archive') must then suppress the
 	// clone via ErrNoRows without failing the fail commit.
-	if _, err := testHandler.TaskService.FailTask(context.Background(), parseUUID(taskID), "boom", "", "", "timeout", false, ""); err != nil {
+	if _, err := testHandler.TaskService.FailTask(context.Background(), parseUUID(taskID), "boom", "", "", "", "timeout", false, ""); err != nil {
 		t.Fatalf("FailTask: %v", err)
 	}
 
@@ -421,7 +421,7 @@ func TestFailTaskCreatesRetryOnNonArchivedIssue(t *testing.T) {
 	// archive step: "timeout" is retryable and insertRunningIssueTask leaves
 	// attempt=1 < max_attempts=2, so retryEligible/wantRetry should fire and
 	// CreateRetryTask should clone a second row.
-	if _, err := testHandler.TaskService.FailTask(context.Background(), parseUUID(taskID), "boom", "", "", "timeout", false, ""); err != nil {
+	if _, err := testHandler.TaskService.FailTask(context.Background(), parseUUID(taskID), "boom", "", "", "", "timeout", false, ""); err != nil {
 		t.Fatalf("FailTask: %v", err)
 	}
 

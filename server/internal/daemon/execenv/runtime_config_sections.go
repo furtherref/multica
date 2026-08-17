@@ -242,7 +242,7 @@ func sanitizeBriefCodeToken(s string) string {
 }
 
 // writeAvailableCommands emits the slim Available Commands section
-// (~2.4k chars vs legacy ~4.4k). Every test-asserted substring is
+// (~3.0k chars vs legacy ~4.4k). Every test-asserted substring is
 // preserved: each `multica issue …` command name, all three `comment add`
 // input modes, `--description-file <path>`, `--parent ""`, the
 // `Next reply cursor` / `Next thread cursor` stderr labels, the three
@@ -256,12 +256,17 @@ func sanitizeBriefCodeToken(s string) string {
 func writeAvailableCommands(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("## Available Commands\n\n")
 	b.WriteString("Prefer `--output json` for structured data. The default brief lists only the core agent loop and common issue create/update tasks; for everything else run `multica --help` or `multica <command> --help`.\n\n")
+	b.WriteString("`--output json` writes JSON to stdout; confirmations and warnings go to stderr. Do not merge them (`2>&1`) into anything that parses the output — that makes a write that SUCCEEDED look like it failed and invites a duplicate retry.\n\n")
 	b.WriteString("### Core\n")
 	b.WriteString("- `multica issue get <id> --output json` — full issue.\n")
 	b.WriteString("- `multica issue comment list <issue-id> [--roots-only] [--summary] [--thread <comment-id> [--tail N] | --recent N] [--since <RFC3339>] --output json` — thread-aware comment reads. Bound a wide read with `--roots-only --summary` (roots plus `reply_count` / `last_activity_at`, clipped bodies); bound a deep one with `--thread <id> --tail N`; add `--compact` to any JSON read to drop echoed/null/bookkeeping fields. Careful with `--recent N`: it caps THREADS, not comments, and can return the whole history on a small issue. Resolved-thread folding, paging cursors, and full flag semantics: `--help`.\n")
 	b.WriteString("- `multica issue create --title \"...\" [--description-file <path>] [--priority X] [--status X] [--assignee X | --assignee-id <uuid>] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <YYYY-MM-DD>] [--attachment <path>]` — create an issue. For agent-authored long descriptions prefer `--description-file <path>` (heredoc stdin can swallow trailing flags, #4182). Write that file inside your working directory (e.g. `./description.md`), never `/tmp` or shared paths — same workdir rule as `## Comment Formatting`.\n")
-	b.WriteString("- `multica issue update <id> [--title X] [--description-file <path>] [--priority X] [--status X] [--assignee X] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <YYYY-MM-DD>]` — update fields; pass `--parent \"\"` to clear parent.\n")
-	b.WriteString("- `multica issue status <id> <status>` — flip status (todo / in_progress / in_review / done / blocked / backlog / cancelled).\n")
+	b.WriteString("- `multica issue update <id> [--title X] [--description-file <path>] [--priority X] [--status X] [--assignee X] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <YYYY-MM-DD>] [--no-start]` — update fields; pass `--parent \"\"` to clear parent.\n")
+	// Assign deliberately stays in the core brief: it is the action that can
+	// create an unaware cross-issue run, and agents cannot discover the safe
+	// ownership-only --no-start path if the command is hidden behind --help.
+	b.WriteString("- `multica issue assign <id> (--to X | --to-id <uuid> | --unassign) [--no-start]` — change ownership. On assign/update/status, `--no-start` records the change without starting another run — use it when the work is already underway.\n")
+	b.WriteString("- `multica issue status <id> <status> [--no-start]` — flip status (todo / in_progress / in_review / done / blocked / backlog / cancelled).\n")
 	b.WriteString("- `multica issue children <id> [--output json]` — list a parent's sub-issues grouped by stage.\n")
 	b.WriteString("- `multica issue comment add <issue-id> [--content \"...\" | --content-file <path> | --content-stdin] [--parent <comment-id>] [--attachment <path>]` — post a comment. Agent-authored bodies MUST use `--content-file`; see `## Comment Formatting` for why. `multica issue comment add --help` for full flags.\n")
 	b.WriteString("- `multica issue metadata list <issue-id> [--output json]` — list KV metadata.\n")
@@ -288,6 +293,7 @@ func writeAvailableCommands(b *strings.Builder, ctx TaskContextForEnv) {
 func writeAvailableCommandsQuickCreate(b *strings.Builder) {
 	b.WriteString("## Available Commands\n\n")
 	b.WriteString("**Use `--output json` for structured data.** For anything beyond `issue create`, run `multica --help` or `multica <command> --help`.\n\n")
+	b.WriteString("`--output json` writes JSON to stdout; confirmations and warnings go to stderr. Do not merge them (`2>&1`) into anything that parses the output — that makes a write that SUCCEEDED look like it failed and invites a duplicate retry.\n\n")
 	b.WriteString("### Core\n")
 	b.WriteString("- `multica issue create --title \"...\" [--description \"...\" | --description-file <path> | --description-stdin] [--priority X] [--status X] [--assignee X | --assignee-id <uuid>] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <YYYY-MM-DD>] [--attachment <path>]` — Create a new issue; `--attachment` may be repeated. For agent-authored long descriptions, prefer `--description-file <path>` over `--description-stdin` (flags after a HEREDOC terminator can be silently swallowed, #4182). Write that file inside your working directory (e.g. `./description.md`), never `/tmp` or shared paths, and treat a failed write as fatal — the CLI rejects a path outside the workdir so a stale file from another run can't leak in (MUL-4252).\n\n")
 }
@@ -378,11 +384,11 @@ func writeIssueMetadata(b *strings.Builder) {
 // workflow below" guardrail. Caller gates on kind == kindIssue.
 //
 // This section owns the single enumeration of the actions Agent Identity can
-// forbid. It and workflow step 4 were added together in #3802 and each carried
+// forbid. It and workflow step 3 were added together in #3802 and each carried
 // its own list; the lists then disagreed — this one named status changes, the
 // step named issue create/update and delegation, and neither contained the
 // other. MUL-5442 merges them here so adding an action type is a one-place
-// edit. Step 4 keeps only what this section cannot express: the delegation-only
+// edit. Step 3 keeps only what this section cannot express: the delegation-only
 // role's "stop once the delegation is delivered" rule.
 func writeInstructionPrecedence(b *strings.Builder) {
 	b.WriteString("## Instruction Precedence\n\n")
@@ -405,17 +411,21 @@ func writeInstructionPrecedence(b *strings.Builder) {
 //   - Slack: the conversation lives in the channel and `multica chat history` /
 //     `multica chat thread` can fetch it — see buildChatPrompt, which hands the
 //     agent exactly those commands. Recoverable, just from a different place.
-//   - Web chat and Feishu: nothing can fetch it. A web chat's history lived only
-//     in the provider session, and Multica ships no history reader for Feishu
-//     (handler/chat_history.go is hardwired to Slack), so the run has only the
-//     inbound context for this turn.
+//   - Web chat, Feishu, WeCom and DingTalk: the conversation is persisted in
+//     Multica's chat_message table and `multica chat history` reads it back —
+//     see handler/chat_history.go's chat_message fallback for non-Slack
+//     sessions. Recoverable, just from a different place. The readable set is
+//     decided in one place, SurfacePersistsTranscript.
 //
-// Only the last group warrants telling the user. On the first two the discussion
-// survives, so announcing "the previous context was lost" describes a loss that
-// did not happen — the user reasonably hears "the discussion is gone" when not a
-// word of it is. There the notice informs the agent and leaves mentioning it to
-// the agent's judgement. What is actually gone on every surface is the agent's
-// own unrecorded working memory, and each variant says so.
+// Only a surface whose conversation Multica never stored (so there is nothing
+// to read back) warrants telling the user; no current surface is in that
+// group, so SessionContinuityNoticeUnrecoverable is a defensive fallback. On
+// the readable ones the discussion survives, so announcing "the previous
+// context was lost" describes a loss that did not happen — the user reasonably
+// hears "the discussion is gone" when not a word of it is. There the notice
+// informs the agent and leaves mentioning it to the agent's judgement. What is
+// actually gone on every surface is the agent's own unrecorded working memory,
+// and each variant says so.
 //
 // Emitted into the per-turn user message rather than the runtime brief: it is
 // true of one run and false of the next on the same issue, so rendering it into
@@ -426,6 +436,17 @@ const SessionContinuityNoticeIssue = "## Session Continuity Notice\n\n" +
 const SessionContinuityNoticeChannelHistory = "## Session Continuity Notice\n\n" +
 	"This run was meant to continue an earlier conversation, but that provider session could not be restored, so you are on a fresh one. The channel conversation itself is unaffected — read it back with `multica chat history` / `multica chat thread` before acting, and treat what you find there as the authoritative version. What is gone is only your own working memory from earlier turns: what you already tried, what you ruled out, and how far you had got. Re-derive what you need instead of assuming it. Do not open your reply by announcing this — raise it only where it actually matters.\n\n"
 
+const SessionContinuityNoticeChatTranscript = "## Session Continuity Notice\n\n" +
+	"This run was meant to continue an earlier conversation, but that provider session could not be restored, so you are on a fresh one. The conversation itself is unaffected — Multica stored it, and you can read it back with `multica chat history` before acting; treat what you find there as the authoritative version. What is gone is only your own working memory from earlier turns: what you already tried, what you ruled out, and how far you had got. Re-derive what you need instead of assuming it. Do not open your reply by announcing this — raise it only where it actually matters.\n\n"
+
+// SessionContinuityNoticeUnrecoverable is the defensive fallback for a surface
+// whose conversation Multica never stored and cannot read back. Every current
+// chat surface (web chat, Feishu, WeCom, DingTalk, Slack) persists a transcript
+// that `multica chat history` can fetch, so no surface routes here today — it
+// exists so a future channel that stores no transcript degrades to an honest
+// "this is a new session" instead of silently pretending continuity. Unlike the
+// readable variants it scripts the user-facing disclosure, because here the
+// loss is real and the user must hear it.
 const SessionContinuityNoticeUnrecoverable = "## Session Continuity Notice\n\n" +
 	"This run was meant to continue an earlier conversation, but that session's context could NOT be restored — you are starting fresh with no memory of the previous turns. That history is not readable from anywhere now: there is no command that fetches it, and only the context already in this message survives. **When you reply, tell the user up front (one short sentence) that the previous conversation context was unavailable and this is a new session**, so they understand why the thread did not carry over.\n\n"
 
@@ -515,7 +536,7 @@ func writeWorkflowAutopilot(b *strings.Builder, ctx TaskContextForEnv) {
 // "own the status arc" and "do not touch the status" can never be read as
 // peer instructions with no arbitration.
 //
-// Step 3 asks for a roots scan first, not `--recent 10` (MUL-5372). `--recent N`
+// Step 2 asks for a roots scan first, not `--recent 10` (MUL-5372). `--recent N`
 // caps THREADS, not comments: each returned thread carries its root plus every
 // descendant with no depth cap, so on an issue with fewer than N root threads it
 // returns the entire comment history. Because this step is mandatory and fires on
@@ -544,31 +565,30 @@ func writeWorkflowAutopilot(b *strings.Builder, ctx TaskContextForEnv) {
 // it here does move brief bytes when the same agent runs leader one turn and
 // worker the next. Owner-accepted tradeoff; decision recorded in MUL-5811.
 func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
-	b.WriteString("**Turn mode.** The per-turn user message names this run's mode on a line of its own: `Turn mode: Reply.` (respond to the comment that message carries — it brings the triggering comment's id and your `--parent` value) or `Turn mode: Ownership.` (an assignment or status change started this run). Steps 1–6 are shared; then **apply exactly one mode block, the one the user message named** — they differ on issue status. No mode line → Reply mode, do not change the issue status.\n\n")
+	b.WriteString("**Turn mode.** The per-turn user message names this run's mode on a line of its own: `Turn mode: Reply.` (respond to the comment that message carries — it brings the triggering comment's id and your `--parent` value) or `Turn mode: Ownership.` (an assignment or status change started this run). Steps 1–5 are shared; then **apply exactly one mode block, the one the user message named** — they differ on issue status. No mode line → Reply mode, do not change the issue status.\n\n")
 
-	b.WriteString("**Steps 1–6 — both modes** (the per-turn user message carries this issue's real id and ready-to-run context-read commands; assemble other calls from `## Available Commands`)\n\n")
-	b.WriteString("1. Read the issue (`multica issue get`) to understand the context.\n")
-	b.WriteString("2. Read the metadata bag (`multica issue metadata list`) — best-effort, empty `{}` and CLI failures are normal. What to look for: `## Issue Metadata`.\n")
-	b.WriteString("3. Catch up on the comment history — this is mandatory, not optional — in two bounded reads, never one bulk pull: scan every thread cheaply (`--roots-only --summary --compact`), then expand only the threads that matter (`--thread <id> --tail 30 --compact`). Earlier comments often carry context the issue body lacks. Skipping this step is the most common cause of agents acting on stale or incomplete instructions — so always run the scan, even when the trigger looks self-contained. In Reply mode the per-turn user message names the thread to expand first; the scan is how you decide whether any OTHER thread is also relevant.\n")
+	b.WriteString("**Steps 1–5 — both modes** (the per-turn user message carries this issue's real id and ready-to-run context-read commands; assemble other calls from `## Available Commands`)\n\n")
+	b.WriteString("1. Read the issue (`multica issue get`) to understand the context — its JSON already carries the issue's `metadata` bag (empty `{}` is normal), so no separate metadata read is needed. What to look for: `## Issue Metadata`.\n")
+	b.WriteString("2. Catch up on the comment history — this is mandatory, not optional — in two bounded reads, never one bulk pull: scan every thread cheaply (`--roots-only --summary --compact`), then expand only the threads that matter (`--thread <id> --tail 30 --compact`). Earlier comments often carry context the issue body lacks. Skipping this step is the most common cause of agents acting on stale or incomplete instructions — so always run the scan, even when the trigger looks self-contained. In Reply mode the per-turn user message names the thread to expand first; the scan is how you decide whether any OTHER thread is also relevant.\n")
 	// Gate on the model-visible set, not the full skill list: when every
 	// skill is disable-model-invocation the `## Skills` section is omitted,
 	// so the step text must not reference it (mirrors writeSkills). Skills
 	// are agent configuration, not per-run state, so this branch keeps the
 	// file byte-stable across runs of one session.
 	if len(modelVisibleSkills(ctx.AgentSkills)) > 0 {
-		b.WriteString("4. **Before writing any code, complete the Skills protocol in the `## Skills` section below** — read the `SKILL.md` of every skill matching this task and comply with its required rules. Then complete the task within your Agent Identity boundaries (`## Instruction Precedence` lists the actions Agent Identity can forbid). If your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
+		b.WriteString("3. **Before writing any code, complete the Skills protocol in the `## Skills` section below** — read the `SKILL.md` of every skill matching this task and comply with its required rules. Then complete the task within your Agent Identity boundaries (`## Instruction Precedence` lists the actions Agent Identity can forbid). If your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered. Before self-assigning, check the target issue's comment history for an existing claim and any `## Active sibling runs` block; when assignment or status only records ownership/progress for work already underway, pass `--no-start` on every such command (the default start behavior is for handing off fresh work).\n")
 	} else {
-		b.WriteString("4. Complete the task within your Agent Identity boundaries (`## Instruction Precedence` lists the actions Agent Identity can forbid). If your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
+		b.WriteString("3. Complete the task within your Agent Identity boundaries (`## Instruction Precedence` lists the actions Agent Identity can forbid). If your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered. Before self-assigning, check the target issue's comment history for an existing claim and any `## Active sibling runs` block; when assignment or status only records ownership/progress for work already underway, pass `--no-start` on every such command (the default start behavior is for handing off fresh work).\n")
 	}
 	if ctx.IsSquadLeader {
-		b.WriteString("5. **Post your final results as a comment** (unless your outcome is `no_action` — in that case, calling `multica squad activity <issue-id> no_action --reason \"...\"` alone is sufficient; you MUST exit without posting any comment. DO NOT post a comment announcing no_action or saying you are exiting silently): post it with `multica issue comment add` using the platform-correct non-inline mode from ## Comment Formatting (never inline `--content`). Your results are only visible to the user if posted via this CLI call; text in your terminal or run logs is NOT delivered.\n")
+		b.WriteString("4. **Post your final results as a comment** (unless your outcome is `no_action` — in that case, calling `multica squad activity <issue-id> no_action --reason \"...\"` alone is sufficient; you MUST exit without posting any comment. DO NOT post a comment announcing no_action or saying you are exiting silently): post it with `multica issue comment add` using the platform-correct non-inline mode from ## Comment Formatting (never inline `--content`). Your results are only visible to the user if posted via this CLI call; text in your terminal or run logs is NOT delivered.\n")
 	} else {
-		b.WriteString("5. **Post your final results as a comment — this step is mandatory**: post it with `multica issue comment add` using the platform-correct non-inline mode from ## Comment Formatting (never inline `--content`). `## Output` states why this call is the only delivery channel.\n")
+		b.WriteString("4. **Post your final results as a comment — this step is mandatory**: post it with `multica issue comment add` using the platform-correct non-inline mode from ## Comment Formatting (never inline `--content`). `## Output` states why this call is the only delivery channel.\n")
 	}
-	b.WriteString("6. Before exiting, pin or clear a metadata key via `multica issue metadata set`/`delete` only if it clears the bar in `## Issue Metadata`. Most runs write nothing here — that is the expected outcome, not a gap. When in doubt, do not write.\n\n")
+	b.WriteString("5. Before exiting, pin or clear a metadata key via `multica issue metadata set`/`delete` only if it clears the bar in `## Issue Metadata`. Most runs write nothing here — that is the expected outcome, not a gap. When in doubt, do not write.\n\n")
 
 	b.WriteString("**Ownership mode only — you own the issue status this run** (skip any status call below that your Agent Identity forbids)\n\n")
-	b.WriteString("- Before step 4, run `multica issue status <issue-id> in_progress`.\n")
+	b.WriteString("- Before step 3, run `multica issue status <issue-id> in_progress`.\n")
 	if ctx.IsSquadLeader {
 		b.WriteString("- After this initial dispatch, leave the parent issue `in_progress` — do NOT move it to `in_review` or `done` on this turn. Dispatching members is not completion. You will be re-triggered when members post updates or a stage closes; only then, if the overall goal is met, move the parent to `in_review`.\n")
 	} else {
@@ -581,7 +601,7 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 	if ctx.IsSquadLeader {
 		b.WriteString("- **Squad leader rule:** If your evaluation outcome is `no_action`, call `multica squad activity <issue-id> no_action --reason \"...\"` and then EXIT IMMEDIATELY. DO NOT post any comment whose only purpose is to announce that you are taking no action, exiting silently, or acknowledging another agent. A comment like \"No action needed\" or \"Exiting silently\" is noise — the `squad activity` call already records your decision in the timeline.\n")
 	}
-	// Same model-visible gate as step 4 above (see writeSkills).
+	// Same model-visible gate as step 3 above (see writeSkills).
 	if len(modelVisibleSkills(ctx.AgentSkills)) > 0 {
 		b.WriteString("- Do any requested work first — **if that work involves writing, modifying, or reviewing code, complete the Skills protocol in the `## Skills` section below before you start** (read the `SKILL.md` of every skill matching the task and comply with its required rules). Then **decide whether to include any `@mention` link.** The default is NO mention; `## Mentions` states when one is warranted.\n")
 	} else {
@@ -738,13 +758,28 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 		b.WriteString("**Delivering files here:** your stdout is text-only. A file that belongs to the new issue goes on the `multica issue create` call itself via `--attachment <path>`; never put its path in the description or in your stdout line.\n")
 	case kindChat:
 		b.WriteString("This is a chat session. Your reply is delivered directly to the chat window the user is reading.\n\n")
-		// Two-layer channel policy (MUL-4899). This is the DELIVERY layer: any
-		// non-empty channel type means the reply leaves Multica for an external
-		// IM platform, where `attachment upload` has nothing to bind to. The
-		// orthogonal HISTORY layer (which read commands exist) is Slack-only and
-		// lives in the per-turn chat prompt — do not collapse the two.
+		// Two-layer channel policy (MUL-4899). This is the DELIVERY layer, and
+		// the brief answers only the half that is stable for the whole session.
+		//
+		// `attachment upload` binds a file to the Multica chat reply whatever
+		// the surface; whether anything carries it the last hop is a property
+		// of the deployment — its object storage, and whether the server is new
+		// enough to report the hop at all. Both change under a session that
+		// resumes across the change, and this file is the prompt-cache prefix
+		// (MUL-5377), so rendering the verdict here made one resumed chat
+		// produce two different briefs. The verdict therefore lives in the
+		// per-turn chat prompt, which carries both branches
+		// (daemon.buildChatPrompt), and the copy below points at it.
+		// ctx.ChatChannelDeliversFiles must NOT be read from this file.
+		//
+		// Web/mobile chat keeps its own copy: it has no channel and no last hop
+		// to be uncertain about — the browser renders the bound file as a card.
+		//
+		// The orthogonal HISTORY layer (which read commands exist) is
+		// Slack-only and also lives in the per-turn chat prompt — do not
+		// collapse the two.
 		if ctx.ChatChannelType != "" {
-			fmt.Fprintf(b, "**Delivering files here:** this %s conversation is text-only — Multica cannot push a file you produced back into it. `multica attachment upload` does NOT apply: it binds to a Multica chat reply, which this is not. Say in words what you produced and where it can be obtained; never upload and then write as though the file arrived, and never link its local path.\n", ChannelDisplayName(ctx.ChatChannelType))
+			fmt.Fprintf(b, "**Delivering files here:** whether Multica can push a file you produce into this %s conversation depends on how this deployment is configured, so it is stated per turn rather than here: the per-turn user message tells you, every turn. Follow what it says about files, and never report a file as delivered unless it told you how to deliver one.\n", ChannelDisplayName(ctx.ChatChannelType))
 		} else {
 			b.WriteString("**Delivering files here:** run `multica attachment upload <local-path>` — it binds the file to your reply and it renders as an attachment card. That command is the ONLY way a file reaches the user; a path written into your reply text is not.\n")
 		}

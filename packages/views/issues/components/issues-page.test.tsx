@@ -51,6 +51,8 @@ vi.mock("../../navigation", () => ({
     </a>
   ),
   useNavigation: () => ({ push: vi.fn(), pathname: "/issues" }),
+  resolveClickIntent: () => "push",
+  useIntentNavigate: () => () => {},
   NavigationProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
@@ -390,11 +392,12 @@ let mockScope = "all";
 vi.mock("@multica/core/issues/stores/issues-scope-store", () => ({
   useIssuesScopeStore: Object.assign(
     (selector?: any) => {
-      const state = { scope: mockScope, setScope: vi.fn() };
+      const state = { scopes: { issues: mockScope }, setScope: vi.fn() };
       return selector ? selector(state) : state;
     },
-    { getState: () => ({ scope: mockScope, setScope: vi.fn() }) },
+    { getState: () => ({ scopes: { issues: mockScope }, setScope: vi.fn() }) },
   ),
+  useIssuesScope: () => mockScope,
 }));
 
 vi.mock("@multica/core/issues/stores/selection-store", () => ({
@@ -458,6 +461,7 @@ vi.mock("@dnd-kit/core", () => {
 vi.mock("@dnd-kit/sortable", () => ({
   SortableContext: ({ children }: any) => children,
   verticalListSortingStrategy: {},
+  horizontalListSortingStrategy: {},
   arrayMove: vi.fn(),
   useSortable: () => ({
     attributes: {},
@@ -470,7 +474,10 @@ vi.mock("@dnd-kit/sortable", () => ({
 }));
 
 vi.mock("@dnd-kit/utilities", () => ({
-  CSS: { Transform: { toString: () => undefined } },
+  CSS: {
+    Transform: { toString: () => undefined },
+    Translate: { toString: () => undefined },
+  },
 }));
 
 // Mock @base-ui/react/accordion (used by ListView)

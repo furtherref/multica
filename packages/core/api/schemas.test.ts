@@ -47,6 +47,19 @@ import {
   SquadSchema,
   TimelineEntriesSchema,
   UserSchema,
+  EMPTY_PLUGIN_CATALOG,
+  PluginCatalogResponseSchema,
+  PluginInstallationSchema,
+  RemoteMCPDiscoveryResponseSchema,
+  RemoteMCPOAuthStartResponseSchema,
+  EMPTY_REMOTE_MCP_OAUTH_START_RESPONSE,
+} from "./schemas";
+import { IssueViewSchema, IssueViewListSchema } from "./schemas";
+import {
+  ListIssueStatusesResponseSchema,
+  IssueStatusEntrySchema,
+  EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
+  EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
 import { parseWithFallback } from "./schema";
 
@@ -1244,6 +1257,63 @@ describe("RuntimeModelListRequestSchema", () => {
   });
 });
 
+describe("IssueViewSchema", () => {
+  const valid = {
+    id: "v1",
+    workspace_id: "ws1",
+    owner_id: "u1",
+    name: "Needs review",
+    scope_type: "workspace",
+    scope_id: null,
+    scope_variant: null,
+    visibility: "workspace",
+    definition_version: 1,
+    query: { statusFilters: ["in_review"] },
+    display: { viewMode: "board" },
+    revision: 3,
+    created_at: "2026-08-06T00:00:00Z",
+    updated_at: "2026-08-06T00:00:00Z",
+  };
+
+  it("parses a well-formed view and keeps unknown future fields", () => {
+    const parsed = IssueViewSchema.parse({ ...valid, future_field: "keep me" });
+    expect(parsed.name).toBe("Needs review");
+    expect(parsed.query).toEqual({ statusFilters: ["in_review"] });
+    expect((parsed as unknown as { future_field?: string }).future_field).toBe("keep me");
+  });
+
+  it("defaults missing definition blobs instead of failing", () => {
+    const parsed = IssueViewSchema.parse({ id: "v2" });
+    expect(parsed.query).toEqual({});
+    expect(parsed.display).toEqual({});
+    expect(parsed.revision).toBe(1);
+  });
+
+  it("degrades a malformed list response to [] via parseWithFallback", () => {
+    expect(
+      parseWithFallback({ nonsense: true }, IssueViewListSchema, [], {
+        endpoint: "GET /api/issue-views",
+      }),
+    ).toEqual([]);
+    expect(
+      parseWithFallback(null, IssueViewListSchema, [], {
+        endpoint: "GET /api/issue-views",
+      }),
+    ).toEqual([]);
+  });
+
+  it("degrades a malformed detail response to null — NOT an error", () => {
+    // The sidebar's pinned view rows hinge on this distinction: a parse
+    // fallback (null, no error) hides the row, while only a REAL 404
+    // error may ever unpin. A malformed body must never destroy a pin.
+    expect(
+      parseWithFallback({ nonsense: true }, IssueViewSchema.nullable(), null, {
+        endpoint: "GET /api/issue-views/{id}",
+      }),
+    ).toBeNull();
+  });
+});
+
 // WeCom smart-bot installation schemas. These gate UI affordances (the Connect
 // dialog, the "ask your operator" state, the revoked-vs-active badge), so a
 // malformed response must degrade to the safe state rather than a broken one.
@@ -1303,5 +1373,159 @@ describe("WeCom installation schemas", () => {
       { endpoint: "POST /api/wecom/binding/redeem" },
     );
     expect(redeem).toEqual(EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE);
+  });
+});
+
+describe("Plugin catalog schemas", () => {
+  it("defaults optional release fields without granting trust or compatibility", () => {
+    const parsed = PluginCatalogResponseSchema.parse({
+      releases: [{ plugin_key: "ai.multica.software-delivery", version: "1.0.0" }],
+    });
+    expect(parsed.supported).toBe(true);
+    expect(parsed.releases[0]?.compatible).toBe(false);
+    expect(parsed.releases[0]?.signature_verified).toBe(false);
+    expect(parsed.releases[0]?.contributions).toEqual([]);
+  });
+
+  it("defaults missing lifecycle and binding fields to a disabled error state", () => {
+    const parsed = PluginInstallationSchema.parse({ id: "installation-1" });
+    expect(parsed.enabled).toBe(false);
+    expect(parsed.lifecycle_status).toBe("error");
+    expect(parsed.bindings).toEqual([]);
+    expect(parsed.trust_tier).toBe("");
+    expect(parsed.signature_verified).toBe(false);
+    expect(parsed.contribution_details).toEqual([]);
+    expect(parsed.remote_mcp).toEqual([]);
+  });
+
+  it("parses Remote MCP status without accepting secret-shaped response fields", () => {
+    const parsed = PluginInstallationSchema.parse({
+      id: "installation-1",
+      remote_mcp: [{
+        contribution_key: "search",
+        credential_state: "configured",
+        credential_hint: "••••1234",
+        credential: "must-not-be-modeled",
+        approved_tools: [{
+          name: "search.read",
+          input_schema: { type: "object" },
+          schema_digest: "sha256:fixture",
+          risk: "read",
+        }],
+        reviewed: true,
+        ready: true,
+      }],
+    });
+    expect(parsed.remote_mcp[0]?.credential_state).toBe("configured");
+    expect(parsed.remote_mcp[0]?.approved_tools[0]?.name).toBe("search.read");
+    expect(parsed.remote_mcp[0]?.ready).toBe(true);
+    expect(parsed.remote_mcp[0]).not.toHaveProperty("credential");
+  });
+
+  it("defaults a malformed Remote MCP discovery response without inventing tools", () => {
+    const fallback = { config_revision: 0, discovered_tools: [], discovered_schema_digest: "" };
+    const parsed = parseWithFallback(
+      { config_revision: "bad", discovered_tools: { name: "search" } },
+      RemoteMCPDiscoveryResponseSchema,
+      fallback,
+      { endpoint: "POST /api/workspaces/{id}/plugins/{installationId}/remote-mcp/{key}/test" },
+    );
+    expect(parsed).toEqual(fallback);
+  });
+
+  it("rejects a malformed Remote MCP OAuth start response", () => {
+    expect(parseWithFallback(
+      { authorization_url: undefined },
+      RemoteMCPOAuthStartResponseSchema,
+      EMPTY_REMOTE_MCP_OAUTH_START_RESPONSE,
+      { endpoint: "POST /api/workspaces/{id}/plugins/{installationId}/remote-mcp/{key}/oauth/start" },
+    )).toEqual(EMPTY_REMOTE_MCP_OAUTH_START_RESPONSE);
+    expect(RemoteMCPOAuthStartResponseSchema.parse({
+      authorization_url: "https://auth.example.test/authorize?state=opaque",
+    }).authorization_url).toContain("auth.example.test");
+  });
+
+  it("degrades a malformed catalog response to unsupported and empty", () => {
+    const parsed = parseWithFallback("not-json", PluginCatalogResponseSchema, EMPTY_PLUGIN_CATALOG, {
+      endpoint: "GET /api/workspaces/{id}/plugins/catalog",
+    });
+    expect(parsed).toEqual(EMPTY_PLUGIN_CATALOG);
+    expect(parsed.supported).toBe(false);
+  });
+});
+
+// Issue status catalog (MUL-6243). The catalog drives how every status renders,
+// so a drifting or malformed response must degrade to the built-ins rather than
+// leaving the UI with no statuses at all.
+describe("issue status catalog schemas", () => {
+  const baseStatus = {
+    id: "status-1",
+    workspace_id: "ws-1",
+    key: "human_review",
+    name: "Human Review",
+    description: "Waiting on a person",
+    category: "in_review",
+    color: "#22c55e",
+    is_system: false,
+    position: 1,
+    archived_at: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+
+  it("parses a full catalog response", () => {
+    const parsed = ListIssueStatusesResponseSchema.parse({
+      statuses: [baseStatus],
+      categories: ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"],
+      total: 1,
+    });
+    expect(parsed.statuses[0]?.key).toBe("human_review");
+    expect(parsed.statuses[0]?.category).toBe("in_review");
+    expect(parsed.categories).toHaveLength(7);
+  });
+
+  it("falls back to the built-in categories on a malformed response", () => {
+    const parsed = parseWithFallback(
+      { statuses: "not-an-array", categories: 7 },
+      ListIssueStatusesResponseSchema,
+      EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
+      { endpoint: "GET /api/issue-statuses" },
+    );
+    expect(parsed).toEqual(EMPTY_LIST_ISSUE_STATUSES_RESPONSE);
+    // The fallback still names all 7 categories, so a client talking to a
+    // server that predates this endpoint can still render every built-in.
+    expect(parsed.categories).toHaveLength(7);
+    expect(parsed.statuses).toEqual([]);
+  });
+
+  it("defaults the optional presentation fields the server may omit", () => {
+    const { color: _c, is_system: _s, position: _p, description: _d, archived_at: _a, ...minimal } = baseStatus;
+    const parsed = IssueStatusEntrySchema.parse(minimal);
+    expect(parsed.color).toBe("#6b7280");
+    expect(parsed.is_system).toBe(false);
+    expect(parsed.position).toBe(0);
+    expect(parsed.archived_at).toBeNull();
+  });
+
+  it("keeps an unknown category as a string instead of failing the whole catalog", () => {
+    // A newer server could report a category this build does not know. Dropping
+    // the entry (or throwing) would leave the board unable to render issues
+    // already sitting on it, so the value is carried through verbatim.
+    const parsed = ListIssueStatusesResponseSchema.parse({
+      statuses: [{ ...baseStatus, category: "started" }],
+      categories: ["started"],
+      total: 1,
+    });
+    expect(parsed.statuses[0]?.category).toBe("started");
+  });
+
+  it("falls back to an empty entry on a malformed single status", () => {
+    const parsed = parseWithFallback(
+      { id: 12345 },
+      IssueStatusEntrySchema,
+      EMPTY_ISSUE_STATUS_ENTRY,
+      { endpoint: "POST /api/issue-statuses" },
+    );
+    expect(parsed).toEqual(EMPTY_ISSUE_STATUS_ENTRY);
   });
 });

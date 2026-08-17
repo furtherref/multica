@@ -209,6 +209,10 @@ cleared_chat_sessions AS (
     WHERE installation_id IN (SELECT id FROM dead)
     RETURNING chat_session_id
 ),
+cleared_dingtalk_group_routes AS (
+    DELETE FROM dingtalk_group_route
+    WHERE installation_id IN (SELECT id FROM dead)
+),
 cleared_outbound_cards AS (
     -- channel_outbound_card_message is keyed by chat_session_id (no installation_id,
     -- no FK), so it is reached through the just-removed chat-session bindings. On an
@@ -259,6 +263,9 @@ WITH doomed AS (
 cleared_chat_sessions AS (
     DELETE FROM channel_chat_session_binding WHERE installation_id IN (SELECT id FROM doomed)
     RETURNING chat_session_id
+),
+cleared_dingtalk_group_routes AS (
+    DELETE FROM dingtalk_group_route WHERE installation_id IN (SELECT id FROM doomed)
 ),
 cleared_outbound_cards AS (
     -- Reach channel_outbound_card_message (keyed by chat_session_id, no FK)
@@ -522,6 +529,28 @@ WHERE chat_session_id = $1;
 UPDATE channel_chat_session_binding
 SET last_message_id = sqlc.narg('last_message_id'),
     last_thread_id  = sqlc.narg('last_thread_id')
+WHERE chat_session_id = $1;
+
+-- name: MarkChannelChatSessionPendingFresh :one
+-- Persists a channel `/new` intent until the next chat task is successfully
+-- created. RETURNING makes a missing binding an error instead of silently
+-- acknowledging a fresh start that was never stored.
+UPDATE channel_chat_session_binding
+SET pending_fresh = TRUE
+WHERE chat_session_id = $1
+RETURNING pending_fresh;
+
+-- name: LockChannelChatSessionPendingFresh :one
+-- EnqueueChatTask reads this under the same row lock and transaction that
+-- creates the task. A concurrent `/new` therefore lands either before this
+-- task and is consumed by it, or after this task and remains for the next one.
+SELECT pending_fresh FROM channel_chat_session_binding
+WHERE chat_session_id = $1
+FOR UPDATE;
+
+-- name: ClearChannelChatSessionPendingFresh :exec
+UPDATE channel_chat_session_binding
+SET pending_fresh = FALSE
 WHERE chat_session_id = $1;
 
 -- name: DeleteChannelChatSessionBindingBySession :exec

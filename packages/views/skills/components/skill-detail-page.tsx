@@ -12,6 +12,7 @@ import {
   Lock,
   Pencil,
   Plus,
+  RotateCw,
   Save,
   Trash2,
   UserPlus,
@@ -71,13 +72,20 @@ import { BreadcrumbHeader } from "../../layout/breadcrumb-header";
 import { useCanEditSkill } from "../hooks/use-can-edit-skill";
 import { useSkillPermissions } from "@multica/core/permissions";
 import { CapabilityBanner } from "@multica/ui/components/common/capability-banner";
-import { readOrigin, totalFileCount, type OriginInfo } from "../lib/origin";
+import {
+  isRefreshableOrigin,
+  originSourceUrl,
+  readOrigin,
+  totalFileCount,
+  type OriginInfo,
+} from "../lib/origin";
 import { FileTree } from "./file-tree";
 import { FileViewer, isMarkdownPath, type FileMode } from "./file-viewer";
 import {
   AddToAgentDialog,
   type SkillActionsContext,
 } from "./skill-list-actions";
+import { RefreshSkillDialog } from "./refresh-skill-dialog";
 import { useT } from "../../i18n";
 import { ResourceLabelPicker } from "../../labels/resource-label-picker";
 
@@ -302,6 +310,7 @@ function SkillIdentity({
   const timeAgo = useTimeAgo();
   const originLabel = useOriginLabel(origin, originRuntime);
   const isRuntimeOrigin = origin?.type === "runtime_local";
+  const sourceUrl = originSourceUrl(origin);
 
   return (
     <div className="shrink-0 border-b px-4 py-3 sm:px-6">
@@ -327,7 +336,25 @@ function SkillIdentity({
               ) : (
                 <Download className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               )}
-              <span className="truncate">{originLabel}</span>
+              {sourceUrl ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <a
+                        href={sourceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="truncate hover:underline"
+                      >
+                        {originLabel}
+                      </a>
+                    }
+                  />
+                  <TooltipContent side="top">{sourceUrl}</TooltipContent>
+                </Tooltip>
+              ) : (
+                <span className="truncate">{originLabel}</span>
+              )}
             </span>
           )}
           <span className="inline-flex items-center gap-1.5">
@@ -768,6 +795,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmRefresh, setConfirmRefresh] = useState(false);
   const [showAddToAgents, setShowAddToAgents] = useState(false);
   const [addingFile, setAddingFile] = useState(false);
   const [conflictPending, setConflictPending] = useState(false);
@@ -1140,6 +1168,26 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
                 {t(($) => $.detail.read_only)}
               </span>
             )}
+            {canEdit && origin && isRefreshableOrigin(origin) && (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      className="gap-1"
+                      onClick={() => setConfirmRefresh(true)}
+                    >
+                      <RotateCw className="h-3 w-3" />
+                      {t(($) => $.detail.refresh.button)}
+                    </Button>
+                  }
+                />
+                <TooltipContent>
+                  {t(($) => $.detail.refresh.tooltip)}
+                </TooltipContent>
+              </Tooltip>
+            )}
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -1433,6 +1481,17 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
         ctx={actionsCtx}
         open={showAddToAgents}
         onOpenChange={setShowAddToAgents}
+      />
+
+      <RefreshSkillDialog
+        skill={skill}
+        origin={origin}
+        wsId={wsId}
+        open={confirmRefresh}
+        onOpenChange={setConfirmRefresh}
+        // Adopt explicitly: the user just confirmed the overwrite, so a dirty
+        // draft must be replaced instead of tripping the conflict banner.
+        onRefreshed={(updated) => adoptServerVersion(updated)}
       />
     </div>
   );
