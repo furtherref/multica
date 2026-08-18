@@ -29,20 +29,14 @@ import type {
   UpdateIssueRequest,
 } from "@multica/core/types";
 import { useViewStore, useViewStoreApi } from "@multica/core/issues/stores/view-store-context";
+import { useViewBaseline } from "../surface/view-baseline-context";
 import { filterIssues, type IssueFilters } from "../utils/filter";
 import { getMoveAnchors } from "../utils/drag-utils";
 import type { SwimlaneGrouping } from "@multica/core/issues/stores/view-store";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useActorName } from "@multica/core/workspace/hooks";
-import { useLoadMoreByStatus } from "@multica/core/issues/mutations";
-import {
-  childrenByParentsOptions,
-  issueKeys,
-  resolveListStatuses,
-  type IssueSortParam,
-  type MyIssuesFilter,
-} from "@multica/core/issues/queries";
+import { childrenByParentsOptions, issueKeys } from "@multica/core/issues/queries";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -50,7 +44,7 @@ import {
   DropdownMenuItem,
 } from "@multica/ui/components/ui/dropdown-menu";
 import { sortIssues } from "../utils/sort";
-import { ALL_STATUSES, DEFAULT_VISIBLE_STATUSES, STATUS_CONFIG } from "@multica/core/issues/config";
+import { ALL_STATUSES, STATUS_CONFIG } from "@multica/core/issues/config";
 import { DraggableBoardCard, BoardCardContent } from "./board-card";
 import { StatusIcon } from "./status-icon";
 import { Button } from "@multica/ui/components/ui/button";
@@ -610,14 +604,11 @@ function SwimLaneViewImpl({
   issues,
   unfilteredIssues,
   activeFilters: activeFiltersProp,
-  visibleStatuses = DEFAULT_VISIBLE_STATUSES,
+  visibleStatuses = ALL_STATUSES,
   hiddenStatuses = [],
   onMoveIssue,
   childProgressMap = EMPTY_PROGRESS_MAP,
   projectMap,
-  myIssuesScope,
-  myIssuesFilter,
-  sort,
   projectId,
   onCreateIssue,
   groupBranches,
@@ -642,10 +633,6 @@ function SwimLaneViewImpl({
   ) => void;
   childProgressMap?: Map<string, ChildProgress>;
   projectMap?: Map<string, Project>;
-  myIssuesScope?: string;
-  myIssuesFilter?: MyIssuesFilter;
-  /** Must match the sort the page queried with — embedded in the cache key. */
-  sort?: IssueSortParam;
   /** Pre-fills `project_id` on the create form for the in-cell "+" button. */
   projectId?: string;
   onCreateIssue?: (defaults: IssueCreateDefaults) => void;
@@ -654,6 +641,7 @@ function SwimLaneViewImpl({
   const { t } = useT("issues");
   const paths = useWorkspacePaths();
   const viewStoreApi = useViewStoreApi();
+  const viewBaseline = useViewBaseline();
   const sortBy = useViewStore((s) => s.sortBy);
   const sortDirection = useViewStore((s) => s.sortDirection);
   const swimlaneGrouping = useViewStore((s) => s.swimlaneGrouping);
@@ -693,28 +681,11 @@ function SwimLaneViewImpl({
 
   const laneSourceIssues = unfilteredIssues ?? issues;
 
-  const myIssuesOpts = useMemo(
-    () =>
-      myIssuesScope
-        ? { scope: myIssuesScope, filter: myIssuesFilter ?? {} }
-        : undefined,
-    [myIssuesScope, myIssuesFilter],
-  );
-
   // Re-impose canonical status order (ALL_STATUSES) on whatever the controller
   // marked visible, so columns — including `cancelled`, ordered last — render
   // in lifecycle order.
   const sortedStatuses = useMemo(
     () => ALL_STATUSES.filter((s) => visibleStatuses.includes(s)),
-    [visibleStatuses],
-  );
-
-  // Must match the statuses the active statusIssuesQuery actually fetched
-  // (see use-issue-surface-data's listStatuses) so load-more recomputes the
-  // same cache key — including for a non-archive column while `archive` is
-  // ALSO part of the active status filter.
-  const listStatuses = useMemo(
-    () => resolveListStatuses(visibleStatuses),
     [visibleStatuses],
   );
 
@@ -1351,39 +1322,32 @@ function SwimLaneViewImpl({
   const laneComponents = useMemo(
     () => ({
       Footer: () =>
-        groupBranches?.enabled ? (
-          groupBranches.hasMoreGroups ? (
-            <div className="pt-4">
-              <InfiniteScrollSentinel
-                onVisible={groupBranches.loadMoreGroups}
-                loading={groupBranches.isLoadingMoreGroups}
-              />
-            </div>
-          ) : null
-        ) : (
+        groupBranches?.enabled && groupBranches.hasMoreGroups ? (
           <div className="pt-4">
-            <SwimLaneLoadMoreRow
-              sortedStatuses={sortedStatuses}
-              gridStyle={gridStyle}
-              myIssuesOpts={myIssuesOpts}
-              sort={sort}
-              listStatuses={listStatuses}
+            <InfiniteScrollSentinel
+              onVisible={groupBranches.loadMoreGroups}
+              loading={groupBranches.isLoadingMoreGroups}
             />
           </div>
-        ),
+        ) : null,
     }),
     [
       groupBranches?.enabled,
       groupBranches?.hasMoreGroups,
       groupBranches?.isLoadingMoreGroups,
       groupBranches?.loadMoreGroups,
-      sortedStatuses,
-      gridStyle,
-      myIssuesOpts,
-      sort,
-      listStatuses,
     ],
   );
+
+  // An aborted drag (pointercancel, window resize, tab hide, Escape) fires
+  // onDragCancel instead of onDragEnd. Releasing the drag lock here keeps
+  // localCells resyncing with the cache afterwards — see the same handler in
+  // list-view for the touch path that makes this routine (MUL-6240).
+  const handleDragCancel = useCallback(() => {
+    isDraggingRef.current = false;
+    setActiveIssue(null);
+    setLocalCells(cells);
+  }, [cells]);
 
   const computeLaneKey = (_index: number, lane: LaneGroup) => lane.key;
   const renderLane = (index: number, lane: LaneGroup) => (
@@ -1414,6 +1378,7 @@ function SwimLaneViewImpl({
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
     >
       <div ref={attachScroller} data-tab-scroll-root="swimlane" className="flex flex-1 min-h-0 gap-4 overflow-auto p-4">
         <div className="flex shrink-0 flex-col" style={{ width: `${trackWidth}px` }}>
@@ -1471,6 +1436,12 @@ function SwimLaneViewImpl({
                         />
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem
+                            disabled={viewBaseline?.status.has(status) === true}
+                            title={
+                              viewBaseline?.status.has(status) === true
+                                ? t(($) => $.filters.in_view)
+                                : undefined
+                            }
                             onClick={() => viewStoreApi.getState().hideStatus(status)}
                           >
                             <EyeOff className="size-3.5" />
@@ -1849,51 +1820,6 @@ function SwimLaneHiddenColumnsPanel({
   );
 }
 
-function SwimLaneLoadMoreRow({
-  sortedStatuses,
-  gridStyle,
-  myIssuesOpts,
-  sort,
-  listStatuses,
-}: {
-  sortedStatuses: IssueStatus[];
-  gridStyle: React.CSSProperties;
-  myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
-  sort?: IssueSortParam;
-  /** Effective statuses the active statusIssuesQuery fetched — see
-   *  useLoadMoreByStatus's `statuses` contract. */
-  listStatuses?: readonly IssueStatus[];
-}) {
-  return (
-    <div style={gridStyle}>
-      {sortedStatuses.map((status) => (
-        <SwimLaneLoadMoreCell
-          key={status}
-          status={status}
-          myIssuesOpts={myIssuesOpts}
-          sort={sort}
-          listStatuses={listStatuses}
-        />
-      ))}
-    </div>
-  );
-}
-
-function SwimLaneLoadMoreCell({
-  status,
-  myIssuesOpts,
-  sort,
-  listStatuses,
-}: {
-  status: IssueStatus;
-  myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
-  sort?: IssueSortParam;
-  listStatuses?: readonly IssueStatus[];
-}) {
-  const { loadMore, hasMore, isLoading } = useLoadMoreByStatus(status, myIssuesOpts, sort, listStatuses);
-  if (!hasMore) return <div />;
-  return <InfiniteScrollSentinel onVisible={loadMore} loading={isLoading} />;
-}
 
 /**
  * Memoized: the surface controller re-renders on loading-flag flips (e.g. a

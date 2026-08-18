@@ -1,6 +1,6 @@
 // Package agent provides a unified interface for executing prompts via
 // coding agents (Claude Code, CodeBuddy, Codex, Copilot, OpenCode, DevEco Code,
-// OpenClaw, Hermes, Pi, Cursor, Kimi, Reasonix, Kiro, Antigravity, Qoder,
+// OpenClaw, Hermes, Pi, Oh-My-Pi, Cursor, Kimi, Reasonix, Kiro, Antigravity, Qoder,
 // Trae, Grok, Qwen Code, QwenPaw). It
 // mirrors the happy-cli AgentBackend pattern, translated to idiomatic Go.
 package agent
@@ -38,6 +38,16 @@ type ExecOptions struct {
 	MaxTurns                  int
 	Timeout                   time.Duration
 	SemanticInactivityTimeout time.Duration
+	// FirstTurnNoProgressTimeout optionally overrides the Codex first-turn
+	// no-progress ceiling — the window a turn may stay completely silent after
+	// the app-server reports turn/started before the watchdog fails it. Zero
+	// keeps the provider default and the existing behaviour where
+	// SemanticInactivityTimeout can only shrink that ceiling; a positive value
+	// sets it explicitly, upward included. This answers a different question than
+	// SemanticInactivityTimeout ("did the process ever start producing?" vs "has
+	// a running turn gone quiet?"), so the two move independently. Currently
+	// honoured by the codex backend (GH #3262).
+	FirstTurnNoProgressTimeout time.Duration
 	// IdleWatchdogTimeout optionally narrows the daemon's generic no-message
 	// watchdog for this execution. Zero keeps the daemon-wide window, and a
 	// value above that window cannot extend the global safety bound. The
@@ -83,7 +93,7 @@ type ExecOptions struct {
 	// "use the runtime/model default" —
 	// every backend that consumes this skips its --effort / reasoning_effort
 	// injection so the upstream CLI's own default applies. Currently honoured
-	// by the claude, codex, opencode, codebuddy, and grok (ACP
+	// by the claude, codex, opencode, codebuddy, dsh, and grok (ACP
 	// `--effort` on `grok agent`) backends; other backends ignore
 	// the field rather than fail (so MUL-2339 can grow runtime support
 	// incrementally without breaking unrelated agents).
@@ -209,6 +219,14 @@ type Result struct {
 	// network drops, rate limits, quota, provider 5xx, or auth errors. Those
 	// keep the session pointer so the platform's own retry can resume the
 	// truncated conversation (see retryableReasons in internal/service/task.go).
+	//
+	// The auth exclusion above stands even for the one auth error a fresh
+	// session DOES cure — a resumed session whose persisted provider identity
+	// can no longer resolve its credentials (GH #6777). An adapter cannot tell
+	// that apart from a genuinely bad credential by looking at the error, so
+	// the judgement is made once, provider-agnostically, in
+	// shouldRetryWithFreshSession, where "was this run a resume?" is already
+	// known. Do not encode it here.
 	ResumeRejected bool
 	// codexInitializeRetrySafe is provider-internal evidence that an
 	// initialize timeout happened before semantic activity and after the
@@ -224,7 +242,7 @@ type Result struct {
 
 // Config configures a Backend instance.
 type Config struct {
-	ExecutablePath string            // path to CLI binary (claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor, kimi, reasonix, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw)
+	ExecutablePath string            // path to CLI binary (claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw)
 	CLIVersion     string            // detected version paired with ExecutablePath; observation only, never used to choose behavior
 	Env            map[string]string // extra environment variables
 	Logger         *slog.Logger
@@ -242,18 +260,28 @@ type Config struct {
 	// vendor's binary; it defaults to false so an unset caller fails
 	// closed onto standard behavior.
 	BuiltinRuntime bool
+	// LaunchPrefix is the argv prefix that belongs to ExecutablePath itself —
+	// a custom runtime profile's fixed_args. It is spliced in directly after
+	// the executable, ahead of every argument a backend builds, because a
+	// wrapper's subcommand has to be consumed before the wrapped CLI's own
+	// flags mean anything (`ccms start q36` then `-p …`, GH #7046).
+	//
+	// Unlike ExtraArgs this is not opt-in: New filters it once and the
+	// Command boundary applies it to every process the package spawns, task
+	// launches and CLI probes alike. Backends never read it directly.
+	LaunchPrefix []string
 }
 
 // New creates a Backend for the given agent type.
-// Supported types: "claude", "codebuddy", "codex", "copilot", "opencode", "deveco", "openclaw", "hermes", "pi", "cursor", "kimi", "reasonix", "kiro", "antigravity", "qoder", "qoderclicn", "traecli", "grok", "qwen", "qwenpaw".
+// Supported types: "claude", "codebuddy", "codex", "copilot", "opencode", "deveco", "openclaw", "hermes", "pi", "cursor", "kimi", "reasonix", "dsh", "kiro", "antigravity", "qoder", "qoderclicn", "traecli", "grok", "qwen", "qwenpaw".
 //
 // SupportedTypes is the canonical whitelist of agent types eligible to back a
 // custom runtime profile. It MUST stay in lockstep with the
 // runtime_profile.protocol_family CHECK constraint (migration 120, widened by
 // migration 134 to add qoder, migration 136 to add traecli, migration 175 to
 // add deveco, migration 179 to add grok, migration 202 to add qwen,
-// migration 242 to add qoderclicn, migration 253 to add qwenpaw, and
-// migration 254 to add reasonix): a
+// migration 242 to add qoderclicn, migration 253 to add qwenpaw,
+// migration 254 to add reasonix, migration 313 to add dsh): a
 // custom runtime profile may only
 // be based on a backend Multica officially supports.
 // qoder and qoderclicn share the same ACP backend; keeping both provider keys
@@ -276,6 +304,7 @@ var SupportedTypes = []string{
 	"cursor",
 	"kimi",
 	"reasonix",
+	"dsh",
 	"kiro",
 	"antigravity",
 	"qoder",
@@ -329,6 +358,12 @@ func New(agentType string, cfg Config) (Backend, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	// Filter the launch prefix here, at the one point that knows both the
+	// prefix and the protocol family. Doing it per-backend would be the same
+	// opt-in arrangement that let ExtraArgs rot: a family that forgot the call
+	// would accept a fixed_args `--output-format text` and break its own
+	// stream-json channel.
+	cfg.LaunchPrefix = filterLaunchPrefix(cfg.LaunchPrefix, agentType, cfg.Logger)
 
 	switch agentType {
 	case "claude":
@@ -355,6 +390,8 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &kimiBackend{cfg: cfg}, nil
 	case "reasonix":
 		return &reasonixBackend{cfg: cfg}, nil
+	case "dsh":
+		return &dshBackend{cfg: cfg}, nil
 	case "kiro":
 		return &kiroBackend{cfg: cfg}, nil
 	case "antigravity":
@@ -370,13 +407,18 @@ func New(agentType string, cfg Config) (Backend, error) {
 	case "qwenpaw":
 		return &qwenpawBackend{cfg: cfg}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent type: %q (supported: claude, codebuddy, codex, copilot, opencode, deveco, openclaw, hermes, pi, cursor, kimi, reasonix, kiro, antigravity, qoder, qoderclicn, traecli, grok, qwen, qwenpaw)", agentType)
+		return nil, fmt.Errorf("unknown agent type: %q (supported: claude, codebuddy, codex, copilot, opencode, deveco, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro, antigravity, qoder, qoderclicn, traecli, grok, qwen, qwenpaw)", agentType)
 	}
 }
 
 // DetectVersion runs the agent CLI with --version and returns the output.
-func DetectVersion(ctx context.Context, executablePath string) (string, error) {
-	return detectCLIVersion(ctx, executablePath)
+//
+// cmd carries the runtime's launch prefix, so a custom profile is probed the
+// way it is launched: `ccms start q36 --version` reports the version of the
+// CLI the wrapper actually execs, where a bare `ccms --version` would report
+// the wrapper's own and pin the runtime to the wrong compatibility policy.
+func DetectVersion(ctx context.Context, cmd Command) (string, error) {
+	return detectCLIVersion(ctx, cmd)
 }
 
 // launchHeaders maps each supported agent type to the user-visible skeleton
@@ -396,6 +438,7 @@ var launchHeaders = map[string]string{
 	"hermes":      "hermes acp",
 	"kimi":        "kimi acp",
 	"reasonix":    "reasonix acp",
+	"dsh":         "dsh --profile multica (stdio)",
 	"kiro":        "kiro-cli acp",
 	"openclaw":    "openclaw agent (json)",
 	"opencode":    "opencode run (json)",
@@ -412,5 +455,13 @@ var launchHeaders = map[string]string{
 // empty string if the type is unknown. Callers render this as a preview so
 // users understand which command their custom_args get appended to.
 func LaunchHeader(agentType string) string {
-	return launchHeaders[agentType]
+	if h := launchHeaders[agentType]; h != "" {
+		return h
+	}
+	// Built-in runtime identities derive their launch header from the
+	// descriptor, not the protocol-family map.
+	if desc, ok := BuiltinRuntimeByID(agentType); ok {
+		return desc.LaunchHeader
+	}
+	return ""
 }

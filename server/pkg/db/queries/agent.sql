@@ -277,7 +277,42 @@ SELECT * FROM agent_task_queue
 WHERE agent_id = $1
 ORDER BY created_at DESC;
 
+-- name: ListActiveSiblingIssueTasks :many
+-- Claim-time context for agents that can work concurrently. Only tasks already
+-- handed to a runtime can coordinate with the new claim; queued work is omitted
+-- so the warning stays high-signal. Bounded so one heavily-used agent cannot
+-- inflate every claim payload; issue-bound rows carry a concrete run-messages
+-- lookup target.
+SELECT
+    atq.id AS task_id,
+    i.id AS issue_id,
+    w.issue_prefix,
+    i.number AS issue_number,
+    i.title AS issue_title,
+    atq.status,
+    atq.created_at,
+    atq.started_at
+FROM agent_task_queue atq
+JOIN issue i ON i.id = atq.issue_id
+JOIN workspace w ON w.id = i.workspace_id
+WHERE atq.agent_id = @agent_id
+  AND atq.id <> @task_id
+  AND i.workspace_id = @workspace_id
+  AND atq.status IN ('dispatched', 'running', 'waiting_local_directory')
+ORDER BY
+    CASE atq.status
+        WHEN 'running' THEN 0
+        WHEN 'waiting_local_directory' THEN 1
+        ELSE 2
+    END,
+    atq.created_at DESC
+LIMIT 5;
+
 -- name: CreateAgentTask :one
+-- Fenced against workspace teardown: lock_task_owner_rows (migration 284)
+-- locks the owners' workspace rows in the writer's own transaction and returns
+-- false once they are gone, so this statement writes no row instead of stranding
+-- a task in a workspace that has just been deleted (MUL-5999).
 -- head_sha stamps the commit under review into the task's context JSONB so the
 -- reviewer-loop dedup (HasPendingTaskForIssueAndAgent) can tell a pending run
 -- against an OLD head apart from a fresh request against a NEW head (TEN-356).
@@ -291,7 +326,7 @@ INSERT INTO agent_task_queue (
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id
 )
-VALUES (
+SELECT
     $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
     COALESCE(sqlc.narg(coalesced_comment_ids)::uuid[], '{}'),
     sqlc.narg(trigger_summary),
@@ -314,10 +349,14 @@ VALUES (
     sqlc.narg(rerun_of_task_id),
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id)
-)
+WHERE lock_task_owner_rows($1, $3, $2)
 RETURNING *;
 
 -- name: CreateDeferredChannelIssueTask :one
+-- Fenced against workspace teardown: lock_task_owner_rows (migration 284)
+-- locks the owners' workspace rows in the writer's own transaction and returns
+-- false once they are gone, so this statement writes no row instead of stranding
+-- a task in a workspace that has just been deleted (MUL-5999).
 -- Channel /issue media resolves after issue creation. Persist the assigned
 -- issue task up front for crash safety, but keep it inert until attachment
 -- binding settles or the fire_at fallback is promoted by the normal sweeper.
@@ -328,7 +367,7 @@ INSERT INTO agent_task_queue (
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id,
     trigger_evidence_kind, trigger_evidence_ref_id, fire_at
 )
-VALUES (
+SELECT
     $1, $2, $3, 'deferred', $4, sqlc.narg(trigger_comment_id),
     COALESCE(sqlc.narg(coalesced_comment_ids)::uuid[], '{}'),
     sqlc.narg(trigger_summary),
@@ -351,7 +390,7 @@ VALUES (
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id),
     @fire_at
-)
+WHERE lock_task_owner_rows($1, $3, $2)
 RETURNING *;
 
 -- name: PromoteDeferredChannelIssueTask :one
@@ -376,6 +415,10 @@ WHERE id = @id
   AND originator_user_id IS NOT DISTINCT FROM sqlc.narg(expected_originator_user_id)::uuid;
 
 -- name: CreateQuickCreateTask :one
+-- Fenced against workspace teardown: lock_task_owner_rows (migration 284)
+-- locks the owners' workspace rows in the writer's own transaction and returns
+-- false once they are gone, so this statement writes no row instead of stranding
+-- a task in a workspace that has just been deleted (MUL-5999).
 -- Quick-create tasks have no issue / chat / autopilot link; the entire job
 -- description (prompt, requester, workspace) lives in context JSONB. The
 -- daemon detects this variant via context.type == "quick_create".
@@ -387,7 +430,7 @@ INSERT INTO agent_task_queue (
     accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, trigger_evidence_kind, trigger_evidence_ref_id
 )
-VALUES (
+SELECT
     $1, $2, NULL, 'queued', $3, $4,
     sqlc.narg(originator_user_id),
     sqlc.narg(accountable_user_id),
@@ -396,10 +439,14 @@ VALUES (
     sqlc.narg(originator_source),
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id)
-)
+WHERE lock_task_owner_rows($1, NULL, $2)
 RETURNING *;
 
 -- name: CreateDeferredAgentTask :one
+-- Fenced against workspace teardown: lock_task_owner_rows (migration 284)
+-- locks the owners' workspace rows in the writer's own transaction and returns
+-- false once they are gone, so this statement writes no row instead of stranding
+-- a task in a workspace that has just been deleted (MUL-5999).
 -- Deferred tasks are inert until PromoteDueDeferredTasksForRuntime flips them
 -- to queued. Used for comment-routing escalation: a thread-owner primary task
 -- gets a delayed assignee fallback without waking both agents at t=0.
@@ -413,7 +460,7 @@ INSERT INTO agent_task_queue (
     originator_user_id, accountable_user_id, originator_source,
     delegated_from_task_id, trigger_evidence_kind, trigger_evidence_ref_id
 )
-VALUES (
+SELECT
     @agent_id, @runtime_id, @issue_id, 'deferred', @priority,
     sqlc.narg(trigger_comment_id),
     sqlc.narg(trigger_summary),
@@ -427,10 +474,14 @@ VALUES (
     sqlc.narg(delegated_from_task_id),
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id)
-)
+WHERE lock_task_owner_rows($1, $3, $2)
 RETURNING *;
 
 -- name: LinkTaskToIssue :exec
+-- Fenced against workspace teardown: lock_task_owner_rows (migration 284)
+-- locks the owners' workspace rows in the writer's own transaction and returns
+-- false once they are gone, so this statement writes no row instead of stranding
+-- a task in a workspace that has just been deleted (MUL-5999).
 -- Attaches the issue a quick-create task produced back to the task row, once
 -- the agent has finished and the issue exists. Guarded by `issue_id IS NULL`
 -- so this never overwrites an issue id that was set at task creation (only
@@ -438,9 +489,14 @@ RETURNING *;
 -- "Creating issue" forever after completion.
 UPDATE agent_task_queue
 SET issue_id = $2
-WHERE id = $1 AND issue_id IS NULL;
+WHERE id = $1 AND issue_id IS NULL
+  AND lock_task_owner_rows(NULL, $2, NULL);
 
 -- name: CreateRetryTask :one
+-- Fenced against workspace teardown: lock_task_owner_rows (migration 284)
+-- locks the owners' workspace rows in the writer's own transaction and returns
+-- false once they are gone, so this statement writes no row instead of stranding
+-- a task in a workspace that has just been deleted (MUL-5999).
 -- Clones a parent task into a fresh queued attempt. Carries forward the
 -- agent's resume context (session_id/work_dir) so the child can continue
 -- the conversation when the backend supports it. Resume-unsafe failures are
@@ -528,6 +584,7 @@ WHERE p.id = $1
   AND (p.issue_id IS NULL OR NOT EXISTS (
       SELECT 1 FROM issue i WHERE i.id = p.issue_id AND i.status = 'archive'
   ))
+  AND lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
 RETURNING *;
 
 -- name: CancelAgentTasksByIssue :many
@@ -817,6 +874,7 @@ UPDATE agent_task_queue
 SET status = 'completed', completed_at = now(), result = $2,
     session_id = CASE WHEN sqlc.arg('session_rollout_missing') THEN NULL ELSE $3 END,
     work_dir = $4,
+    branch_name = COALESCE(sqlc.narg('branch_name'), branch_name),
     session_rollout_missing = sqlc.arg('session_rollout_missing'),
     retired_session_id = COALESCE(sqlc.narg('retired_session_id'), retired_session_id),
     prepare_lease_expires_at = NULL
@@ -966,6 +1024,9 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
       -- the only thing that keeps a wedged issue from resuming the same dead
       -- session on its next trigger — there is no daemon upgrade to wait for.
       -- Keep in sync with ResumeUnsafeFailure and GetLastChatTaskSession.
+      -- The phrase itself lives in taskfailure.AuthMethodUnresolved, which the
+      -- daemon's in-turn fresh-session retry reads (GH #6777). This guard stays
+      -- because it is the only protection for rows an older daemon wrote.
       AND NOT (COALESCE(error, '') ILIKE '%could not resolve authentication method%')
       AND NOT (COALESCE(error, '') ~* 'must not be empty|must be non-?empty|must have non-?empty|non-?empty content|cannot be empty|should not be empty'
                AND COALESCE(error, '') ~* 'role[^a-z0-9]{0,2}assistant|assistant message|message at position|messages\.[0-9]|messages\[[0-9]')
@@ -1046,6 +1107,7 @@ SET status = 'failed',
     failure_reason = COALESCE(sqlc.narg('failure_reason'), 'agent_error'),
     session_id = CASE WHEN sqlc.arg('session_rollout_missing') THEN NULL ELSE COALESCE(sqlc.narg('session_id'), session_id) END,
     work_dir = COALESCE(sqlc.narg('work_dir'), work_dir),
+    branch_name = COALESCE(sqlc.narg('branch_name'), branch_name),
     session_rollout_missing = sqlc.arg('session_rollout_missing'),
     retired_session_id = COALESCE(sqlc.narg('retired_session_id'), retired_session_id),
     prepare_lease_expires_at = NULL
@@ -1198,6 +1260,55 @@ RETURNING t.*;
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
 WHERE id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+RETURNING *;
+
+-- name: SetAgentTaskBranchName :exec
+-- Records the delivered branch on a CANCELLED task. Needed because the daemon
+-- finalizes its worktree (committing whatever the agent produced) BEFORE it
+-- learns the task was cancelled, so the branch exists but the cancel path has
+-- no result payload to carry it. Without this the branch is real and
+-- completely undiscoverable from the UI.
+--
+-- Never overwrites a name already recorded by a complete/fail callback, and
+-- never touches any OTHER terminal state: the daemon acks on every terminal
+-- status it observes, so a late or replayed ack from a stale run could
+-- otherwise write its branch into a completed/failed row whose own callback —
+-- the authoritative channel for those states — recorded nothing. status is
+-- stable once terminal, so this CAS cannot race a legitimate write.
+UPDATE agent_task_queue
+SET branch_name = COALESCE(branch_name, sqlc.arg('branch_name'))
+WHERE id = sqlc.arg('id') AND status = 'cancelled';
+
+-- name: SetAgentTaskErrorIfEmpty :exec
+-- Companion to SetAgentTaskBranchName for the cancel-ack path. A cancelled
+-- worktree task whose Finalize ABORTED has no branch to deliver — the error
+-- text carrying the preserved-worktree path is the only pointer to the agent's
+-- work, and the cancel flow discarded the rest of the result. A user-initiated
+-- cancel leaves error NULL, so filling it here never overwrites a reason
+-- recorded by a fail callback or the claim gate; the status CAS keeps a late
+-- ack from stamping an error onto a completed/failed row (see
+-- SetAgentTaskBranchName above).
+UPDATE agent_task_queue
+SET error = sqlc.arg('error'),
+    failure_reason = COALESCE(failure_reason, sqlc.arg('failure_reason'))
+WHERE id = sqlc.arg('id') AND (error IS NULL OR error = '') AND status = 'cancelled';
+
+-- name: CancelAgentTaskWithReason :one
+-- Cancels a task AND records why, for cancellations the user did not ask for.
+--
+-- Plain CancelAgentTask leaves error/failure_reason NULL, which is right for a
+-- user-initiated cancel — the user knows why. A server-initiated one is the
+-- opposite: without a persisted reason the run surfaces as an unexplained
+-- "cancelled", and the only trace is a 4xx in a daemon log the user never sees.
+-- Retrying cannot help either (the task is refused for a durable reason), so
+-- this is a terminal state that has to carry its own explanation.
+UPDATE agent_task_queue
+SET status = 'cancelled',
+    completed_at = now(),
+    error = sqlc.arg('error'),
+    failure_reason = sqlc.arg('failure_reason'),
+    prepare_lease_expires_at = NULL
+WHERE id = sqlc.arg('id') AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
 
 -- name: CancelQueuedAgentTask :one

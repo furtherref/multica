@@ -118,11 +118,21 @@ func TestPrepareDirectoryMode(t *testing.T) {
 	defer env.Cleanup(true)
 
 	// Verify directory structure.
-	for _, sub := range []string{"workdir", "output", "logs"} {
+	for _, sub := range []string{"workdir", "output", "logs", "multica-config"} {
 		path := filepath.Join(env.RootDir, sub)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			t.Fatalf("expected %s to exist", path)
 		}
+	}
+	if env.MulticaConfigRoot != filepath.Join(env.RootDir, "multica-config") {
+		t.Fatalf("MulticaConfigRoot = %q, want task-local config directory", env.MulticaConfigRoot)
+	}
+	info, err := os.Stat(env.MulticaConfigRoot)
+	if err != nil {
+		t.Fatalf("stat MulticaConfigRoot: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("MulticaConfigRoot mode = %o, want 700", got)
 	}
 
 	// Verify context file contains issue ID and CLI hints.
@@ -1070,10 +1080,12 @@ func TestInjectRuntimeConfigAvailableCommandsCoreOnly(t *testing.T) {
 		"multica issue comment list <issue-id>",
 		"multica issue create --title",
 		"multica issue update <id>",
+		"multica issue assign <id>",
+		"--no-start",
 		"--description-file <path>",
 		"--parent \"\"",
 		"multica repo checkout <url>",
-		"multica issue status <id> <status>",
+		"multica issue status <id> <status> [--no-start]",
 		"multica issue comment add <issue-id>",
 		"multica issue comment add --help",
 	} {
@@ -1122,7 +1134,6 @@ func TestInjectRuntimeConfigAvailableCommandsCoreOnly(t *testing.T) {
 		"multica autopilot delete",
 		"multica project get",
 		"multica project resource list",
-		"multica issue assign",
 		"multica issue label add",
 		"multica issue label remove",
 		"multica issue subscriber add",
@@ -3963,6 +3974,14 @@ func TestReuseRestoresCodexHome(t *testing.T) {
 	if reused.CodexHome == "" {
 		t.Fatal("expected CodexHome to be restored after Reuse")
 	}
+	if reused.MulticaConfigRoot != filepath.Join(reused.RootDir, "multica-config") {
+		t.Fatalf("MulticaConfigRoot = %q, want restored task-local config directory", reused.MulticaConfigRoot)
+	}
+	if info, err := os.Stat(reused.MulticaConfigRoot); err != nil {
+		t.Fatalf("stat restored MulticaConfigRoot: %v", err)
+	} else if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("restored MulticaConfigRoot mode = %o, want 700", got)
+	}
 
 	// Verify config.toml has a managed block (exact mode depends on host
 	// platform; either workspace-write or danger-full-access is valid).
@@ -4564,8 +4583,10 @@ func TestPrepareCodexNoUserSkillsDir(t *testing.T) {
 
 // TestPrepareCodexResolvesUserSkillSymlinks covers the lark-cli /
 // shared-installer case: each user skill is a symlink into a separate
-// installer directory. The per-task home must end up with a real copy, not
-// a dangling symlink that points outside the task root.
+// installer directory. The per-task home links to the resolved installer
+// directory — never to the installer's own link, which would leave the CLI
+// following a chain that breaks the moment the installer re-points it, and
+// never dangling.
 func TestPrepareCodexResolvesUserSkillSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on Windows; covered by Unix path")
@@ -4605,12 +4626,19 @@ func TestPrepareCodexResolvesUserSkillSymlinks(t *testing.T) {
 	defer env.Cleanup(true)
 
 	dst := filepath.Join(env.CodexHome, "skills", "lark-mail")
-	fi, err := os.Lstat(dst)
-	if err != nil {
+	if _, err := os.Lstat(dst); err != nil {
 		t.Fatalf("seeded skill missing: %v", err)
 	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		t.Errorf("seeded skill should be a real directory, got a symlink")
+	target, err := os.Readlink(dst)
+	if err != nil {
+		t.Fatalf("seeded skill should be a link into the installer dir: %v", err)
+	}
+	wantTarget, err := filepath.EvalSymlinks(installerRoot)
+	if err != nil {
+		t.Fatalf("resolve installer dir: %v", err)
+	}
+	if target != wantTarget {
+		t.Errorf("link target = %q, want the resolved installer dir %q", target, wantTarget)
 	}
 	data, err := os.ReadFile(filepath.Join(dst, "SKILL.md"))
 	if err != nil {
@@ -5634,9 +5662,9 @@ func TestInjectRuntimeConfigCatchUpScansRootsFirst(t *testing.T) {
 
 // TestInjectRuntimeConfigIssueMetadataSectionScope locks in MUL-2017:
 // the `## Issue Metadata` section (semantic guide + recommended keys +
-// pin/clear rules) and the `metadata list` workflow step are emitted only
-// when the task carries a real issue id (comment-triggered or
-// assignment-triggered). Chat / quick-create / run-only autopilot don't
+// pin/clear rules) and the metadata-read guidance on the issue-get step
+// are emitted only when the task carries a real issue id (comment-triggered
+// or assignment-triggered). Chat / quick-create / run-only autopilot don't
 // have an issue, so injecting the section there would just guarantee a
 // failed CLI call on every entry. The discovery line in Available
 // Commands → Core is global and must appear everywhere so that the agent
@@ -5709,9 +5737,10 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 		// each entry must appear in the workflow numbered list to prove
 		// the metadata read step is wired in.
 		workflowStepPresent []string
-		// workflowAbsent is matched in non-issue contexts to guarantee
-		// no metadata-list step leaked into a workflow that has no
-		// issue id.
+		// workflowAbsent lists workflow substrings that must NOT appear:
+		// in non-issue contexts, any metadata-list step that leaked into
+		// a workflow with no issue id; in issue contexts, the standalone
+		// metadata-list read step retired by #7016.
 		workflowAbsent []string
 		want           wantSection
 	}{
@@ -5724,11 +5753,13 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			provider: "claude",
 			filename: "CLAUDE.md",
 			workflowStepPresent: []string{
-				"Read the metadata bag (`multica issue metadata list`)",
-				// Platform failure semantics, not tool mechanics: a failed
-				// metadata read must never block the main task (MUL-5442
-				// stage-1 review).
-				"CLI failures are normal",
+				// #7016: the standalone `metadata list` read was folded
+				// into the issue-get step — `issue get` already returns
+				// the metadata bag, so the entry read costs zero extra
+				// calls. The old step's "CLI failures are normal"
+				// best-effort clause retired with it: when `issue get`
+				// itself fails, there is no bootstrap to unblock.
+				"its JSON already carries the issue's `metadata` bag",
 				// Both steps point at the section instead of restating its
 				// rules (MUL-5442); the entry step names what to look for,
 				// the exit step names the write bar.
@@ -5741,6 +5772,10 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 				"multica issue metadata delete",
 				"Before exiting",
 			},
+			workflowAbsent: []string{
+				// The redundant standalone read must not come back (#7016).
+				"Read the metadata bag (`multica issue metadata list`)",
+			},
 			want: withSection,
 		},
 		{
@@ -5749,12 +5784,15 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			provider: "claude",
 			filename: "CLAUDE.md",
 			workflowStepPresent: []string{
-				"Read the metadata bag (`multica issue metadata list`)",
+				"its JSON already carries the issue's `metadata` bag",
 				"What to look for: `## Issue Metadata`",
 				"the bar in `## Issue Metadata`",
 				"multica issue metadata set",
 				"multica issue metadata delete",
 				"Before exiting",
+			},
+			workflowAbsent: []string{
+				"Read the metadata bag (`multica issue metadata list`)",
 			},
 			want: withSection,
 		},
@@ -5869,8 +5907,12 @@ func TestInjectRuntimeConfigIssueMetadataCodexFormattingUnchanged(t *testing.T) 
 		if !strings.Contains(s, "## Issue Metadata") {
 			t.Fatalf("Issue Metadata section missing\n---\n%s", s)
 		}
-		if !strings.Contains(s, "Read the metadata bag (`multica issue metadata list`)") {
-			t.Fatalf("metadata list step missing\n---\n%s", s)
+		if !strings.Contains(s, "its JSON already carries the issue's `metadata` bag") {
+			t.Fatalf("metadata-in-issue-get guidance missing\n---\n%s", s)
+		}
+		// The standalone read step retired by #7016 must not reappear.
+		if strings.Contains(s, "Read the metadata bag (`multica issue metadata list`)") {
+			t.Fatalf("redundant metadata list step present\n---\n%s", s)
 		}
 		// ...AND the post-#4182 file-first rule is still emitted on Linux.
 		if !strings.Contains(s, "always write the comment body to a UTF-8 file with your file-write tool first, then post it with `--content-file <path>`") {

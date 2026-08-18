@@ -1972,8 +1972,35 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		AutopilotDelegationAuthorityUserID: delegationAuthorityUserID,
 	})
 	triggers = filterSuppressedCommentAgentTriggers(triggers, suppressAgentIDs)
+	h.noteBlockedRuntimeTargets(ctx, issue, targets)
 	enqueued := h.enqueueCommentAgentTriggers(ctx, issue, comment.ID, triggers)
 	return commentTriggerOutcomes(targets, enqueued)
+}
+
+// noteBlockedRuntimeTargets leaves one system comment per agent refused for an
+// unusable runtime, whoever authored the trigger — see noteRuntimeUnusable for
+// why a human author gets one too. Deduped by agent so a comment naming both
+// @Agent and the squad it leads produces a single notice.
+//
+// Called from the trigger path only. The resolver that produced these targets
+// also runs for the composer preview, where writing a comment would be a side
+// effect of typing.
+func (h *Handler) noteBlockedRuntimeTargets(ctx context.Context, issue db.Issue, targets []commentMentionTarget) {
+	var noted map[string]struct{}
+	for _, t := range targets {
+		if t.unusable == nil {
+			continue
+		}
+		id := uuidToString(t.unusable.agent.ID)
+		if _, done := noted[id]; done {
+			continue
+		}
+		if noted == nil {
+			noted = make(map[string]struct{}, 1)
+		}
+		noted[id] = struct{}{}
+		h.noteRuntimeUnusable(ctx, issue, t.unusable.agent, t.unusable.verdict)
+	}
 }
 
 func filterSuppressedCommentAgentTriggers(triggers []commentAgentTrigger, suppressAgentIDs []pgtype.UUID) []commentAgentTrigger {
@@ -2719,6 +2746,12 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 			}
 			return triggers, nil
 		}
+		// A plain member-to-member reply must not start the issue assignee just
+		// because the thread has no agent owner. Explicit mentions and existing
+		// conversation owners were already resolved above.
+		if parentComment.AuthorType == "member" {
+			return nil, nil
+		}
 	}
 
 	if trigger, ok := h.routeAssigneeFallback(ctx, issue, actorType, actorID, opts); ok {
@@ -2988,6 +3021,18 @@ type commentMentionTarget struct {
 	ExecAgentID string
 	Status      DispatchStatus
 	ReasonCode  DispatchReasonCode
+	// unusable carries the refused agent and its verdict for the one reason
+	// that needs a durable trace (runtime_unusable). Internal to the handler:
+	// the resolver runs for the composer PREVIEW as well, so it only records
+	// what happened — writing the notice is the trigger path's job.
+	unusable *blockedRuntimeNotice
+}
+
+// blockedRuntimeNotice is a refusal worth leaving on the issue: which agent, and
+// the verdict that names the repair.
+type blockedRuntimeNotice struct {
+	agent   db.Agent
+	verdict service.AgentVerdict
 }
 
 func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issue db.Issue, mentions []util.Mention, authorType, authorID string, opts commentTriggerComputeOptions) ([]commentAgentTrigger, []commentMentionTarget) {
@@ -3066,6 +3111,20 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 	blockTarget := func(targetType, targetID string, reason DispatchReasonCode) {
 		addTarget(commentMentionTarget{TargetType: targetType, TargetID: targetID, Status: DispatchBlocked, ReasonCode: reason})
 	}
+	// blockUnusableTarget is blockTarget for the one verdict that also needs a
+	// durable trace. Every author gets it, including a human: the chip and toast
+	// carry the reason code but not the repair command, and an agent-authored
+	// mention has nobody watching a response at all.
+	blockUnusableTarget := func(targetType, targetID string, agent db.Agent, verdict service.AgentVerdict) {
+		notice := &blockedRuntimeNotice{agent: agent, verdict: verdict}
+		if verdict.Reason != ReasonRuntimeUnusable {
+			notice = nil
+		}
+		addTarget(commentMentionTarget{
+			TargetType: targetType, TargetID: targetID,
+			Status: DispatchBlocked, ReasonCode: verdict.Reason, unusable: notice,
+		})
+	}
 	for _, m := range mentions {
 		if m.Type == "squad" {
 			// @squad mention → trigger the squad's leader agent.
@@ -3124,10 +3183,9 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 				blockTarget("squad", m.ID, ReasonTargetUnavailable)
 				continue
 			}
-			if !agent.RuntimeID.Valid {
-				// Unbound, not offline: the leader survived its runtime's
-				// deletion and needs a new one (MUL-5559).
-				blockTarget("squad", m.ID, ReasonAgentRuntimeRequired)
+			// Same shared verdict as the direct-agent branch below.
+			if verdict, err := service.AgentReadiness(ctx, h.Queries, agent); err == nil && verdict.Blocked() {
+				blockUnusableTarget("squad", m.ID, agent, verdict)
 				continue
 			}
 			hasPending, err := h.hasPendingTaskForIssueAndAgent(ctx, issue.ID, leaderID, opts)
@@ -3180,10 +3238,14 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			blockTarget("agent", m.ID, ReasonTargetUnavailable)
 			continue
 		}
-		if !agent.RuntimeID.Valid {
-			// Unbound, not offline: there is no machine to bring back, so the
-			// user needs "bind a runtime", not "reconnect it" (MUL-5559).
-			blockTarget("agent", m.ID, ReasonAgentRuntimeRequired)
+		// One readiness verdict for every admission path (service.AgentReadiness).
+		// Only a BLOCKED verdict refuses the mention: an unbound agent has no
+		// machine to bring back (MUL-5559), and a machine whose CLI cannot run
+		// will not start doing so on its own (MUL-6164). A merely offline
+		// runtime keeps queueing — that wait ends by itself when the machine
+		// returns, and taking it away would remove a behaviour people rely on.
+		if verdict, err := service.AgentReadiness(ctx, h.Queries, agent); err == nil && verdict.Blocked() {
+			blockUnusableTarget("agent", m.ID, agent, verdict)
 			continue
 		}
 		// Cross-squad gate: on a squad-assigned issue with an agent author,

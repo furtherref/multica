@@ -24,11 +24,12 @@ func TestBuildPiArgsNoToolAllowlist(t *testing.T) {
 
 func TestBuildPiArgsBasicFlags(t *testing.T) {
 	args := buildPiArgs("/tmp/s.jsonl", ExecOptions{
-		Model: "anthropic/claude-sonnet-4-20250514",
+		Model:         "anthropic/claude-sonnet-4-20250514",
+		ThinkingLevel: "high",
 	}, slog.Default())
 
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"-p", "--mode json", "--session /tmp/s.jsonl", "--provider anthropic", "--model claude-sonnet-4-20250514"} {
+	for _, want := range []string{"-p", "--mode json", "--session /tmp/s.jsonl", "--provider anthropic", "--model claude-sonnet-4-20250514", "--thinking high"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("expected %q in args, got: %v", want, args)
 		}
@@ -87,7 +88,8 @@ func TestBuildPiArgsFiltersCustomInputButKeepsOptionValues(t *testing.T) {
 			"--verbose",
 			"after-boolean",
 			"--extension-option", "extension-value",
-			"--thinking", "high",
+			"--thinking", "low",
+			"--thinking=medium",
 			"--offline",
 			"trailing-input",
 		},
@@ -102,7 +104,6 @@ func TestBuildPiArgsFiltersCustomInputButKeepsOptionValues(t *testing.T) {
 	for _, pair := range [][2]string{
 		{"--tools", "read,bash"},
 		{"--extension-option", "extension-value"},
-		{"--thinking", "high"},
 	} {
 		found := false
 		for i := 0; i+1 < len(args); i++ {
@@ -114,6 +115,36 @@ func TestBuildPiArgsFiltersCustomInputButKeepsOptionValues(t *testing.T) {
 		if !found {
 			t.Errorf("option/value %q %q missing from %v", pair[0], pair[1], args)
 		}
+	}
+	for _, arg := range args {
+		if arg == "--thinking" || strings.HasPrefix(arg, "--thinking=") || arg == "low" || arg == "medium" {
+			t.Errorf("custom --thinking must be owned by thinking_level and filtered, got %v", args)
+		}
+	}
+}
+
+func TestBuildPiArgsThinkingLevelOverridesCustomArgs(t *testing.T) {
+	t.Parallel()
+
+	args := buildPiArgs("/tmp/s.jsonl", ExecOptions{
+		ThinkingLevel: "max",
+		CustomArgs:    []string{"--thinking", "low", "--thinking=medium"},
+	}, slog.Default())
+
+	count := 0
+	for i, arg := range args {
+		if arg == "--thinking" {
+			count++
+			if i+1 >= len(args) || args[i+1] != "max" {
+				t.Fatalf("selected thinking level missing from args: %v", args)
+			}
+		}
+		if strings.HasPrefix(arg, "--thinking=") {
+			t.Fatalf("custom inline thinking flag leaked through: %v", args)
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one daemon-owned --thinking flag, got %d in %v", count, args)
 	}
 }
 
@@ -261,6 +292,104 @@ func TestPiExecuteRetainsOnlyLastTurnOutput(t *testing.T) {
 		}
 		if result.Output != "final answer" {
 			t.Fatalf("Output: got %q, want %q", result.Output, "final answer")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+}
+
+func TestPiExecuteFailsOnUnretriedTurnError(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	// Pi ends the turn with stopReason=error and declines to retry (401, 429
+	// and friends). It emits no `error` event and no auto_retry_end, and exits
+	// 0, so the terminal state lives only on turn_end.
+	events := []string{
+		`{"type":"agent_start"}`,
+		`{"type":"turn_start"}`,
+		`{"type":"turn_end","message":{"role":"assistant","content":[],"model":"test","usage":{"input":0,"output":0},"stopReason":"error","errorMessage":"OpenAI API error (401): invalid token"}}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+	}
+	fakePath := filepath.Join(t.TempDir(), "pi")
+	writeTestExecutable(t, fakePath, []byte(piEventStreamScript(events)))
+
+	backend, err := New("pi", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new pi backend: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	select {
+	case result := <-session.Result:
+		if result.Status != "failed" {
+			t.Fatalf("expected status=failed, got %q (error=%q)", result.Status, result.Error)
+		}
+		if !strings.Contains(result.Error, "invalid token") {
+			t.Fatalf("Error: got %q, want it to carry the provider message", result.Error)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+}
+
+func TestPiExecuteSucceedsWhenRetryFollowsTurnError(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	// The same stopReason=error precedes an automatic retry. The retry
+	// succeeds, so the run must not inherit the first turn's failure.
+	events := []string{
+		`{"type":"agent_start"}`,
+		`{"type":"turn_start"}`,
+		`{"type":"turn_end","message":{"role":"assistant","content":[],"model":"test","usage":{"input":0,"output":0},"stopReason":"error","errorMessage":"OpenAI API error (503): no available channel"}}`,
+		`{"type":"agent_end","messages":[],"willRetry":true}`,
+		`{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":1}`,
+		`{"type":"agent_start"}`,
+		`{"type":"turn_start"}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"recovered"}}`,
+		`{"type":"turn_end","message":{"role":"assistant","model":"test","usage":{"input":2,"output":2}}}`,
+	}
+	fakePath := filepath.Join(t.TempDir(), "pi")
+	writeTestExecutable(t, fakePath, []byte(piEventStreamScript(events)))
+
+	backend, err := New("pi", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new pi backend: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	select {
+	case result := <-session.Result:
+		if result.Status != "completed" {
+			t.Fatalf("expected status=completed, got %q (error=%q)", result.Status, result.Error)
+		}
+		if result.Output != "recovered" {
+			t.Fatalf("Output: got %q, want %q", result.Output, "recovered")
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("timeout waiting for result")

@@ -46,6 +46,7 @@ type SessionQueries interface {
 	LockWorkspaceForChatSessionCreate(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
 	CreateChatSession(ctx context.Context, arg db.CreateChatSessionParams) (db.ChatSession, error)
 	CreateChannelChatSessionBinding(ctx context.Context, arg db.CreateChannelChatSessionBindingParams) (db.ChannelChatSessionBinding, error)
+	LockChatSessionForAppend(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
 	CreateChatMessage(ctx context.Context, arg db.CreateChatMessageParams) (db.ChatMessage, error)
 	ClearChatMessageChannelMediaPending(ctx context.Context, arg db.ClearChatMessageChannelMediaPendingParams) error
 	LockIssueForChannelMediaBind(ctx context.Context, arg db.LockIssueForChannelMediaBindParams) (pgtype.UUID, error)
@@ -55,7 +56,7 @@ type SessionQueries interface {
 	LinkAttachmentsToChatMessage(ctx context.Context, arg db.LinkAttachmentsToChatMessageParams) ([]pgtype.UUID, error)
 	ClaimChannelMediaPendingObjectsForBind(ctx context.Context, arg db.ClaimChannelMediaPendingObjectsForBindParams) ([]string, error)
 	TouchChatSession(ctx context.Context, id pgtype.UUID) error
-	GetMostRecentUserChatMessage(ctx context.Context, chatSessionID pgtype.UUID) (db.ChatMessage, error)
+	MarkChannelChatSessionPendingFresh(ctx context.Context, chatSessionID pgtype.UUID) (bool, error)
 	UpdateChannelChatSessionBindingReplyTarget(ctx context.Context, arg db.UpdateChannelChatSessionBindingReplyTargetParams) error
 	MarkChannelInboundDedupProcessed(ctx context.Context, arg db.MarkChannelInboundDedupProcessedParams) (int64, error)
 }
@@ -79,6 +80,9 @@ func (a dbSessionQueries) CreateChatSession(ctx context.Context, arg db.CreateCh
 }
 func (a dbSessionQueries) CreateChannelChatSessionBinding(ctx context.Context, arg db.CreateChannelChatSessionBindingParams) (db.ChannelChatSessionBinding, error) {
 	return a.q.CreateChannelChatSessionBinding(ctx, arg)
+}
+func (a dbSessionQueries) LockChatSessionForAppend(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	return a.q.LockChatSessionForAppend(ctx, id)
 }
 func (a dbSessionQueries) CreateChatMessage(ctx context.Context, arg db.CreateChatMessageParams) (db.ChatMessage, error) {
 	return a.q.CreateChatMessage(ctx, arg)
@@ -107,8 +111,8 @@ func (a dbSessionQueries) ClaimChannelMediaPendingObjectsForBind(ctx context.Con
 func (a dbSessionQueries) TouchChatSession(ctx context.Context, id pgtype.UUID) error {
 	return a.q.TouchChatSession(ctx, id)
 }
-func (a dbSessionQueries) GetMostRecentUserChatMessage(ctx context.Context, chatSessionID pgtype.UUID) (db.ChatMessage, error) {
-	return a.q.GetMostRecentUserChatMessage(ctx, chatSessionID)
+func (a dbSessionQueries) MarkChannelChatSessionPendingFresh(ctx context.Context, chatSessionID pgtype.UUID) (bool, error) {
+	return a.q.MarkChannelChatSessionPendingFresh(ctx, chatSessionID)
 }
 func (a dbSessionQueries) UpdateChannelChatSessionBindingReplyTarget(ctx context.Context, arg db.UpdateChannelChatSessionBindingReplyTargetParams) error {
 	return a.q.UpdateChannelChatSessionBindingReplyTarget(ctx, arg)
@@ -283,6 +287,11 @@ type AppendInput struct {
 	ThreadID            string
 	ClaimToken          pgtype.UUID
 	MediaPendingSeconds float64
+	ForceFresh          bool
+	// BeforeWrite runs inside the append transaction before any durable write.
+	// Adapters use it to acquire a route fence that is held through the message
+	// insert and in-transaction dedup mark.
+	BeforeWrite func(context.Context, pgx.Tx) error
 }
 
 // BindMediaInput links already-uploaded media to either an /issue target or a
@@ -321,22 +330,23 @@ func (s *ChatSession) AppendUserMessage(ctx context.Context, in AppendInput) (Ap
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.q.WithTx(tx)
+	// Keep the repo-wide teardown order: chat_session before any adapter-owned
+	// route fence. FOR KEY SHARE is sufficient to serialize deletion without
+	// blocking normal non-key session updates or debounced task enqueueing.
+	if _, err := qtx.LockChatSessionForAppend(ctx, in.SessionID); err != nil {
+		return AppendResult{}, fmt.Errorf("lock chat session for append: %w", err)
+	}
+	if in.BeforeWrite != nil {
+		if err := in.BeforeWrite(ctx, tx); err != nil {
+			return AppendResult{}, err
+		}
+	}
 
-	// Parse before the insert so the bare-`/issue` previous-message fallback
-	// queries the message set that does NOT yet include this message.
 	commandSource := in.CommandText
 	if commandSource == "" {
 		commandSource = in.Body
 	}
 	cmd, _ := ParseIssueCommand(commandSource)
-	if cmd != nil && cmd.Title == "" {
-		prev, err := qtx.GetMostRecentUserChatMessage(ctx, in.SessionID)
-		if err == nil {
-			cmd.Title = titleFromPreviousMessage(prev.Content)
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			return AppendResult{}, fmt.Errorf("previous message lookup: %w", err)
-		}
-	}
 
 	// channel_ingested is the immutable provenance the cancel path gates on:
 	// it must be stamped in the same transaction as the message so no later
@@ -354,6 +364,11 @@ func (s *ChatSession) AppendUserMessage(ctx context.Context, in AppendInput) (Ap
 	}
 	if err := qtx.TouchChatSession(ctx, in.SessionID); err != nil {
 		return AppendResult{}, fmt.Errorf("touch chat session: %w", err)
+	}
+	if in.ForceFresh {
+		if _, err := qtx.MarkChannelChatSessionPendingFresh(ctx, in.SessionID); err != nil {
+			return AppendResult{}, fmt.Errorf("mark pending fresh: %w", err)
+		}
 	}
 
 	// Record the latest trigger so the decoupled outbound patcher can thread
@@ -390,6 +405,15 @@ func (s *ChatSession) AppendUserMessage(ctx context.Context, in AppendInput) (Ap
 		return AppendResult{}, fmt.Errorf("commit: %w", err)
 	}
 	return AppendResult{MessageID: msg.ID, IssueCommand: cmd, DedupMarked: markedInTx}, nil
+}
+
+// MarkPendingFresh persists a bare `/new` command. Non-bare `/new` messages
+// mark the same flag inside AppendUserMessage's transaction instead.
+func (s *ChatSession) MarkPendingFresh(ctx context.Context, sessionID pgtype.UUID) error {
+	if _, err := s.q.MarkChannelChatSessionPendingFresh(ctx, sessionID); err != nil {
+		return fmt.Errorf("mark pending fresh: %w", err)
+	}
+	return nil
 }
 
 // BindMediaRefs creates attachment rows owned by IssueID when present, otherwise

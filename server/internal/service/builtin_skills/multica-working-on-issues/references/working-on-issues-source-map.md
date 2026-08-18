@@ -154,15 +154,30 @@ transition, to sweep stragglers) — see the rows above. Outside archive,
 `BatchDeleteIssues`), where the owning issue row is going away, so no task is
 left orphaned.
 
+## Ownership-only assignment and duplicate-run awareness
+
+| Behavior | Source |
+|---|---|
+| `issue assign --no-start`, `issue update --no-start`, and `issue status --no-start` send `suppress_run=true` | `server/cmd/multica/cmd_issue.go` (`runIssueAssign`, `runIssueUpdate`, `runIssueStatus`) |
+| Update and batch-update apply ownership while skipping dispatch when `suppress_run` is true | `server/internal/handler/issue.go` (`UpdateIssue`, `BatchUpdateIssues`) |
+| Trusted direct self-assignment suppresses enqueue only when the target `(issue, agent)` already has a non-terminal task | `server/internal/service/issue_trigger.go` (`WillEnqueueRun`), `server/internal/handler/issue_trigger.go` (`shouldSuppressActiveSelfAssignment`) |
+| Claim responses expose a bounded, workspace-scoped snapshot of the same agent's other dispatched/running/waiting issue tasks; queued tasks are excluded | `server/pkg/db/queries/agent.sql` (`ListActiveSiblingIssueTasks`), `server/internal/handler/daemon.go` (`buildClaimedTaskResponse`) |
+| Daemon prompts point to the target's comment history and concrete sibling `run-messages` commands | `server/internal/daemon/prompt.go` (`buildActiveSiblingRunsBlock`) |
+
+The self-assignment guard is intentionally pair-scoped. It does not treat
+"this agent is busy on some other issue" as a reason to suppress a fresh
+cross-issue handoff, because serial sub-issue promotion and triage batches rely
+on those assignments creating their normal queued runs.
+
 ## Sub-issue stages (barrier wake)
 
 | Behavior | File:line | Drifted from |
 |---|---|---|
 | `issue.stage` column (nullable, `>= 1`) | `server/migrations/123_issue_stage.up.sql` | |
-| Stage barrier: notify+wake fire only when the lowest unfinished stage is all-terminal; unstaged set = one implicit stage | `server/internal/handler/issue_child_done.go:372` (`stageBarrierClosed`) | fix wave 3: was :231 |
-| Per-stage summary + next stage for the wake comment | `server/internal/handler/issue_child_done.go:404` (`stageProgressSummary`) | fix wave 3: was :254 |
+| Stage barrier: notify+wake fire only when the lowest unfinished stage is all-terminal; unstaged set = one implicit stage | `server/internal/handler/issue_child_done.go:403` (`stageBarrierClosed`) | was :372 |
+| Per-stage summary + next stage for the wake comment | `server/internal/handler/issue_child_done.go:435` (`stageProgressSummary`) | was :404 |
 | `--stage` on `issue create` / `issue update` | `server/cmd/multica/cmd_issue.go:328,350` | |
-| `multica issue children <id>` (sub-issues grouped by stage) | `server/cmd/multica/cmd_issue.go:114,678`; route `GET /api/issues/{id}/children` → `ListChildIssues` | |
+| `multica issue children <id>` (sub-issues grouped by stage) | `server/cmd/multica/cmd_issue.go:114,678`; stage `done` counting via `isTerminalChildStatus` (resolves custom statuses through `issuestatus.Effective`, MUL-6243); route `GET /api/issues/{id}/children` → `ListChildIssues` | |
 
 Advancement is agent-driven: the server only detects the closed barrier and
 wakes the parent assignee. Promoting the next stage's `backlog` sub-issues to
@@ -191,6 +206,10 @@ comment-triggered runs otherwise must not change status unless asked.
 | Definition CRUD, admin gate, agent-actor rejection | `server/internal/handler/property.go` (`requirePropertyAdmin`) |
 | Optional catalog icon field and allowlist validation | `server/internal/handler/property.go` (`PropertyResponse`, `validatePropertyIcon`) |
 | Per-type value validation (self-correcting errors) | `server/internal/handler/property.go` (`validatePropertyValue`) |
+| `actor` / `multi_actor` reference parsing, `member` as the only kind, 20-value cap | `server/internal/handler/property.go` (`actorPropertyKinds`, `parseActorRef`, `parseActorRefList`, `maxPropertyActorValues`) |
+| Actor references are checked for workspace membership only | `server/internal/handler/property.go` (`resolveActorRefs`) |
+| `--value` name / email / id → `member:<uuid>` resolution (same member lookup as `--assignee`) | `server/cmd/multica/cmd_property.go` (`resolveActorPropertyRef`, `memberOnlyKinds`) |
+| Shared actor-reference types and helpers | `packages/core/types/property.ts` (`parseActorRef`, `actorRefsFromValue`, `MAX_ISSUE_PROPERTY_ACTOR_VALUES`) |
 | API routes (`/api/properties`, PUT/DELETE `/api/issues/{id}/properties/{propertyId}`) | `server/cmd/server/router.go` |
 
 ## Verification command

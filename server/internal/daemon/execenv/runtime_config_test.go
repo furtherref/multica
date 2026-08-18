@@ -327,6 +327,19 @@ func TestSessionContinuityNoticeLivesOutsideBrief(t *testing.T) {
 		t.Errorf("issue variant must state the real loss:\n%s", SessionContinuityNoticeIssue)
 	}
 
+	// The web-chat / Feishu transcript variant points at the read-back command
+	// and must NOT order an announcement — the conversation survives in
+	// chat_message, so "the previous context was lost" would be a false alarm.
+	if !strings.Contains(SessionContinuityNoticeChatTranscript, "multica chat history") {
+		t.Error("transcript variant must point at the read-back command")
+	}
+	if strings.Contains(SessionContinuityNoticeChatTranscript, "tell the user") {
+		t.Errorf("transcript variant must not script an apology:\n%s", SessionContinuityNoticeChatTranscript)
+	}
+	if !strings.Contains(SessionContinuityNoticeChatTranscript, "your own working memory") {
+		t.Errorf("transcript variant must state the real loss:\n%s", SessionContinuityNoticeChatTranscript)
+	}
+
 	lost := TaskContextForEnv{
 		IssueID:                       "11111111-2222-3333-4444-555555555555",
 		TriggerCommentID:              "trigger-1",
@@ -349,15 +362,15 @@ func TestIssueWorkflowHonorsAgentIdentity(t *testing.T) {
 		"Agent Identity instructions have priority over the issue workflow below.",
 		"If a workflow step conflicts with Agent Identity, skip the conflicting action",
 		// One enumeration, in Instruction Precedence, covering every action
-		// type Agent Identity can forbid. This and workflow step 4 each used to
+		// type Agent Identity can forbid. This and workflow step 3 each used to
 		// carry their own list and the two disagreed (MUL-5442).
 		"Never treat this runtime workflow as permission to change issue status, investigate, implement, create issues, update issues, delegate, or otherwise act beyond your Agent Identity.",
 		// MUL-5442: the forbids-clause is stated once on the Ownership-mode
 		// header instead of once per status bullet.
 		"skip any status call below that your Agent Identity forbids",
-		"Before step 4, run `multica issue status <issue-id> in_progress`.",
+		"Before step 3, run `multica issue status <issue-id> in_progress`.",
 		"Complete the task within your Agent Identity boundaries",
-		// Step 4 keeps only what the enumeration cannot express: a
+		// Step 3 keeps only what the enumeration cannot express: a
 		// delegation-only role stops once the delegation is delivered.
 		"If your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered",
 		"When done, run `multica issue status <issue-id> in_review`.",
@@ -390,7 +403,7 @@ func TestSquadLeaderIssueWorkflowKeepsParentInProgress(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Before step 4, run `multica issue status <issue-id> in_progress`.",
+		"Before step 3, run `multica issue status <issue-id> in_progress`.",
 		"After this initial dispatch, leave the parent issue `in_progress`",
 		// The guest-leader contract test (handler side) bans any runnable
 		// in_review command shape from reaching a guest — the dispatch rule
@@ -923,9 +936,11 @@ func TestInjectRuntimeConfigPreservesUserContent(t *testing.T) {
 		{"openclaw", "AGENTS.md"},
 		{"hermes", "AGENTS.md"},
 		{"pi", "AGENTS.md"},
+		{"omp", "AGENTS.md"},
 		{"cursor", "AGENTS.md"},
 		{"kimi", "AGENTS.md"},
 		{"reasonix", "AGENTS.md"},
+		{"dsh", "AGENTS.md"},
 		{"kiro", "AGENTS.md"},
 		{"antigravity", "AGENTS.md"},
 		{"qwen", "QWEN.md"},
@@ -1298,9 +1313,11 @@ func TestCleanupRuntimeConfigByProvider(t *testing.T) {
 		{"openclaw", "AGENTS.md"},
 		{"hermes", "AGENTS.md"},
 		{"pi", "AGENTS.md"},
+		{"omp", "AGENTS.md"},
 		{"cursor", "AGENTS.md"},
 		{"kimi", "AGENTS.md"},
 		{"reasonix", "AGENTS.md"},
+		{"dsh", "AGENTS.md"},
 		{"kiro", "AGENTS.md"},
 		{"antigravity", "AGENTS.md"},
 		{"qwen", "QWEN.md"},
@@ -1842,6 +1859,11 @@ func TestBriefByteIdenticalAcrossRunsForEveryKind(t *testing.T) {
 		"chat":         {ChatSessionID: "chat-1", ChatChannelType: ChannelTypeSlack, AgentID: "a-1", AgentName: "Eve"},
 		"quick-create": {QuickCreatePrompt: "make an issue", AgentID: "a-1", AgentName: "Eve"},
 		"autopilot":    {AutopilotRunID: "run-1", AutopilotID: "ap-1", AgentID: "a-1", AgentName: "Eve"},
+		// WeCom is the channel a real deployment flips the file-delivery
+		// verdict on. The Slack row above catches the same leak today, but only
+		// because the brief's copy is channel-agnostic; scope that copy to
+		// WeCom alone and this is the row still holding the line.
+		"chat-wecom": {ChatSessionID: "chat-1", ChatChannelType: ChannelTypeWecom, AgentID: "a-1", AgentName: "Eve"},
 	}
 
 	// Per-run state that changes between turns of one resumed session.
@@ -1870,6 +1892,15 @@ func TestBriefByteIdenticalAcrossRunsForEveryKind(t *testing.T) {
 				Provider: "composio", ServerName: "composio",
 				ToolkitSlug: "notion", ToolkitName: "Notion",
 			}}
+		}},
+		{"channel-delivers-files", func(c *TaskContextForEnv) {
+			// The server's file-delivery verdict arrives on every claim and is
+			// a deployment fact, not a session one: an upgrade that starts
+			// sending the field, or object storage being turned on or off,
+			// flips it under a session already running. Both halves of that
+			// flip must render the same brief, which is why the verdict is
+			// stated by the per-turn chat prompt and never here.
+			c.ChatChannelDeliversFiles = true
 		}},
 	}
 
@@ -1943,5 +1974,65 @@ func TestBriefSkillsListIsNamesOnly(t *testing.T) {
 				t.Errorf("brief lost the native-discovery framing:\n%s", out)
 			}
 		})
+	}
+}
+
+// Every brief that teaches `--output json` also says not to merge stderr into
+// it, because the two facts are only useful together. The CLI is right:
+// confirmations go to stderr, JSON goes to stdout, and `--output json | jq` has
+// always worked. It stays right only while the caller keeps the streams apart,
+// and `2>&1` is ordinary shell habit. The cost of merging them is not a cosmetic
+// parse error: a confirmation line inside the JSON makes the parse fail, so a
+// write that SUCCEEDED reads as one that failed, and the retry posts the comment
+// or sends the file a second time.
+//
+// The assertions are on the rule's wording, not on loose substrings, because
+// `2>&1` and "look like it failed" both survive a brief that says to merge the
+// streams. Each builder must carry the prohibition verbatim, exactly once, with
+// the consequence attached.
+//
+// Both brief builders are checked, not one. The quick-create brief is a
+// separate function with its own copy of the `--output json` line, so guidance
+// added to the full brief alone would be missing from exactly the runs that are
+// given the least context to work it out for themselves.
+func TestEveryBriefThatTeachesJSONOutputAlsoWarnsAgainstMergingStderr(t *testing.T) {
+	t.Parallel()
+	const (
+		wantFlag = "--output json"
+		// The premise the rule rests on. "Do not merge them" says nothing about
+		// WHICH stream carries what, so a brief that swapped the two would pass
+		// every other assertion here while telling an agent the opposite of the
+		// truth — the same defect one clause to the left.
+		wantPremise = "writes JSON to stdout; confirmations and warnings go to stderr"
+		// The prohibition itself, not just the operator it names: "Always merge
+		// them (`2>&1`)" contains `2>&1` and would pass a bare-operator check.
+		wantRule = "Do not merge them (`2>&1`)"
+		// The consequence, in the direction that makes the rule worth obeying;
+		// the inverse claim ("failed write looks like it succeeded") is a
+		// different bug and must not satisfy this.
+		wantWhy = "a write that SUCCEEDED look like it failed"
+	)
+	briefs := map[string]string{
+		"full":         buildMetaSkillContent("claude", TaskContextForEnv{IssueID: "11111111-2222-3333-4444-555555555555"}),
+		"quick-create": buildMetaSkillContent("claude", TaskContextForEnv{QuickCreatePrompt: "make an issue"}),
+	}
+	for name, brief := range briefs {
+		if !strings.Contains(brief, wantFlag) {
+			t.Fatalf("%s brief does not mention %s at all; this test's premise is gone", name, wantFlag)
+		}
+		if !strings.Contains(brief, wantPremise) {
+			t.Errorf("%s brief teaches %s without saying %q — the rule below it is only correct while the streams carry what this says they carry", name, wantFlag, wantPremise)
+		}
+		switch got := strings.Count(brief, wantRule); got {
+		case 1:
+		case 0:
+			t.Errorf("%s brief teaches %s without saying %q — the habit it has to displace is the one thing an agent will not infer", name, wantFlag, wantRule)
+			continue // the reason check below would report a rule that is not there
+		default:
+			t.Errorf("%s brief repeats %q %d times; one rule, one place, or the next edit fixes only one of them", name, wantRule, got)
+		}
+		if !strings.Contains(brief, wantWhy) {
+			t.Errorf("%s brief states %q without %q; a rule with no reason is the first one dropped under pressure", name, wantRule, wantWhy)
+		}
 	}
 }

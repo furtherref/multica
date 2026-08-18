@@ -1,30 +1,16 @@
 "use client";
 
 import { useCallback, useMemo } from "react";
-import {
-  useQuery,
-  type QueryKey,
-} from "@tanstack/react-query";
-import type { Issue, IssueAssigneeGroup, Project } from "@multica/core/types";
+import { useQuery } from "@tanstack/react-query";
+import type { Issue, Project } from "@multica/core/types";
 import { ALL_STATUSES, DEFAULT_VISIBLE_STATUSES } from "@multica/core/issues/config";
 import { projectListOptions } from "@multica/core/projects/queries";
-import {
-  childIssueProgressOptions,
-  resolveListStatuses,
-  type AssigneeGroupedIssuesFilter,
-  type IssueSortParam,
-  type MyIssuesFilter,
-} from "@multica/core/issues/queries";
-import {
-  issueSurfaceAssigneeGroupsOptions,
-  issueSurfaceGanttOptions,
-  issueSurfaceListOptions,
-} from "@multica/core/issues/surface/repository";
+import { childIssueProgressOptions } from "@multica/core/issues/queries";
+import { issueSurfaceGanttOptions } from "@multica/core/issues/surface/repository";
 import type { IssueSurfaceQueryPlan } from "@multica/core/issues/surface/query-plan";
 import type { IssueStatus } from "@multica/core/types";
 import {
   applyIssueFilters,
-  filterAssigneeGroups,
   type IssueFilterState,
   type IssueFilters,
 } from "../utils/filter";
@@ -71,12 +57,6 @@ export interface IssueSurfaceData {
    *  sources its count from the `working_agents` server facet instead. */
   ganttWorkingScopeIssues: Issue[] | undefined;
   filteredGanttIssues: Issue[];
-  assigneeGroups?: IssueAssigneeGroup[];
-  assigneeGroupQueryKey?: QueryKey;
-  assigneeGroupFilter?: AssigneeGroupedIssuesFilter;
-  filter: MyIssuesFilter;
-  loadMoreScope?: string;
-  loadMoreFilter?: MyIssuesFilter;
   ganttIssues: Issue[];
   visibleStatuses: IssueStatus[];
   hiddenStatuses: IssueStatus[];
@@ -104,13 +84,11 @@ export function useIssueSurfaceData({
   wsId,
   queryPlan,
   projectId,
-  usesAssigneeBoard,
   usesGantt,
   usesTable,
   serverStatusBranches,
   serverGroupBranches,
   ganttShowCompleted,
-  sort,
   statusFilters,
   priorityFilters,
   assigneeFilters,
@@ -128,7 +106,6 @@ export function useIssueSurfaceData({
   wsId: string;
   queryPlan: IssueSurfaceQueryPlan;
   projectId?: string;
-  usesAssigneeBoard: boolean;
   usesGantt: boolean;
   usesTable: boolean;
   serverStatusBranches: IssueStatusBranches;
@@ -136,7 +113,6 @@ export function useIssueSurfaceData({
   /** Gantt's "show completed" display toggle. The canvas hides done/cancelled
    *  rows without it, so the working scope has to honour it too. */
   ganttShowCompleted: boolean;
-  sort: IssueSortParam;
   statusFilters: IssueStatus[];
   priorityFilters: IssueFilterState["priorityFilters"];
   assigneeFilters: IssueFilterState["assigneeFilters"];
@@ -152,86 +128,19 @@ export function useIssueSurfaceData({
   showSubIssues: boolean;
   loadProjects: boolean;
 }): IssueSurfaceData {
-  const assigneeGroupFilter = useMemo<AssigneeGroupedIssuesFilter>(
-    () => ({
-      ...queryPlan.groupedScopeFilter,
-      statuses: statusFilters.length > 0 ? statusFilters : [...DEFAULT_VISIBLE_STATUSES],
-      priorities: priorityFilters,
-      assignee_filters: assigneeFilters,
-      include_no_assignee: includeNoAssignee,
-      creator_filters: creatorFilters,
-      project_ids: projectFilters,
-      include_no_project: includeNoProject,
-      label_ids: labelFilters,
-    }),
-    [
-      assigneeFilters,
-      creatorFilters,
-      includeNoAssignee,
-      includeNoProject,
-      labelFilters,
-      priorityFilters,
-      projectFilters,
-      queryPlan.groupedScopeFilter,
-      statusFilters,
-    ],
-  );
-
-  const activeAssigneeGroupsOptions = issueSurfaceAssigneeGroupsOptions(
-    wsId,
-    queryPlan,
-    assigneeGroupFilter,
-    sort,
-  );
-
-  // The list-path fetch (list/board/swimlane, via statusIssuesQuery) only
-  // ever pulls PAGINATED_STATUSES by default — `archive` stays excluded
-  // unless the user's active status filter explicitly selects it. Resolving
-  // that here (options-builder level) keeps `PAGINATED_STATUSES` itself as
-  // the default-membership constant everywhere else.
-  const listStatuses = useMemo(
-    () => resolveListStatuses(statusFilters),
-    [statusFilters],
-  );
-
-  const statusIssuesQuery = useQuery({
-    ...issueSurfaceListOptions(wsId, queryPlan, sort, listStatuses),
-    enabled:
-      !usesAssigneeBoard &&
-      !usesGantt &&
-      !usesTable &&
-      !serverStatusBranches.enabled &&
-      !serverGroupBranches.enabled,
-  });
-  const assigneeGroupsQuery = useQuery({
-    ...activeAssigneeGroupsOptions,
-    enabled: usesAssigneeBoard && !serverGroupBranches.enabled,
-  });
   const ganttIssuesQuery = useQuery({
-    ...issueSurfaceGanttOptions(wsId, projectId ?? ""),
+    ...issueSurfaceGanttOptions(wsId, projectId ?? "", queryPlan),
     enabled: usesGantt,
   });
   const workingFilterContext = useMemo(
     () => ({ runningIssueIds: workingIssueIDs }),
     [workingIssueIDs],
   );
-  const bucketedIssues = useMemo(() => {
-    return serverStatusBranches.enabled
-      ? serverStatusBranches.issues
-      : serverGroupBranches.enabled
+  const bucketedIssues = serverStatusBranches.enabled
+    ? serverStatusBranches.issues
+    : serverGroupBranches.enabled
       ? serverGroupBranches.issues
-      : usesAssigneeBoard
-      ? (assigneeGroupsQuery.data?.groups.flatMap((group) => group.issues) ?? [])
-      : (statusIssuesQuery.data ?? EMPTY_ISSUES);
-  }, [
-    assigneeGroupsQuery.data?.groups,
-    serverStatusBranches.enabled,
-    serverStatusBranches.issues,
-    serverGroupBranches.enabled,
-    serverGroupBranches.issues,
-    statusIssuesQuery.data,
-    usesAssigneeBoard,
-  ]);
+      : EMPTY_ISSUES;
 
   // `cancelled` is a first-class default status (MUL-4290): it is fetched into
   // the cache like every other status and flows straight through to list /
@@ -323,27 +232,6 @@ export function useIssueSurfaceData({
     ],
   );
 
-  // The assignee-grouped board renders straight from `groups`, bypassing the
-  // flat applyIssueFilters output — re-apply the remaining client-only
-  // display filters per group. Server-owned group paths encode running-task
-  // membership in the canonical query; this fallback uses the same issue ids.
-  const filteredAssigneeGroups = useMemo(
-    () =>
-      filterAssigneeGroups(assigneeGroupsQuery.data?.groups, {
-        agentRunningFilter,
-        runningIssueIds: workingIssueIDs,
-        showSubIssues,
-        propertyFilters,
-      }),
-    [
-      assigneeGroupsQuery.data?.groups,
-      agentRunningFilter,
-      propertyFilters,
-      showSubIssues,
-      workingIssueIDs,
-    ],
-  );
-
   const workingFilterState = useMemo<IssueFilterState>(
     () => ({
       ...baseFilterState,
@@ -431,8 +319,8 @@ export function useIssueSurfaceData({
   const visibleStatuses = useMemo<IssueStatus[]>(() => {
     // Default view shows every default-visible lifecycle status, `cancelled`
     // last (its canonical position). An active status filter narrows to the
-    // selected subset while preserving that order. `archive` stays hidden
-    // unless explicitly selected via statusFilters.
+    // selected subset while preserving that order. `archive` (fork status
+    // #39) stays hidden unless explicitly selected via statusFilters.
     if (statusFilters.length > 0) {
       return ALL_STATUSES.filter((s) => statusFilters.includes(s));
     }
@@ -441,8 +329,9 @@ export function useIssueSurfaceData({
 
   // Hidden columns are the default-visible lifecycle statuses not currently
   // visible, so `cancelled` participates in the board show/hide controls
-  // exactly like the rest of the statuses. `archive` is intentionally excluded
-  // from this toggle set — it is opt-in only, via an explicit status filter.
+  // exactly like the rest of the statuses. `archive` is intentionally
+  // excluded from this toggle set — it is opt-in only, via an explicit
+  // status filter.
   const hiddenStatuses = useMemo<IssueStatus[]>(
     () => DEFAULT_VISIBLE_STATUSES.filter((s) => !visibleStatuses.includes(s)),
     [visibleStatuses],
@@ -479,30 +368,20 @@ export function useIssueSurfaceData({
 
   const isLoading = serverGroupBranches.enabled
     ? serverGroupBranches.isLoading
-    : usesAssigneeBoard
-      ? assigneeGroupsQuery.isLoading
-      : usesGantt
+    : usesGantt
       ? ganttIssuesQuery.isLoading
-      : usesTable
-        ? false
-        : serverStatusBranches.enabled
-          ? serverStatusBranches.isLoading
-          : statusIssuesQuery.isLoading;
+      : serverStatusBranches.enabled
+        ? serverStatusBranches.isLoading
+        : false;
 
   // Placeholder-backed revalidation of the ACTIVE query only. First loads are
   // isLoading (no previous data to place-hold); gantt has no placeholder
   // phase (its key carries no sort/filter).
   const isRefreshing = serverGroupBranches.enabled
     ? serverGroupBranches.isRefreshing
-    : usesAssigneeBoard
-      ? assigneeGroupsQuery.isPlaceholderData
-      : usesGantt
-      ? false
-      : usesTable
-        ? false
-        : serverStatusBranches.enabled
-          ? serverStatusBranches.isRefreshing
-          : statusIssuesQuery.isPlaceholderData;
+    : serverStatusBranches.enabled
+      ? serverStatusBranches.isRefreshing
+      : false;
 
   return {
     surfaceIssues,
@@ -511,14 +390,6 @@ export function useIssueSurfaceData({
     swimlaneIssues,
     ganttWorkingScopeIssues,
     filteredGanttIssues,
-    assigneeGroups: usesAssigneeBoard ? filteredAssigneeGroups : undefined,
-    assigneeGroupQueryKey: usesAssigneeBoard
-      ? activeAssigneeGroupsOptions.queryKey
-      : undefined,
-    assigneeGroupFilter: usesAssigneeBoard ? assigneeGroupFilter : undefined,
-    filter: queryPlan.queryFilter,
-    loadMoreScope: queryPlan.loadMoreScope,
-    loadMoreFilter: queryPlan.loadMoreFilter,
     ganttIssues,
     visibleStatuses,
     hiddenStatuses,
@@ -544,9 +415,8 @@ export function useIssueSurfaceData({
       (serverStatusBranches.enabled
         ? serverStatusBranches.isTotalKnown &&
           serverStatusBranches.total === 0
-        : serverGroupBranches.enabled
-          ? !serverGroupBranches.isError &&
-            serverGroupBranches.total === 0
-        : surfaceIssues.length === 0),
+        : serverGroupBranches.enabled &&
+          !serverGroupBranches.isError &&
+          serverGroupBranches.total === 0),
   };
 }
