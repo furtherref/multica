@@ -661,6 +661,29 @@ func (h *Hub) evictSlow(slow []*Client) {
 	}
 }
 
+// DisconnectUser force-closes every connection belonging to userID. Called
+// when an account is suspended so an open tab loses realtime access at the
+// same moment its HTTP credentials die. Best-effort: the auth_error frame
+// is dropped if the send buffer is full; eviction still proceeds.
+func (h *Hub) DisconnectUser(userID string) {
+	payload := []byte(`{"type":"auth_error","payload":{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}}`)
+	h.mu.RLock()
+	var targets []*Client
+	for c := range h.clients {
+		if c.userID == userID {
+			select {
+			case c.send <- payload:
+			default:
+			}
+			targets = append(targets, c)
+		}
+	}
+	h.mu.RUnlock()
+	if len(targets) > 0 {
+		h.evictSlow(targets)
+	}
+}
+
 // Snapshot returns a JSON-friendly summary of the hub state.
 func (h *Hub) Snapshot() map[string]any {
 	h.mu.RLock()
@@ -675,8 +698,17 @@ func (h *Hub) Snapshot() map[string]any {
 	}
 }
 
+// AccountChecker reports whether a user's account is in good standing.
+// Satisfied by *auth.AccountGuard; a nil AccountChecker is treated as
+// "allow" so minimal test hubs keep working without wiring one up.
+type AccountChecker interface {
+	Check(ctx context.Context, userID string) error
+}
+
+const accountSuspendedErrMsg = `{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}`
+
 // authenticateToken validates a JWT or PAT string and returns the user ID.
-func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (string, string) {
+func authenticateToken(tokenStr string, pr PATResolver, ac AccountChecker, ctx context.Context) (string, string) {
 	if strings.HasPrefix(tokenStr, "mul_") {
 		if pr == nil {
 			return "", `{"error":"invalid token"}`
@@ -685,10 +717,11 @@ func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (st
 		if !ok {
 			return "", `{"error":"invalid token"}`
 		}
-		// NOTE: the emergency account denylist helpers this used to call
-		// were removed (account-suspension Task 5). This is an intentional,
-		// controller-approved interim gap: Task 6 replaces it with a real
-		// DB-backed account-status check via an AccountChecker.
+		if ac != nil {
+			if err := ac.Check(ctx, uid); err != nil {
+				return "", accountSuspendedErrMsg
+			}
+		}
 		return uid, ""
 	}
 
@@ -711,10 +744,11 @@ func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (st
 	if !ok || strings.TrimSpace(uid) == "" {
 		return "", `{"error":"invalid claims"}`
 	}
-	// NOTE: the emergency account denylist helpers this used to call
-	// were removed (account-suspension Task 5). This is an intentional,
-	// controller-approved interim gap: Task 6 replaces it with a real
-	// DB-backed account-status check via an AccountChecker.
+	if ac != nil {
+		if err := ac.Check(ctx, uid); err != nil {
+			return "", accountSuspendedErrMsg
+		}
+	}
 	return uid, ""
 }
 
@@ -773,7 +807,7 @@ func writeWSAuthErrorAndClose(conn *websocket.Conn, payload []byte, attrs ...any
 
 // HandleWebSocket upgrades an HTTP connection to WebSocket with cookie or
 // first-message auth.
-func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug SlugResolver, w http.ResponseWriter, r *http.Request) {
+func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, ac AccountChecker, resolveSlug SlugResolver, w http.ResponseWriter, r *http.Request) {
 	workspaceID := r.URL.Query().Get("workspace_id")
 	if workspaceID == "" {
 		if slug := r.URL.Query().Get("workspace_slug"); slug != "" && resolveSlug != nil {
@@ -792,10 +826,10 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 
 	var userID string
 	if cookie, err := r.Cookie(auth.AuthCookieName); err == nil && cookie.Value != "" {
-		uid, errMsg := authenticateToken(cookie.Value, pr, r.Context())
+		uid, errMsg := authenticateToken(cookie.Value, pr, ac, r.Context())
 		if errMsg != "" {
 			status := http.StatusUnauthorized
-			if errMsg == `{"error":"account disabled"}` {
+			if errMsg == accountSuspendedErrMsg {
 				status = http.StatusForbidden
 			}
 			http.Error(w, errMsg, status)
@@ -828,7 +862,7 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 			writeWSAuthErrorAndClose(conn, []byte(errMsg), "workspace_id", workspaceID)
 			return
 		}
-		uid, errMsg := authenticateToken(tokenStr, pr, r.Context())
+		uid, errMsg := authenticateToken(tokenStr, pr, ac, r.Context())
 		if errMsg != "" {
 			writeWSAuthErrorAndClose(conn, []byte(errMsg), "workspace_id", workspaceID)
 			return

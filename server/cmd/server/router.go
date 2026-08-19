@@ -1111,7 +1111,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		return util.UUIDToString(ws.ID), nil
 	})
 	r.Get("/ws", func(w http.ResponseWriter, r *http.Request) {
-		realtime.HandleWebSocket(hub, mc, pr, slugResolver, w, r)
+		realtime.HandleWebSocket(hub, mc, pr, accountGuard, slugResolver, w, r)
 	})
 
 	// Local file serving (when using local storage). Served through the

@@ -59,12 +59,6 @@ func (s staticPATResolver) ResolveToken(_ context.Context, token string) (string
 	return userID, ok
 }
 
-// The emergency account denylist that used to be checked here was deleted in
-// account-suspension Task 5. authenticateToken no longer rejects suspended
-// accounts by itself — this is an intentional, controller-approved interim
-// gap; Task 6 wires a real DB-backed account-status check (AccountChecker)
-// into this path.
-
 func newTestHub(t *testing.T) (*Hub, *httptest.Server) {
 	t.Helper()
 	hub := NewHub()
@@ -73,7 +67,7 @@ func newTestHub(t *testing.T) (*Hub, *httptest.Server) {
 	mc := &mockMembershipChecker{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		HandleWebSocket(hub, mc, nil, nil, w, r)
+		HandleWebSocket(hub, mc, nil, nil, nil, w, r)
 	})
 	server := httptest.NewServer(mux)
 	return hub, server

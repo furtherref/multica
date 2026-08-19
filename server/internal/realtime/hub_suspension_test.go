@@ -1,0 +1,122 @@
+package realtime
+
+import (
+	"context"
+	"testing"
+
+	"github.com/multica-ai/multica/server/internal/auth"
+)
+
+// fakeAccountChecker lets tests control the outcome of AccountChecker.Check
+// without touching the database.
+type fakeAccountChecker struct {
+	err error
+}
+
+func (f fakeAccountChecker) Check(_ context.Context, _ string) error {
+	return f.err
+}
+
+func TestAuthenticateTokenRejectsSuspended(t *testing.T) {
+	token := makeTestToken(t)
+
+	uid, errMsg := authenticateToken(token, nil, fakeAccountChecker{err: auth.ErrAccountSuspended}, context.Background())
+
+	if uid != "" {
+		t.Fatalf("uid = %q, want empty", uid)
+	}
+	want := `{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}`
+	if errMsg != want {
+		t.Fatalf("errMsg = %q, want %q", errMsg, want)
+	}
+}
+
+func TestAuthenticateTokenAllowsWhenCheckerNil(t *testing.T) {
+	token := makeTestToken(t)
+
+	uid, errMsg := authenticateToken(token, nil, nil, context.Background())
+
+	if errMsg != "" {
+		t.Fatalf("errMsg = %q, want empty", errMsg)
+	}
+	if uid != testUserID {
+		t.Fatalf("uid = %q, want %q", uid, testUserID)
+	}
+}
+
+func TestAuthenticateTokenAllowsWhenCheckerPasses(t *testing.T) {
+	token := makeTestToken(t)
+
+	uid, errMsg := authenticateToken(token, nil, fakeAccountChecker{err: nil}, context.Background())
+
+	if errMsg != "" {
+		t.Fatalf("errMsg = %q, want empty", errMsg)
+	}
+	if uid != testUserID {
+		t.Fatalf("uid = %q, want %q", uid, testUserID)
+	}
+}
+
+func TestDisconnectUserEvictsAllUserConnections(t *testing.T) {
+	hub := NewHub()
+
+	newClient := func(userID, workspaceID string) *Client {
+		return &Client{
+			hub:           hub,
+			send:          make(chan []byte, 4),
+			userID:        userID,
+			workspaceID:   workspaceID,
+			subscriptions: make(map[scopeKey]bool),
+		}
+	}
+
+	a1 := newClient("user-a", "ws-1")
+	a2 := newClient("user-a", "ws-2")
+	b1 := newClient("user-b", "ws-1")
+
+	hub.mu.Lock()
+	hub.clients[a1] = true
+	hub.clients[a2] = true
+	hub.clients[b1] = true
+	hub.mu.Unlock()
+
+	hub.DisconnectUser("user-a")
+
+	// A's clients must be removed from the hub and their send channels
+	// closed (evictSlow's teardown), after receiving the auth_error frame.
+	for _, c := range []*Client{a1, a2} {
+		select {
+		case payload, ok := <-c.send:
+			if !ok {
+				t.Fatalf("client send channel closed before delivering auth_error frame")
+			}
+			want := `{"type":"auth_error","payload":{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}}`
+			if string(payload) != want {
+				t.Fatalf("payload = %q, want %q", payload, want)
+			}
+		default:
+			t.Fatal("expected auth_error frame on send channel")
+		}
+
+		// Channel should now be closed by evictSlow.
+		if _, ok := <-c.send; ok {
+			t.Fatal("expected send channel to be closed after eviction")
+		}
+	}
+
+	hub.mu.RLock()
+	if hub.clients[a1] || hub.clients[a2] {
+		t.Fatal("user-a clients should have been removed from hub.clients")
+	}
+	if !hub.clients[b1] {
+		t.Fatal("user-b client should be untouched")
+	}
+	hub.mu.RUnlock()
+
+	// user-b's send channel must remain open and empty.
+	select {
+	case payload := <-b1.send:
+		t.Fatalf("unexpected payload on user-b send channel: %s", payload)
+	default:
+	}
+}
