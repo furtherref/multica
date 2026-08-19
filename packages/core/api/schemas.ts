@@ -2055,6 +2055,10 @@ export const UserSchema = z.object({
   timezone: z.string().nullable().default(null),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
+  // Optional: absent/non-boolean values must not be coerced to `true`, so
+  // "not an admin" and "server didn't send the field" collapse to the same
+  // falsy `undefined` instead of ever defaulting to admin access.
+  is_system_admin: z.boolean().optional(),
 }).loose();
 
 export const EMPTY_USER: User = {

@@ -15,6 +15,7 @@ import { WSProvider } from "../realtime";
 import { QueryProvider } from "../provider";
 import { createLogger } from "../logger";
 import { defaultStorage } from "./storage";
+import { SESSION_ENDED_REASON_KEY } from "../auth/utils";
 import { AuthInitializer } from "./auth-initializer";
 import type { CoreProviderProps, ClientIdentity } from "./types";
 import type { StorageAdapter } from "../types/storage";
@@ -58,6 +59,17 @@ function initCore(
     logger: createLogger("api"),
     onUnauthorized: () => {
       storage.removeItem("multica_token");
+    },
+    onSessionRejected: (reason) => {
+      storage.removeItem("multica_token");
+      if (reason === "account_suspended") {
+        storage.setItem(SESSION_ENDED_REASON_KEY, "account_suspended");
+      }
+      // authStore is assigned ~20 lines below (module-scope var, initialised
+      // synchronously later in this function) — this callback only fires on
+      // a subsequent request, after that assignment has run, so the closure
+      // read here is always safe.
+      authStore?.getState().logout();
     },
     identity,
   });

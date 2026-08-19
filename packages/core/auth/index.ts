@@ -1,6 +1,10 @@
 export { createAuthStore } from "./store";
 export type { AuthStoreOptions, AuthState, AuthStatus } from "./store";
-export { sanitizeNextUrl } from "./utils";
+export {
+  sanitizeNextUrl,
+  ACCOUNT_SUSPENDED_CODE,
+  SESSION_ENDED_REASON_KEY,
+} from "./utils";
 
 import type { createAuthStore as CreateAuthStoreFn } from "./store";
 
