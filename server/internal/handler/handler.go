@@ -365,9 +365,17 @@ type Handler struct {
 	// DisconnectUser force-closes every realtime connection belonging to a
 	// user. Injected as a func (rather than a *realtime.Hub field) so the
 	// account-status handler doesn't need a direct Hub dependency. Wired in
-	// cmd/server/router.go to hub.DisconnectUser. Nil-safe.
+	// cmd/server/router.go to hub.DisconnectUser; cmd/server/main.go wraps
+	// it with a relay publish so suspension also reaches connections held
+	// by OTHER nodes. Nil-safe.
 	DisconnectUser func(userID string)
-	cfg            Config
+	// DisconnectDaemonRuntimes force-closes live daemon WebSockets watching
+	// the given runtimes. Suspension deletes the daemon's mdt_ token, but a
+	// token only gates NEW connections — an established socket keeps its
+	// cached identity, so it must be severed explicitly. Wired in
+	// cmd/server/router.go to daemonHub.DisconnectRuntimes. Nil-safe.
+	DisconnectDaemonRuntimes func(runtimeIDs []string)
+	cfg                      Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {

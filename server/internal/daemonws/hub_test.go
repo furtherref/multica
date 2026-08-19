@@ -705,3 +705,66 @@ func (p *localFirstDaemonRelayPublisher) PublishWithID(scopeType, scopeID, exclu
 	}
 	return nil
 }
+
+// Account suspension revokes the daemon's mdt_ token, but a token only gates
+// NEW connections — an already-established daemon WebSocket keeps serving
+// heartbeats and RPCs (tasks.claim) with its cached identity. Suspension must
+// therefore also sever the live sockets watching the suspended user's
+// runtimes, while daemons on other runtimes stay connected.
+func TestDisconnectRuntimesSeversOnlyMatchingConnections(t *testing.T) {
+	M.Reset()
+	defer M.Reset()
+
+	hub := NewHub()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runtimeID := r.URL.Query().Get("rt")
+		hub.HandleWebSocket(w, r, ClientIdentity{RuntimeIDs: []string{runtimeID}})
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	suspended, _, err := websocket.DefaultDialer.Dial(wsURL+"?rt=runtime-suspended", nil)
+	if err != nil {
+		t.Fatalf("Dial suspended: %v", err)
+	}
+	defer suspended.Close()
+	bystander, _, err := websocket.DefaultDialer.Dial(wsURL+"?rt=runtime-bystander", nil)
+	if err != nil {
+		t.Fatalf("Dial bystander: %v", err)
+	}
+	defer bystander.Close()
+
+	deadline := time.Now().Add(time.Second)
+	for hub.RuntimeConnectionCount("runtime-suspended") == 0 ||
+		hub.RuntimeConnectionCount("runtime-bystander") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("connections were not registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	hub.DisconnectRuntimes([]string{"runtime-suspended"})
+
+	// The suspended runtime's socket must observe a close/read error.
+	suspended.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := suspended.ReadMessage(); err == nil {
+		t.Fatal("expected suspended runtime's connection to be closed")
+	}
+	deadline = time.Now().Add(time.Second)
+	for hub.RuntimeConnectionCount("runtime-suspended") != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("suspended runtime's connection was not unregistered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The bystander stays registered and its socket stays healthy.
+	if hub.RuntimeConnectionCount("runtime-bystander") != 1 {
+		t.Fatal("bystander connection should be untouched")
+	}
+	hub.NotifyTaskAvailable("runtime-bystander", "task-1")
+	bystander.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := bystander.ReadMessage(); err != nil {
+		t.Fatalf("bystander read after DisconnectRuntimes: %v", err)
+	}
+}

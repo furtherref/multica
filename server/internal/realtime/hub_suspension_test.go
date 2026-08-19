@@ -143,3 +143,29 @@ func TestDisconnectUserEvictsAllUserConnections(t *testing.T) {
 	default:
 	}
 }
+
+// The ws-client only recognizes frames carrying a string `type` — a raw
+// {"error":...} rejection is silently dropped and the client reconnects
+// forever. Genuine credential rejections must therefore be wrapped in the
+// typed auth_error envelope, while transient conditions (status lookup
+// unavailable, first-frame read timeout) must stay unwrapped so a typed
+// auth_error never permanently stops a healthy client's reconnect loop.
+func TestWSAuthClosePayloadWrapsRejectionsOnly(t *testing.T) {
+	got := string(wsAuthClosePayload(accountSuspendedErrMsg))
+	want := `{"type":"auth_error","payload":{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}}`
+	if got != want {
+		t.Fatalf("suspended payload = %q, want %q", got, want)
+	}
+
+	invalid := `{"error":"invalid token"}`
+	if got := string(wsAuthClosePayload(invalid)); got != `{"type":"auth_error","payload":{"error":"invalid token"}}` {
+		t.Fatalf("invalid-token payload not wrapped: %q", got)
+	}
+
+	if got := string(wsAuthClosePayload(accountStatusUnavailableErrMsg)); got != accountStatusUnavailableErrMsg {
+		t.Fatalf("transient status payload must stay raw, got %q", got)
+	}
+	if got := string(wsAuthClosePayload(wsAuthTimeoutErrMsg)); got != wsAuthTimeoutErrMsg {
+		t.Fatalf("timeout payload must stay raw, got %q", got)
+	}
+}

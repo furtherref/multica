@@ -3,11 +3,13 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/auth"
@@ -112,115 +114,176 @@ func (h *Handler) SetUserAccountStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.Queries.SetUserAccountStatus(r.Context(), db.SetUserAccountStatusParams{
-		ID:            targetID,
-		AccountStatus: req.Status,
-	})
+	result, err := h.applyAccountStatusChange(r.Context(), targetID, req.Status)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		// The transaction rolled back: the status did NOT change, so 200
+		// here would falsely report a suspension that never converged.
+		slog.Error("account status: transaction failed",
+			"target_id", uuidToString(targetID), "status", req.Status, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update account status")
 		return
 	}
 
 	targetIDStr := uuidToString(targetID)
-	// Revocation must beat the cache TTL: without this the "next request
-	// fails" promise silently becomes "fails within 10 minutes".
-	if h.AccountGuard != nil {
-		h.AccountGuard.Cache.Invalidate(r.Context(), targetIDStr)
-	}
-
-	if req.Status == auth.AccountStatusSuspended {
-		h.quiesceSuspendedUser(r.Context(), targetID, targetIDStr)
-	}
+	h.publishAccountStatusChange(r.Context(), targetIDStr, req.Status, result)
 
 	writeJSON(w, http.StatusOK, AdminUserResponse{
 		ID:            targetIDStr,
-		Name:          updated.Name,
-		Email:         updated.Email,
-		AvatarURL:     h.resolveAvatarURLPtr(textToPtr(updated.AvatarUrl)),
-		AccountStatus: updated.AccountStatus,
-		CreatedAt:     timestampToString(updated.CreatedAt),
+		Name:          result.Updated.Name,
+		Email:         result.Updated.Email,
+		AvatarURL:     h.resolveAvatarURLPtr(textToPtr(result.Updated.AvatarUrl)),
+		AccountStatus: result.Updated.AccountStatus,
+		CreatedAt:     timestampToString(result.Updated.CreatedAt),
 	})
 }
 
-// quiesceSuspendedUser converges runtime-side state after a suspension: any
-// in-flight tasks on the user's runtimes are cancelled (so agents stop
-// gracefully), those runtimes are forced offline, and any daemon_token rows
-// for their daemons are deleted. Unlike member removal (revokeAndRemoveMember)
-// nothing is archived — suspension is reversible: an unsuspended user simply
-// re-pairs the daemon to get a fresh mdt_ token. Deleting the daemon token is
-// what makes suspension actually stick for the mdt_ auth path — without it a
-// suspended user's already-running daemon keeps daemon-API access (DaemonAuth
-// has no user identity on that path) and its heartbeat/register calls bring
-// force-offlined runtimes back online, undoing the rest of this convergence.
-// Failures are logged, not surfaced: the status flip and cache invalidation in
-// SetUserAccountStatus are the security boundary; this is best-effort cleanup.
-func (h *Handler) quiesceSuspendedUser(ctx context.Context, userID pgtype.UUID, userIDStr string) {
-	runtimes, err := h.Queries.ListAgentRuntimesByOwnerAllWorkspaces(ctx, userID)
-	if err != nil {
-		slog.Error("suspend: list runtimes failed", "user_id", userIDStr, "error", err)
-	} else if len(runtimes) > 0 {
-		runtimeIDs := make([]pgtype.UUID, len(runtimes))
-		// A user's runtimes can span workspaces; AgentTaskQueue carries no
-		// workspace_id of its own, so resolve each cancelled task's
-		// workspace through the runtime it was queued on.
-		workspaceByRuntime := make(map[string]string, len(runtimes))
-		for i, rt := range runtimes {
-			runtimeIDs[i] = rt.ID
-			workspaceByRuntime[uuidToString(rt.ID)] = uuidToString(rt.WorkspaceID)
-		}
-		cancelled, err := h.Queries.CancelAgentTasksByRuntimeOrAgent(ctx, db.CancelAgentTasksByRuntimeOrAgentParams{
-			RuntimeIds: runtimeIDs,
-			AgentIds:   nil,
-		})
-		if err != nil {
-			slog.Error("suspend: cancel tasks failed", "user_id", userIDStr, "error", err)
-		} else if h.TaskService != nil {
-			// Group per workspace: BroadcastCancelledTasks takes one workspace.
-			byWs := map[string][]db.AgentTaskQueue{}
-			for _, t := range cancelled {
-				wsID := workspaceByRuntime[uuidToString(t.RuntimeID)]
-				byWs[wsID] = append(byWs[wsID], t)
-			}
-			for wsID, tasks := range byWs {
-				if wsID == "" {
-					continue
-				}
-				h.TaskService.BroadcastCancelledTasks(ctx, wsID, tasks)
-			}
-		}
-		if _, err := h.Queries.ForceOfflineRuntimesByIDs(ctx, runtimeIDs); err != nil {
-			slog.Error("suspend: force offline failed", "user_id", userIDStr, "error", err)
-		}
+// accountStatusChangeResult carries everything the transaction touched so the
+// post-commit side effects (cache invalidation, broadcasts, WS kicks) can run
+// without re-querying — mirroring revokeAndRemoveMember's revocationResult.
+type accountStatusChangeResult struct {
+	Updated            db.User
+	Cancelled          []db.AgentTaskQueue
+	WorkspaceByRuntime map[string]string
+	RuntimeIDStrs      []string
+	RevokedTokenHashes []string
+}
 
-		// Delete daemon_token rows for these runtimes' daemons, mirroring
-		// revokeAndRemoveMember (workspace_revoke.go). DeleteDaemonTokensByWorkspaceAndDaemons
-		// is scoped to one workspace, and quiesce spans every workspace the
-		// user has runtimes in, so group daemon IDs per workspace first.
-		daemonIDsByWs := map[string][]string{}
-		for _, rt := range runtimes {
-			if rt.DaemonID.Valid && rt.DaemonID.String != "" {
-				wsID := uuidToString(rt.WorkspaceID)
-				daemonIDsByWs[wsID] = append(daemonIDsByWs[wsID], rt.DaemonID.String)
-			}
+// applyAccountStatusChange flips account_status and, on suspension, converges
+// all runtime-side DB state in the SAME transaction: cancel in-flight tasks on
+// the user's runtimes, force those runtimes offline, and delete their daemons'
+// mdt_ tokens. One transaction means a 200 response can never report a
+// suspension whose convergence silently half-failed — either everything
+// commits or the caller gets an error and nothing changed. Unlike member
+// removal (revokeAndRemoveMember) nothing is archived — suspension is
+// reversible: an unsuspended user simply re-pairs the daemon for a fresh
+// mdt_ token. Deleting the daemon token is what makes suspension stick for
+// the mdt_ auth path (DaemonAuth has no user identity there), and without it
+// the daemon's heartbeat/register calls would bring force-offlined runtimes
+// back online.
+func (h *Handler) applyAccountStatusChange(ctx context.Context, userID pgtype.UUID, status string) (accountStatusChangeResult, error) {
+	var empty accountStatusChangeResult
+
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return empty, err
+	}
+	defer tx.Rollback(ctx)
+
+	qtx := h.Queries.WithTx(tx)
+
+	result := accountStatusChangeResult{}
+	result.Updated, err = qtx.SetUserAccountStatus(ctx, db.SetUserAccountStatusParams{
+		ID:            userID,
+		AccountStatus: status,
+	})
+	if err != nil {
+		return empty, err
+	}
+
+	if status == auth.AccountStatusSuspended {
+		runtimes, err := qtx.ListAgentRuntimesByOwnerAllWorkspaces(ctx, userID)
+		if err != nil {
+			return empty, err
 		}
-		for wsID, daemonIDs := range daemonIDsByWs {
-			hashes, err := h.Queries.DeleteDaemonTokensByWorkspaceAndDaemons(ctx, db.DeleteDaemonTokensByWorkspaceAndDaemonsParams{
-				WorkspaceID: parseUUID(wsID),
-				DaemonIds:   daemonIDs,
+		if len(runtimes) > 0 {
+			runtimeIDs := make([]pgtype.UUID, len(runtimes))
+			// A user's runtimes can span workspaces; AgentTaskQueue carries
+			// no workspace_id of its own, so resolve each cancelled task's
+			// workspace through the runtime it was queued on.
+			result.WorkspaceByRuntime = make(map[string]string, len(runtimes))
+			result.RuntimeIDStrs = make([]string, len(runtimes))
+			for i, rt := range runtimes {
+				runtimeIDs[i] = rt.ID
+				result.RuntimeIDStrs[i] = uuidToString(rt.ID)
+				result.WorkspaceByRuntime[uuidToString(rt.ID)] = uuidToString(rt.WorkspaceID)
+			}
+			result.Cancelled, err = qtx.CancelAgentTasksByRuntimeOrAgent(ctx, db.CancelAgentTasksByRuntimeOrAgentParams{
+				RuntimeIds: runtimeIDs,
+				AgentIds:   nil,
 			})
 			if err != nil {
-				slog.Error("suspend: delete daemon tokens failed", "user_id", userIDStr, "workspace_id", wsID, "error", err)
-				continue
+				return empty, err
 			}
-			if h.DaemonTokenCache != nil {
-				for _, hash := range hashes {
-					h.DaemonTokenCache.Invalidate(ctx, hash)
+			if _, err := qtx.ForceOfflineRuntimesByIDs(ctx, runtimeIDs); err != nil {
+				return empty, err
+			}
+
+			// DeleteDaemonTokensByWorkspaceAndDaemons is scoped to one
+			// workspace and this convergence spans every workspace the user
+			// has runtimes in, so group daemon IDs per workspace first.
+			daemonIDsByWs := map[string][]string{}
+			for _, rt := range runtimes {
+				if rt.DaemonID.Valid && rt.DaemonID.String != "" {
+					wsID := uuidToString(rt.WorkspaceID)
+					daemonIDsByWs[wsID] = append(daemonIDsByWs[wsID], rt.DaemonID.String)
 				}
 			}
+			for wsID, daemonIDs := range daemonIDsByWs {
+				hashes, err := qtx.DeleteDaemonTokensByWorkspaceAndDaemons(ctx, db.DeleteDaemonTokensByWorkspaceAndDaemonsParams{
+					WorkspaceID: parseUUID(wsID),
+					DaemonIds:   daemonIDs,
+				})
+				if err != nil {
+					return empty, err
+				}
+				result.RevokedTokenHashes = append(result.RevokedTokenHashes, hashes...)
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return empty, err
+	}
+	return result, nil
+}
+
+// publishAccountStatusChange runs the post-commit side effects: cache
+// invalidation, task-cancellation broadcasts, and live-connection kicks.
+// These are best-effort — the DB state is already converged — and must run
+// AFTER commit so subscribers can never observe state the transaction might
+// still roll back.
+func (h *Handler) publishAccountStatusChange(ctx context.Context, userIDStr, status string, result accountStatusChangeResult) {
+	// Revocation must beat the cache TTL: without this the "next request
+	// fails" promise silently becomes "fails within 10 minutes".
+	if h.AccountGuard != nil {
+		h.AccountGuard.Cache.Invalidate(ctx, userIDStr)
+	}
+	for _, hash := range result.RevokedTokenHashes {
+		if h.DaemonTokenCache != nil {
+			h.DaemonTokenCache.Invalidate(ctx, hash)
+		}
+	}
+
+	if status != auth.AccountStatusSuspended {
+		return
+	}
+
+	if h.TaskService != nil && len(result.Cancelled) > 0 {
+		// Group per workspace: BroadcastCancelledTasks takes one workspace.
+		byWs := map[string][]db.AgentTaskQueue{}
+		for _, t := range result.Cancelled {
+			wsID := result.WorkspaceByRuntime[uuidToString(t.RuntimeID)]
+			byWs[wsID] = append(byWs[wsID], t)
+		}
+		for wsID, tasks := range byWs {
+			if wsID == "" {
+				continue
+			}
+			h.TaskService.BroadcastCancelledTasks(ctx, wsID, tasks)
 		}
 	}
 
 	if h.DisconnectUser != nil {
 		h.DisconnectUser(userIDStr)
+	}
+	// Sever live daemon WebSockets watching the suspended user's runtimes:
+	// the token deletion above only gates NEW daemon connections, while an
+	// established socket keeps its cached identity.
+	if h.DisconnectDaemonRuntimes != nil && len(result.RuntimeIDStrs) > 0 {
+		h.DisconnectDaemonRuntimes(result.RuntimeIDStrs)
 	}
 }

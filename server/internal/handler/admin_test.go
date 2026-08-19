@@ -246,9 +246,28 @@ func TestSuspendCancelsRuntimesAndTasks(t *testing.T) {
 	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Suspend Cancel Agent")
 	taskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
 
+	// A live daemon WebSocket survives the token deletion (tokens only gate
+	// NEW connections), so suspension must also sever it explicitly.
+	var disconnectedRuntimes []string
+	prevDisconnect := testHandler.DisconnectDaemonRuntimes
+	testHandler.DisconnectDaemonRuntimes = func(runtimeIDs []string) {
+		disconnectedRuntimes = append(disconnectedRuntimes, runtimeIDs...)
+	}
+	t.Cleanup(func() { testHandler.DisconnectDaemonRuntimes = prevDisconnect })
+
 	w := patchAccountStatus(t, uuidToString(adminUser.ID), targetIDStr, "suspended")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 suspending, got %d: %s", w.Code, w.Body.String())
+	}
+
+	found := false
+	for _, id := range disconnectedRuntimes {
+		if id == runtimeID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("DisconnectDaemonRuntimes not called for runtime %s (got %v)", runtimeID, disconnectedRuntimes)
 	}
 
 	var taskStatus string

@@ -1032,6 +1032,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	accountGuard := &auth.AccountGuard{Queries: queries, Cache: auth.NewAccountStatusCache(rdb)}
 	h.AccountGuard = accountGuard
 	h.DisconnectUser = hub.DisconnectUser
+	h.DisconnectDaemonRuntimes = daemonHub.DisconnectRuntimes
 
 	// Cloud PAT verifier: validates mcn_ tokens against Multica Cloud
 	// Fleet. Returns nil when no Fleet URL is configured — the Auth /

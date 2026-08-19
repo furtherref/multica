@@ -589,6 +589,28 @@ func (h *Hub) RuntimeConnectionCount(runtimeID string) int {
 	return len(h.byRuntime[runtimeID])
 }
 
+// DisconnectRuntimes force-closes every connection watching any of the given
+// runtimes. Called on account suspension: deleting the daemon's mdt_ token
+// only gates NEW connections, while an already-established socket keeps
+// serving heartbeats and RPCs with its cached identity — severing it here is
+// what makes the revocation effective for live daemons. Closing the conn
+// makes readPump exit, which cancels the client context and unregisters it;
+// a legitimate daemon that reconnects is rejected by DaemonAuth (deleted
+// token / suspended owner) before it reaches this hub again.
+func (h *Hub) DisconnectRuntimes(runtimeIDs []string) {
+	h.mu.RLock()
+	targets := make(map[*client]struct{})
+	for _, runtimeID := range runtimeIDs {
+		for c := range h.byRuntime[runtimeID] {
+			targets[c] = struct{}{}
+		}
+	}
+	h.mu.RUnlock()
+	for c := range targets {
+		c.conn.Close()
+	}
+}
+
 func (h *Hub) WorkspaceConnectionCount(workspaceID string) int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

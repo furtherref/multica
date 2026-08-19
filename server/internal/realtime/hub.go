@@ -666,7 +666,7 @@ func (h *Hub) evictSlow(slow []*Client) {
 // same moment its HTTP credentials die. Best-effort: the auth_error frame
 // is dropped if the send buffer is full; eviction still proceeds.
 func (h *Hub) DisconnectUser(userID string) {
-	payload := []byte(`{"type":"auth_error","payload":{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}}`)
+	payload := AccountSuspendedFrame()
 	h.mu.RLock()
 	var targets []*Client
 	for c := range h.clients {
@@ -713,6 +713,40 @@ const accountSuspendedErrMsg = `{"error":"account suspended","code":"ACCOUNT_SUS
 // session on ACCOUNT_SUSPENDED, so a code-less message here is treated as an
 // ordinary auth failure rather than a false suspension signal.
 const accountStatusUnavailableErrMsg = `{"error":"account status unavailable"}`
+
+// wsAuthTimeoutErrMsg is returned by firstMessageAuth when the first frame
+// never arrives or cannot be read — a condition that can be transient (slow
+// network), not a credential rejection.
+const wsAuthTimeoutErrMsg = `{"error":"auth timeout or read error"}`
+
+// wsAuthErrorFrame wraps a rejection payload in the typed auth_error envelope.
+// The ws-client's frame guard drops anything without a string `type`, so a
+// raw {"error":...} rejection is invisible to it and the client reconnects
+// forever; the envelope is what lets it stop the loop (and, for
+// ACCOUNT_SUSPENDED, terminate the session).
+func wsAuthErrorFrame(errMsg string) []byte {
+	return []byte(`{"type":"auth_error","payload":` + errMsg + `}`)
+}
+
+// wsAuthClosePayload picks the frame to send before closing a rejected
+// connection. Genuine credential rejections get the typed envelope; transient
+// conditions stay raw on purpose — a typed auth_error permanently stops the
+// client's reconnect loop, which is only correct when the credentials
+// themselves were rejected.
+func wsAuthClosePayload(errMsg string) []byte {
+	if errMsg == accountStatusUnavailableErrMsg || errMsg == wsAuthTimeoutErrMsg {
+		return []byte(errMsg)
+	}
+	return wsAuthErrorFrame(errMsg)
+}
+
+// AccountSuspendedFrame is the typed auth_error frame pushed to a suspended
+// user's live connections. Exported so the suspend path can also publish it
+// through the cross-node relay (connections on other nodes are not reachable
+// by this node's DisconnectUser).
+func AccountSuspendedFrame() []byte {
+	return wsAuthErrorFrame(accountSuspendedErrMsg)
+}
 
 // authenticateToken validates a JWT or PAT string and returns the user ID.
 func authenticateToken(tokenStr string, pr PATResolver, ac AccountChecker, ctx context.Context) (string, string) {
@@ -872,12 +906,12 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, ac AccountC
 			return
 		}
 		if errMsg != "" {
-			writeWSAuthErrorAndClose(conn, []byte(errMsg), "workspace_id", workspaceID)
+			writeWSAuthErrorAndClose(conn, wsAuthClosePayload(errMsg), "workspace_id", workspaceID)
 			return
 		}
 		uid, errMsg := authenticateToken(tokenStr, pr, ac, r.Context())
 		if errMsg != "" {
-			writeWSAuthErrorAndClose(conn, []byte(errMsg), "workspace_id", workspaceID)
+			writeWSAuthErrorAndClose(conn, wsAuthClosePayload(errMsg), "workspace_id", workspaceID)
 			return
 		}
 		if !mc.IsMember(r.Context(), uid, workspaceID) {

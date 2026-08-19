@@ -443,6 +443,20 @@ func main() {
 		HeartbeatScheduler:  heartbeatScheduler,
 	})
 
+	// Cross-node suspension kick: the router wires h.DisconnectUser to the
+	// LOCAL hub, but in a multi-node deployment a suspended user's sockets
+	// can live on other nodes. Publishing the typed auth_error frame through
+	// the relay-backed broadcaster reaches them: cooperating clients
+	// terminate their own session on it. (Non-cooperating clients keep
+	// read-only events until their next reconnect, which the WS auth path
+	// rejects — documented residual in the design spec.) On single-node
+	// deployments broadcaster == hub, so this is just a local double-send
+	// the client ignores.
+	h.DisconnectUser = func(userID string) {
+		broadcaster.SendToUser(userID, realtime.AccountSuspendedFrame())
+		hub.DisconnectUser(userID)
+	}
+
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: r,
