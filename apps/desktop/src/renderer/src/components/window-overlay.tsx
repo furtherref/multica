@@ -6,6 +6,7 @@ import { useNavigation } from "@multica/views/navigation";
 import { paths } from "@multica/core/paths";
 import { workspaceListOptions } from "@multica/core/workspace/queries";
 import { useWindowOverlayStore } from "@/stores/window-overlay-store";
+import { AdminPage } from "@/pages/admin-page";
 import { useLocalRuntimesPending } from "../platform/use-local-runtimes-pending";
 
 /**
@@ -86,6 +87,11 @@ function WindowOverlayInner() {
         />
       )}
       {overlay.type === "invitations" && <InvitationsPage />}
+      {/* System administration: global full-window view. AdminPage carries
+          its own DragStrip and non-admin guard; its back button pushes "/",
+          which lands in the adapter's "any other navigation closes a live
+          overlay" branch. */}
+      {overlay.type === "admin" && <AdminPage />}
       {overlay.type === "onboarding" && (
         <OnboardingFlow
           onComplete={(ws, destination) => {

@@ -717,6 +717,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                   )}
                   {user?.is_system_admin === true && (
                     <>
+                      <DropdownMenuSeparator />
                       <DropdownMenuGroup>
                         <DropdownMenuItem onClick={() => push(paths.admin())}>
                           <Shield className="h-3.5 w-3.5" />

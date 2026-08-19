@@ -60,6 +60,14 @@ function tryRouteToOverlay(path: string): boolean {
     overlay.open({ type: "invitations" });
     return true;
   }
+  // System administration is global (not workspace-scoped), and tab sessions
+  // never navigate outside their workspace (see tab-store's
+  // navigateActiveSession guard), so /admin renders as a window overlay like
+  // the other non-workspace full-window flows.
+  if (path === "/admin") {
+    overlay.open({ type: "admin" });
+    return true;
+  }
   if (path.startsWith("/invite/")) {
     let id = "";
     try {

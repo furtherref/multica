@@ -160,6 +160,16 @@ describe("push", () => {
     expect(overlay.open).toHaveBeenCalledWith({ type: "new-workspace" });
     expect(acmeGroup()).toBe(before);
   });
+
+  it("routes /admin to the window overlay without touching sessions", () => {
+    const getAdapter = renderProvider();
+    const before = acmeGroup();
+
+    getAdapter().push("/admin");
+
+    expect(overlay.open).toHaveBeenCalledWith({ type: "admin" });
+    expect(acmeGroup()).toBe(before);
+  });
 });
 
 describe("push with pinned active tab", () => {
