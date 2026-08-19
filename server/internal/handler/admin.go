@@ -149,7 +149,16 @@ func (h *Handler) SetUserAccountStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, hash := range result.RevokedTokenHashes {
-		_ = h.DaemonTokenCache.Invalidate(r.Context(), hash)
+		if err := h.DaemonTokenCache.Invalidate(r.Context(), hash); err != nil {
+			// One retry, then accept: the hashes are unrecoverable after the
+			// committed delete, and a surviving entry is neutralized anyway —
+			// every consequential mdt_ path (heartbeat, claim, register)
+			// re-checks the runtime owner's suspension per request/write.
+			if err = h.DaemonTokenCache.Invalidate(r.Context(), hash); err != nil {
+				slog.Warn("account status: daemon-token cache entry may persist until TTL",
+					"target_id", targetIDStr, "error", err)
+			}
+		}
 	}
 
 	// Live-connection revocation must also hold before we report success: a

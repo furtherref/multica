@@ -247,3 +247,72 @@ func TestFanoutUserSuspendedFrameEvictsAfterRelayMutation(t *testing.T) {
 		t.Fatal("send channel was not closed — mutated control frame not recognized")
 	}
 }
+
+// A suspension control frame can be a relay REPLAY from before a restore.
+// The hub verifies the user's CURRENT status: an active (restored) account
+// must neither receive the frame (a cooperating client would falsely log
+// itself out) nor be evicted.
+func TestFanoutUserSuspendedFrameSkipsRestoredAccount(t *testing.T) {
+	hub := NewHub()
+	hub.SetAccountChecker(fakeAccountChecker{err: nil}) // active again
+	c := &Client{hub: hub, userID: "user-z", workspaceID: "ws-1", send: make(chan []byte, 4)}
+	hub.mu.Lock()
+	hub.clients[c] = true
+	hub.mu.Unlock()
+	hub.subscribe(c, ScopeUser, "user-z")
+
+	hub.SendToUser("user-z", AccountSuspendedFrame())
+
+	select {
+	case payload := <-c.send:
+		t.Fatalf("restored account must not receive the suspended frame, got %s", payload)
+	default:
+	}
+	hub.mu.RLock()
+	defer hub.mu.RUnlock()
+	if !hub.clients[c] {
+		t.Fatal("restored account's client must stay registered")
+	}
+}
+
+// With the checker confirming the suspension, the frame still evicts — and a
+// transient checker failure drops the frame rather than falsely kicking.
+func TestFanoutUserSuspendedFrameCheckerOutcomes(t *testing.T) {
+	newHubClient := func(ac AccountChecker) (*Hub, *Client) {
+		hub := NewHub()
+		if ac != nil {
+			hub.SetAccountChecker(ac)
+		}
+		c := &Client{hub: hub, userID: "user-w", workspaceID: "ws-1", send: make(chan []byte, 4)}
+		hub.mu.Lock()
+		hub.clients[c] = true
+		hub.mu.Unlock()
+		hub.subscribe(c, ScopeUser, "user-w")
+		return hub, c
+	}
+
+	hub, c := newHubClient(fakeAccountChecker{err: auth.ErrAccountSuspended})
+	hub.SendToUser("user-w", AccountSuspendedFrame())
+	select {
+	case _, ok := <-c.send:
+		if !ok {
+			t.Fatal("frame should be delivered before eviction")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("confirmed suspension must still deliver + evict")
+	}
+
+	hub2, c2 := newHubClient(fakeAccountChecker{err: errors.New("redis down")})
+	hub2.SendToUser("user-w", AccountSuspendedFrame())
+	select {
+	case payload := <-c2.send:
+		t.Fatalf("transient checker failure must drop the frame, got %s", payload)
+	default:
+	}
+	hub2.mu.RLock()
+	if !hub2.clients[c2] {
+		hub2.mu.RUnlock()
+		t.Fatal("transient checker failure must not evict")
+	}
+	hub2.mu.RUnlock()
+}

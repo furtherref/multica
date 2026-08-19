@@ -1031,6 +1031,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// enforce account_status (suspension) from the same cached lookup.
 	accountGuard := &auth.AccountGuard{Queries: queries, Cache: auth.NewAccountStatusCache(rdb)}
 	h.AccountGuard = accountGuard
+	// The hub verifies a user's CURRENT status before acting on a suspension
+	// control frame, so a relay replay of an old suspend event cannot kick a
+	// since-restored account.
+	hub.SetAccountChecker(accountGuard)
 	h.DisconnectUser = func(userID string) error {
 		hub.DisconnectUser(userID)
 		return nil

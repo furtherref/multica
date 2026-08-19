@@ -312,8 +312,16 @@ func main() {
 			switch relayMode {
 			case "legacy":
 				relayReadRedis = newNamedRedisClient(opts, "realtime-read")
-				relay = realtime.NewRedisRelayWithClients(hub, relayWriteRedis, relayReadRedis)
-				slog.Info("daemon websocket wakeup: Redis fanout disabled in legacy realtime relay mode")
+				legacy := realtime.NewRedisRelayWithClients(hub, relayWriteRedis, relayReadRedis)
+				// Suspension revocations (daemon:runtimes_revoked) must reach
+				// every node in EVERY relay mode — a legacy-mode deployment
+				// otherwise only severed daemon sockets on the node that
+				// handled the suspend request. Wiring the deliverer +
+				// notifier here also enables task-wakeup fanout in legacy
+				// mode; the transport handles the scope generically.
+				legacy.SetDaemonRuntimeDeliverer(daemonHub)
+				relay = legacy
+				daemonWakeup = daemonws.NewRelayNotifier(daemonHub, legacy)
 			case "dual":
 				shardedReadRedis = newNamedRedisClient(opts, "realtime-read-sharded")
 				legacyReadRedis = newNamedRedisClient(opts, "realtime-read-legacy")

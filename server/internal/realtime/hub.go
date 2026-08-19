@@ -285,6 +285,12 @@ type Hub struct {
 
 	authorizer ScopeAuthorizer
 
+	// accountChecker verifies a user's CURRENT status before a suspension
+	// control frame is acted on (guards against relay REPLAYS of old suspend
+	// events kicking a since-restored account). Guarded by mu; nil means
+	// "trust the frame" (minimal hubs and tests).
+	accountChecker AccountChecker
+
 	// Subscription lifecycle hooks. Both can be nil.
 	onFirstSubscriber SubscriptionCallback
 	onLastSubscriber  SubscriptionCallback
@@ -594,7 +600,17 @@ func (h *Hub) fanoutUser(userID string, message []byte, excludeWorkspace, eventI
 	// session), then severs the sockets so a non-cooperating client cannot
 	// keep its read-only event stream.
 	if isAccountSuspendedControlFrame(message) {
-		h.DisconnectUser(userID)
+		// A control frame can be a relay REPLAY from before a restore (the
+		// sharded relay replays recent stream entries on start), so verify
+		// the user's CURRENT status before acting: an active user's sockets
+		// must be left alone AND must not receive the frame — a cooperating
+		// client would falsely log itself out. Transient lookup failures
+		// drop the frame too: the authoritative suspend path surfaces its
+		// own kick failures, and dropping a maybe-stale frame is safer than
+		// falsely logging out an active user.
+		if h.confirmSuspendedForKick(userID) {
+			h.DisconnectUser(userID)
+		}
 		return
 	}
 	key := sk(ScopeUser, userID)
@@ -758,6 +774,27 @@ func wsAuthClosePayload(errMsg string) []byte {
 // by this node's DisconnectUser).
 func AccountSuspendedFrame() []byte {
 	return wsAuthErrorFrame(accountSuspendedErrMsg)
+}
+
+// SetAccountChecker wires the status verifier used before a suspension
+// control frame evicts anyone. Safe to call while the hub is serving.
+func (h *Hub) SetAccountChecker(ac AccountChecker) {
+	h.mu.Lock()
+	h.accountChecker = ac
+	h.mu.Unlock()
+}
+
+// confirmSuspendedForKick reports whether the user is CONFIRMED suspended
+// right now. No checker wired → true (trust the frame — minimal hubs/tests,
+// and the brief window before the router wires the guard).
+func (h *Hub) confirmSuspendedForKick(userID string) bool {
+	h.mu.RLock()
+	ac := h.accountChecker
+	h.mu.RUnlock()
+	if ac == nil {
+		return true
+	}
+	return errors.Is(ac.Check(context.Background(), userID), auth.ErrAccountSuspended)
 }
 
 // isAccountSuspendedControlFrame recognizes the suspension control frame

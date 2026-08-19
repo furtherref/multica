@@ -61,7 +61,21 @@ ON CONFLICT (workspace_id, daemon_id, provider) WHERE profile_id IS NULL
 DO UPDATE SET
     name = EXCLUDED.name,
     runtime_mode = EXCLUDED.runtime_mode,
-    status = EXCLUDED.status,
+    -- A registration must not resurrect a runtime whose (preserved) owner is
+    -- suspended: a stale mdt_ cache entry can still authenticate for up to
+    -- AuthCacheTTL after suspension deleted the daemon token, and this write
+    -- would otherwise flip the force-offlined row back online. Same
+    -- write-side closure as MarkAgentRuntimeOnline.
+    status = CASE
+        WHEN COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id) IS NOT NULL
+             AND EXISTS (
+                 SELECT 1 FROM "user" u
+                 WHERE u.id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id)
+                   AND u.account_status = 'suspended'
+             )
+        THEN 'offline'
+        ELSE EXCLUDED.status
+    END,
     device_info = EXCLUDED.device_info,
     metadata = EXCLUDED.metadata,
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),
@@ -95,7 +109,17 @@ DO UPDATE SET
     name = EXCLUDED.name,
     runtime_mode = EXCLUDED.runtime_mode,
     provider = EXCLUDED.provider,
-    status = EXCLUDED.status,
+    -- Same suspended-owner write guard as UpsertAgentRuntime above.
+    status = CASE
+        WHEN COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id) IS NOT NULL
+             AND EXISTS (
+                 SELECT 1 FROM "user" u
+                 WHERE u.id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id)
+                   AND u.account_status = 'suspended'
+             )
+        THEN 'offline'
+        ELSE EXCLUDED.status
+    END,
     device_info = EXCLUDED.device_info,
     metadata = EXCLUDED.metadata,
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),
@@ -187,9 +211,21 @@ WHERE id = ANY(@ids::uuid[]) AND status = 'online';
 -- Used on the offline→online transition (and on first heartbeat after
 -- registration). Writes status, last_seen_at, and updated_at because the
 -- status flip is a real state change and we want updated_at to reflect it.
+--
+-- The suspended-owner predicate closes the suspension TOCTOU at the write
+-- itself: an in-flight heartbeat whose app-level owner check read 'active'
+-- BEFORE the suspension transaction committed would otherwise resurrect the
+-- force-offlined row here. Inside one database, this predicate and the
+-- suspension's status flip serialize — no application-level check can offer
+-- that. Zero rows (pgx.ErrNoRows) means "owner suspended, flip refused";
+-- callers treat it as a benign skip.
 UPDATE agent_runtime
 SET status = 'online', last_seen_at = now(), updated_at = now()
-WHERE id = $1
+WHERE agent_runtime.id = $1
+  AND (agent_runtime.owner_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM "user" u
+      WHERE u.id = agent_runtime.owner_id AND u.account_status = 'suspended'
+  ))
 RETURNING *;
 
 -- name: SetAgentRuntimeOffline :exec
