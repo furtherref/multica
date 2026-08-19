@@ -114,9 +114,8 @@ func TestDisconnectUserEvictsAllUserConnections(t *testing.T) {
 			if !ok {
 				t.Fatalf("client send channel closed before delivering auth_error frame")
 			}
-			want := `{"type":"auth_error","payload":{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}}`
-			if string(payload) != want {
-				t.Fatalf("payload = %q, want %q", payload, want)
+			if matched, fresh := isAccountSuspendedControlFrame(payload); !matched || !fresh {
+				t.Fatalf("payload = %q, want a fresh suspended control frame", payload)
 			}
 		default:
 			t.Fatal("expected auth_error frame on send channel")
@@ -189,8 +188,8 @@ func TestFanoutUserSuspendedFrameEvictsServerSide(t *testing.T) {
 	// The client got the frame (cooperating clients still self-terminate)…
 	select {
 	case payload := <-c.send:
-		if string(payload) != string(AccountSuspendedFrame()) {
-			t.Fatalf("payload = %s", payload)
+		if matched, _ := isAccountSuspendedControlFrame(payload); !matched {
+			t.Fatalf("payload = %s, want a suspended control frame", payload)
 		}
 	default:
 		t.Fatal("expected suspended frame on send channel")
@@ -303,16 +302,61 @@ func TestFanoutUserSuspendedFrameCheckerOutcomes(t *testing.T) {
 	}
 
 	hub2, c2 := newHubClient(fakeAccountChecker{err: errors.New("redis down")})
-	hub2.SendToUser("user-w", AccountSuspendedFrame())
+	hub2.SendToUser("user-w", accountSuspendedFrameIssuedAt(time.Now().Add(-10*time.Minute)))
 	select {
 	case payload := <-c2.send:
-		t.Fatalf("transient checker failure must drop the frame, got %s", payload)
+		t.Fatalf("transient checker failure must drop a STALE frame, got %s", payload)
 	default:
 	}
 	hub2.mu.RLock()
 	if !hub2.clients[c2] {
 		hub2.mu.RUnlock()
-		t.Fatal("transient checker failure must not evict")
+		t.Fatal("transient checker failure must not evict on a stale frame")
+	}
+	hub2.mu.RUnlock()
+}
+
+// A FRESH suspension frame (just issued by the authoritative suspend path)
+// must fail CLOSED when the local status re-check fails transiently: the
+// origin node already reported success, so silently dropping the kick would
+// lose it with no retry signal. Stale frames (relay replays) keep failing
+// open — dropping a replay is safer than falsely kicking an active user.
+func TestSuspendedFrameTransientFailureFreshVsStale(t *testing.T) {
+	newHubClient := func() (*Hub, *Client) {
+		hub := NewHub()
+		hub.SetAccountChecker(fakeAccountChecker{err: errors.New("redis down")})
+		c := &Client{hub: hub, userID: "user-f", workspaceID: "ws-1", send: make(chan []byte, 4)}
+		hub.mu.Lock()
+		hub.clients[c] = true
+		hub.mu.Unlock()
+		hub.subscribe(c, ScopeUser, "user-f")
+		return hub, c
+	}
+
+	// Fresh frame + transient failure → fail closed: deliver + evict.
+	hub, c := newHubClient()
+	hub.SendToUser("user-f", AccountSuspendedFrame())
+	select {
+	case _, ok := <-c.send:
+		if !ok {
+			t.Fatal("frame should be delivered before eviction")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh frame + transient check failure must fail closed (evict)")
+	}
+
+	// Stale frame + transient failure → drop.
+	hub2, c2 := newHubClient()
+	hub2.SendToUser("user-f", accountSuspendedFrameIssuedAt(time.Now().Add(-10*time.Minute)))
+	select {
+	case payload := <-c2.send:
+		t.Fatalf("stale frame + transient failure must be dropped, got %s", payload)
+	default:
+	}
+	hub2.mu.RLock()
+	if !hub2.clients[c2] {
+		hub2.mu.RUnlock()
+		t.Fatal("stale frame + transient failure must not evict")
 	}
 	hub2.mu.RUnlock()
 }

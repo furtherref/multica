@@ -132,6 +132,10 @@ type PendingWorkPayload struct {
 // never delivered to daemons.
 type RuntimesRevokedPayload struct {
 	RuntimeIDs []string `json:"runtime_ids"`
+	// IssuedAt (RFC3339) anchors the consumer-side replay gate: frames
+	// issued before a node's daemon hub started are relay replays and are
+	// dropped there.
+	IssuedAt string `json:"issued_at"`
 }
 
 // TaskProgressPayload is sent from daemon to server during task execution.

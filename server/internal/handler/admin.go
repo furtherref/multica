@@ -148,19 +148,6 @@ func (h *Handler) SetUserAccountStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	for _, hash := range result.RevokedTokenHashes {
-		if err := h.DaemonTokenCache.Invalidate(r.Context(), hash); err != nil {
-			// One retry, then accept: the hashes are unrecoverable after the
-			// committed delete, and a surviving entry is neutralized anyway —
-			// every consequential mdt_ path (heartbeat, claim, register)
-			// re-checks the runtime owner's suspension per request/write.
-			if err = h.DaemonTokenCache.Invalidate(r.Context(), hash); err != nil {
-				slog.Warn("account status: daemon-token cache entry may persist until TTL",
-					"target_id", targetIDStr, "error", err)
-			}
-		}
-	}
-
 	// Live-connection revocation must also hold before we report success: a
 	// swallowed relay-publish failure would leave sockets on other nodes
 	// serving a suspended user. The runtime IDs and user ID are re-derivable,
@@ -190,7 +177,6 @@ type accountStatusChangeResult struct {
 	Cancelled          []db.AgentTaskQueue
 	WorkspaceByRuntime map[string]string
 	RuntimeIDStrs      []string
-	RevokedTokenHashes []string
 }
 
 // applyAccountStatusChange flips account_status and, on suspension, converges
@@ -264,26 +250,24 @@ func (h *Handler) applyAccountStatusChange(ctx context.Context, userID pgtype.UU
 				}
 			}
 			for wsID, daemonIDs := range daemonIDsByWs {
-				hashes, err := qtx.DeleteDaemonTokensByWorkspaceAndDaemons(ctx, db.DeleteDaemonTokensByWorkspaceAndDaemonsParams{
+				// The delete IS the revocation: the mdt_ auth path is
+				// uncached, so the token stops working on the daemon's very
+				// next request once this transaction commits.
+				if _, err := qtx.DeleteDaemonTokensByWorkspaceAndDaemons(ctx, db.DeleteDaemonTokensByWorkspaceAndDaemonsParams{
 					WorkspaceID: parseUUID(wsID),
 					DaemonIds:   daemonIDs,
-				})
-				if err != nil {
+				}); err != nil {
 					return empty, err
 				}
-				result.RevokedTokenHashes = append(result.RevokedTokenHashes, hashes...)
 			}
 		}
 	}
 
-	// Invalidate the cached verdicts BEFORE committing: if Redis refuses the
-	// deletes we roll back and nothing changed, so the admin's retry re-runs
-	// the whole convergence — including re-deriving the daemon-token hashes
-	// from the not-yet-deleted rows. (After a commit those hashes are gone
-	// and a retry could never re-invalidate them.) Clearing a cache entry
-	// for a row the rollback then restores is harmless — it repopulates on
-	// the next read.
-	if err := h.invalidateRevocationCaches(ctx, uuidToString(userID), result.RevokedTokenHashes); err != nil {
+	// Invalidate the cached account verdict BEFORE committing: if Redis
+	// refuses the delete we roll back and nothing changed, so the admin's
+	// retry re-runs the whole convergence. Clearing a cache entry for a row
+	// the rollback then restores is harmless — it repopulates on read.
+	if err := h.invalidateRevocationCaches(ctx, uuidToString(userID)); err != nil {
 		return empty, fmt.Errorf("revoking cached verdicts: %w", err)
 	}
 
@@ -298,33 +282,18 @@ func (h *Handler) applyAccountStatusChange(ctx context.Context, userID pgtype.UU
 // These are best-effort — the DB state is already converged — and must run
 // AFTER commit so subscribers can never observe state the transaction might
 // still roll back.
-// invalidateRevocationCaches clears every cached verdict a status change must
-// beat: the account-status cache (all user-identity auth paths) and the
-// daemon-token cache entries for tokens the transaction deleted (the mdt_
-// path, which has no user identity). Each delete is retried once; a persistent
-// failure is returned so the caller can refuse to report a revocation that
-// has not actually propagated.
-func (h *Handler) invalidateRevocationCaches(ctx context.Context, userIDStr string, revokedTokenHashes []string) error {
-	invalidateWithRetry := func(invalidate func() error) error {
-		if err := invalidate(); err != nil {
-			return invalidate()
-		}
+// invalidateRevocationCaches clears the account-status cache — the one cached
+// verdict a status change must beat (every user-identity auth path consults
+// it; the mdt_ daemon-token path is deliberately uncached, so token deletion
+// needs no cache choreography). Retried once; a persistent failure is
+// returned so the caller can refuse to report a revocation that has not
+// actually propagated.
+func (h *Handler) invalidateRevocationCaches(ctx context.Context, userIDStr string) error {
+	if h.AccountGuard == nil {
 		return nil
 	}
-	if h.AccountGuard != nil {
-		if err := invalidateWithRetry(func() error {
-			return h.AccountGuard.Cache.Invalidate(ctx, userIDStr)
-		}); err != nil {
-			return err
-		}
-	}
-	for _, hash := range revokedTokenHashes {
-		hash := hash
-		if err := invalidateWithRetry(func() error {
-			return h.DaemonTokenCache.Invalidate(ctx, hash)
-		}); err != nil {
-			return err
-		}
+	if err := h.AccountGuard.Cache.Invalidate(ctx, userIDStr); err != nil {
+		return h.AccountGuard.Cache.Invalidate(ctx, userIDStr)
 	}
 	return nil
 }

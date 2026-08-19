@@ -816,3 +816,68 @@ func TestDeliverDaemonRuntimeRevokedFrameSeversConnections(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Suspension revocations must reach every node regardless of relay mode, so
+// they publish to the FIXED daemon control scope (which even the legacy
+// relay consumes unconditionally) rather than a per-runtime shard key whose
+// stream may have no consumer.
+func TestDisconnectRuntimesPublishesControlScope(t *testing.T) {
+	M.Reset()
+	defer M.Reset()
+
+	relay := &recordingRelayPublisher{}
+	notifier := NewRelayNotifier(nil, relay)
+
+	if err := notifier.DisconnectRuntimes([]string{"rt-1", "rt-2"}); err != nil {
+		t.Fatalf("DisconnectRuntimes: %v", err)
+	}
+	if relay.scopeType != realtime.ScopeDaemonRuntime {
+		t.Fatalf("scopeType = %q, want %q", relay.scopeType, realtime.ScopeDaemonRuntime)
+	}
+	if relay.scopeID != realtime.DaemonControlScopeID {
+		t.Fatalf("scopeID = %q, want fixed control scope %q", relay.scopeID, realtime.DaemonControlScopeID)
+	}
+}
+
+// A revocation is a connection-lifecycle event: every socket this node holds
+// postdates process start, and a reconnect after a genuine revocation is
+// rejected by per-request token authority anyway. A replayed frame issued
+// BEFORE this hub started (relay replay on node restart) can therefore only
+// hit re-paired, legitimate connections — it must be dropped.
+func TestDeliverDaemonRuntimeRevokedReplayFromBeforeStartDropped(t *testing.T) {
+	M.Reset()
+	defer M.Reset()
+
+	hub := NewHub()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hub.HandleWebSocket(w, r, ClientIdentity{RuntimeIDs: []string{"runtime-replay"}})
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(time.Second)
+	for hub.RuntimeConnectionCount("runtime-replay") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("connection was not registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	stale, err := runtimesRevokedFrameAt([]string{"runtime-replay"}, hub.startedAt.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("runtimesRevokedFrameAt: %v", err)
+	}
+	hub.DeliverDaemonRuntime("runtime-replay", stale, "event-replay")
+
+	// The connection must survive a stale replay.
+	time.Sleep(50 * time.Millisecond)
+	if hub.RuntimeConnectionCount("runtime-replay") != 1 {
+		t.Fatal("stale revocation replay must not sever the connection")
+	}
+}

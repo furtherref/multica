@@ -13,6 +13,14 @@ const (
 	ScopeDaemonRuntime = "daemon_runtime"
 )
 
+// DaemonControlScopeID is the FIXED scope id daemon control frames (runtime
+// revocations) publish under. Wakeup hints shard by task/runtime id, but the
+// legacy relay only consumes streams the realtime hub has subscribers for —
+// and nothing subscribes to daemon scopes — so control frames need one
+// well-known stream every relay with a daemon deliverer consumes
+// unconditionally.
+const DaemonControlScopeID = "control"
+
 // Broadcaster is the abstraction every realtime event producer should depend
 // on instead of *Hub directly.
 //

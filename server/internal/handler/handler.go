@@ -215,7 +215,6 @@ type Handler struct {
 	// nil Metrics as "PostHog only".
 	Metrics                      *obsmetrics.BusinessMetrics
 	PATCache                     *auth.PATCache
-	DaemonTokenCache             *auth.DaemonTokenCache
 	MembershipCache              *auth.MembershipCache
 	WebhookRateLimiter           WebhookRateLimiter
 	WebhookIPRateLimiter         WebhookRateLimiter

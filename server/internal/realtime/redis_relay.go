@@ -228,6 +228,14 @@ func (r *RedisRelay) Start(ctx context.Context) {
 		r.startConsumer(ctx, key.Type, key.ID)
 	}
 
+	// Daemon control frames (runtime revocations) are not driven by hub
+	// subscriptions — daemons live on a separate hub — so a relay wired
+	// with a daemon deliverer consumes the fixed control stream
+	// unconditionally for the lifetime of the relay.
+	if r.daemonRuntime != nil {
+		r.startConsumer(ctx, ScopeDaemonRuntime, DaemonControlScopeID)
+	}
+
 	r.wg.Add(2)
 	go func() {
 		defer r.wg.Done()

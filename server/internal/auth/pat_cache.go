@@ -10,9 +10,9 @@ import (
 )
 
 // AuthCacheTTL bounds how long a token-hash lookup stays cached before
-// the auth middleware goes back to Postgres. Shared by PATCache and
-// DaemonTokenCache so both kinds of token follow the same revocation
-// latency contract. Short enough that revocation lag from a missed
+// the auth middleware goes back to Postgres. Used by PATCache (and the
+// AccountStatusCache); the mdt_ daemon-token path is deliberately uncached
+// so account suspension's token deletion is authoritative per-request. Short enough that revocation lag from a missed
 // invalidation is bounded; long enough that a high-frequency client
 // (CLI, daemon) collapses from one DB round-trip per request to one
 // per TTL window.

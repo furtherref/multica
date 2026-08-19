@@ -153,8 +153,11 @@ func (n *RelayNotifier) DisconnectRuntimes(runtimeIDs []string) error {
 	}
 	// Unlike the wakeup hints above, a lost revocation is NOT harmless — a
 	// daemon socket on another node would keep serving a suspended user — so
-	// the publish error is returned for the suspend endpoint to surface.
-	if err := n.relay.PublishWithID(realtime.ScopeDaemonRuntime, runtimeIDs[0], "", frame, eventID); err != nil {
+	// the publish error is returned for the suspend endpoint to surface, and
+	// the frame rides the FIXED control scope that every relay with a daemon
+	// deliverer consumes unconditionally (per-runtime shard streams have no
+	// consumer in legacy relay mode).
+	if err := n.relay.PublishWithID(realtime.ScopeDaemonRuntime, realtime.DaemonControlScopeID, "", frame, eventID); err != nil {
 		M.WakeupPublishErrors.Add(1)
 		slog.Warn("daemon websocket revoke publish failed", "error", err, "runtime_ids", runtimeIDs)
 		return err

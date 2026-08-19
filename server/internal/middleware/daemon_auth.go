@@ -64,7 +64,6 @@ func WithDaemonContext(ctx context.Context, workspaceID, daemonID string) contex
 // authenticate via user tokens.
 //
 // Both caches are optional. When non-nil:
-//   - daemonCache short-circuits the daemon_token DB lookup on the mdt_ path
 //   - patCache short-circuits the PAT DB lookup AND the last_used_at update
 //     on the mul_ fallback path. This is the same cache shared with the
 //     regular Auth middleware, so a single hot PAT used by both human CLI
@@ -76,7 +75,7 @@ func WithDaemonContext(ctx context.Context, workspaceID, daemonID string) contex
 // branch — same fail-closed contract as the regular Auth middleware.
 //
 // Cache misses fall back to the original DB-backed behavior.
-func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.DaemonTokenCache, cloudPAT *auth.CloudPATVerifier, guard *auth.AccountGuard) func(http.Handler) http.Handler {
+func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier, guard *auth.AccountGuard) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// X-Actor-Source is server-set only — strip any
@@ -103,17 +102,17 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 				return
 			}
 
-			// Daemon token: "mdt_" prefix.
+			// Daemon token: "mdt_" prefix. DELIBERATELY uncached: an mdt_
+			// token carries no user identity, so no per-request suspension
+			// check can cover it — deleting the daemon_token row (account
+			// suspension's revocation) must therefore be authoritative on
+			// the very next request across the entire /api/daemon surface.
+			// mdt_ volume is low (production daemons authenticate with mul_
+			// PATs today), so the per-request point lookup is cheap; if that
+			// ever changes, any future cache must carry the runtime owner so
+			// suspension can be enforced on cache hits.
 			if strings.HasPrefix(tokenString, "mdt_") {
 				hash := auth.HashToken(tokenString)
-
-				if id, ok := daemonCache.Get(r.Context(), hash); ok {
-					ctx := context.WithValue(r.Context(), ctxKeyDaemonWorkspaceID, id.WorkspaceID)
-					ctx = context.WithValue(ctx, ctxKeyDaemonID, id.DaemonID)
-					ctx = context.WithValue(ctx, ctxKeyDaemonAuthPath, DaemonAuthPathDaemonToken)
-					next.ServeHTTP(w, r.WithContext(ctx))
-					return
-				}
 
 				if queries == nil {
 					writeError(w, http.StatusUnauthorized, "invalid daemon token")
@@ -126,20 +125,8 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 					return
 				}
 
-				identity := auth.DaemonTokenIdentity{
-					WorkspaceID: uuidToString(dt.WorkspaceID),
-					DaemonID:    dt.DaemonID,
-				}
-				// daemon_token.expires_at is NOT NULL; pgtype Valid is true
-				// in normal operation, but defend against zero just in case.
-				var expiresAt time.Time
-				if dt.ExpiresAt.Valid {
-					expiresAt = dt.ExpiresAt.Time
-				}
-				daemonCache.Set(r.Context(), hash, identity, auth.TTLForExpiry(time.Now(), expiresAt))
-
-				ctx := context.WithValue(r.Context(), ctxKeyDaemonWorkspaceID, identity.WorkspaceID)
-				ctx = context.WithValue(ctx, ctxKeyDaemonID, identity.DaemonID)
+				ctx := context.WithValue(r.Context(), ctxKeyDaemonWorkspaceID, uuidToString(dt.WorkspaceID))
+				ctx = context.WithValue(ctx, ctxKeyDaemonID, dt.DaemonID)
 				ctx = context.WithValue(ctx, ctxKeyDaemonAuthPath, DaemonAuthPathDaemonToken)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return

@@ -127,3 +127,43 @@ func (p *localFirstPublisher) PublishWithID(scopeType, scopeID, exclude string, 
 	}
 	return nil
 }
+
+type noopDaemonDeliverer struct{}
+
+func (noopDaemonDeliverer) DeliverDaemonRuntime(string, []byte, string) {}
+
+// The legacy relay's consumers are driven by the realtime Hub's subscription
+// callbacks — and no realtime client ever subscribes to the daemon-runtime
+// scope (daemons live on a separate hub), so daemon control frames were
+// published into a stream nobody read. A relay wired with a daemon deliverer
+// must therefore consume the fixed control scope unconditionally.
+func TestStartRegistersDaemonControlConsumerWhenDelivererSet(t *testing.T) {
+	newDeadClient := func() *redis.Client {
+		return redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	}
+
+	withDeliverer := NewRedisRelayWithClients(NewHub(), newDeadClient(), newDeadClient())
+	withDeliverer.SetDaemonRuntimeDeliverer(noopDaemonDeliverer{})
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	withDeliverer.Start(ctx1)
+	defer func() { withDeliverer.Stop(); cancel1(); withDeliverer.Wait() }()
+
+	withDeliverer.mu.Lock()
+	_, ok := withDeliverer.consumers[sk(ScopeDaemonRuntime, DaemonControlScopeID)]
+	withDeliverer.mu.Unlock()
+	if !ok {
+		t.Fatal("relay with a daemon deliverer must consume the daemon control scope")
+	}
+
+	withoutDeliverer := NewRedisRelayWithClients(NewHub(), newDeadClient(), newDeadClient())
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	withoutDeliverer.Start(ctx2)
+	defer func() { withoutDeliverer.Stop(); cancel2(); withoutDeliverer.Wait() }()
+
+	withoutDeliverer.mu.Lock()
+	_, ok = withoutDeliverer.consumers[sk(ScopeDaemonRuntime, DaemonControlScopeID)]
+	withoutDeliverer.mu.Unlock()
+	if ok {
+		t.Fatal("relay without a daemon deliverer must not start the control consumer")
+	}
+}

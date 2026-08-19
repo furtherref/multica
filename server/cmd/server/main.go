@@ -314,11 +314,12 @@ func main() {
 				relayReadRedis = newNamedRedisClient(opts, "realtime-read")
 				legacy := realtime.NewRedisRelayWithClients(hub, relayWriteRedis, relayReadRedis)
 				// Suspension revocations (daemon:runtimes_revoked) must reach
-				// every node in EVERY relay mode — a legacy-mode deployment
-				// otherwise only severed daemon sockets on the node that
-				// handled the suspend request. Wiring the deliverer +
-				// notifier here also enables task-wakeup fanout in legacy
-				// mode; the transport handles the scope generically.
+				// every node in EVERY relay mode. They publish to the FIXED
+				// daemon control scope, which any relay carrying a daemon
+				// deliverer consumes unconditionally (see RedisRelay.Start) —
+				// per-runtime wakeup shard streams still have no legacy
+				// consumer, so wakeup hints remain best-effort local-only in
+				// this mode, exactly as before.
 				legacy.SetDaemonRuntimeDeliverer(daemonHub)
 				relay = legacy
 				daemonWakeup = daemonws.NewRelayNotifier(daemonHub, legacy)

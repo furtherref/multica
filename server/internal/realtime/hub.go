@@ -599,16 +599,16 @@ func (h *Hub) fanoutUser(userID string, message []byte, excludeWorkspace, eventI
 	// delivers the frame first (cooperating clients terminate their own
 	// session), then severs the sockets so a non-cooperating client cannot
 	// keep its read-only event stream.
-	if isAccountSuspendedControlFrame(message) {
+	if matched, fresh := isAccountSuspendedControlFrame(message); matched {
 		// A control frame can be a relay REPLAY from before a restore (the
 		// sharded relay replays recent stream entries on start), so verify
 		// the user's CURRENT status before acting: an active user's sockets
 		// must be left alone AND must not receive the frame — a cooperating
-		// client would falsely log itself out. Transient lookup failures
-		// drop the frame too: the authoritative suspend path surfaces its
-		// own kick failures, and dropping a maybe-stale frame is safer than
-		// falsely logging out an active user.
-		if h.confirmSuspendedForKick(userID) {
+		// client would falsely log itself out. When the status check itself
+		// fails transiently, freshness decides: a FRESH frame is an
+		// authoritative kick whose origin already reported success, so it
+		// fails CLOSED (evict); a stale frame is a replay and is dropped.
+		if h.confirmSuspendedForKick(userID, fresh) {
 			h.DisconnectUser(userID)
 		}
 		return
@@ -771,10 +771,22 @@ func wsAuthClosePayload(errMsg string) []byte {
 // AccountSuspendedFrame is the typed auth_error frame pushed to a suspended
 // user's live connections. Exported so the suspend path can also publish it
 // through the cross-node relay (connections on other nodes are not reachable
-// by this node's DisconnectUser).
+// by this node's DisconnectUser). The embedded issued_at lets consuming
+// nodes distinguish a FRESH authoritative kick from a relay REPLAY when the
+// local status re-check fails transiently.
 func AccountSuspendedFrame() []byte {
-	return wsAuthErrorFrame(accountSuspendedErrMsg)
+	return accountSuspendedFrameIssuedAt(time.Now())
 }
+
+func accountSuspendedFrameIssuedAt(ts time.Time) []byte {
+	return []byte(`{"type":"auth_error","payload":{"error":"account suspended","code":"ACCOUNT_SUSPENDED","issued_at":"` +
+		ts.UTC().Format(time.RFC3339Nano) + `"}}`)
+}
+
+// suspendedFrameFreshness is how recently a suspension control frame must
+// have been issued to count as a FRESH authoritative kick (generous enough
+// for inter-node clock skew, far shorter than the relay's replay horizon).
+const suspendedFrameFreshness = 5 * time.Minute
 
 // SetAccountChecker wires the status verifier used before a suspension
 // control frame evicts anyone. Safe to call while the hub is serving.
@@ -784,17 +796,28 @@ func (h *Hub) SetAccountChecker(ac AccountChecker) {
 	h.mu.Unlock()
 }
 
-// confirmSuspendedForKick reports whether the user is CONFIRMED suspended
-// right now. No checker wired → true (trust the frame — minimal hubs/tests,
-// and the brief window before the router wires the guard).
-func (h *Hub) confirmSuspendedForKick(userID string) bool {
+// confirmSuspendedForKick decides whether a suspension control frame should
+// evict. No checker wired → trust the frame (minimal hubs/tests, and the
+// brief window before the router wires the guard). Active → never (a replay
+// must not kick a restored account). Confirmed suspended → always. A
+// TRANSIENT check failure falls back to the frame's freshness: fresh
+// authoritative kicks fail closed, stale replays fail open.
+func (h *Hub) confirmSuspendedForKick(userID string, fresh bool) bool {
 	h.mu.RLock()
 	ac := h.accountChecker
 	h.mu.RUnlock()
 	if ac == nil {
 		return true
 	}
-	return errors.Is(ac.Check(context.Background(), userID), auth.ErrAccountSuspended)
+	err := ac.Check(context.Background(), userID)
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, auth.ErrAccountSuspended):
+		return true
+	default:
+		return fresh
+	}
 }
 
 // isAccountSuspendedControlFrame recognizes the suspension control frame
@@ -805,20 +828,28 @@ func (h *Hub) confirmSuspendedForKick(userID string) bool {
 // path for ordinary events; only server code can author a top-level
 // type:"auth_error" frame, so user-generated payload content cannot spoof
 // this (it would fail the typed parse below).
-func isAccountSuspendedControlFrame(message []byte) bool {
+func isAccountSuspendedControlFrame(message []byte) (matched, fresh bool) {
 	if len(message) > 512 || !bytes.Contains(message, []byte(`"auth_error"`)) {
-		return false
+		return false, false
 	}
 	var probe struct {
 		Type    string `json:"type"`
 		Payload struct {
-			Code string `json:"code"`
+			Code     string `json:"code"`
+			IssuedAt string `json:"issued_at"`
 		} `json:"payload"`
 	}
 	if err := json.Unmarshal(message, &probe); err != nil {
-		return false
+		return false, false
 	}
-	return probe.Type == "auth_error" && probe.Payload.Code == auth.AccountSuspendedCode
+	if probe.Type != "auth_error" || probe.Payload.Code != auth.AccountSuspendedCode {
+		return false, false
+	}
+	// Missing/unparseable issued_at (frames from older builds) counts as
+	// stale: on a transient status-check failure such a frame is dropped —
+	// the conservative side, since only replays lack a fresh timestamp.
+	ts, err := time.Parse(time.RFC3339Nano, probe.Payload.IssuedAt)
+	return true, err == nil && time.Since(ts) < suspendedFrameFreshness
 }
 
 // authenticateToken validates a JWT or PAT string and returns the user ID.
