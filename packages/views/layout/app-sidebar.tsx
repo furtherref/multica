@@ -21,6 +21,7 @@ import { Layers,
   ChevronRight,
   LogOut,
   Plus,
+  Shield,
   SquarePen,
   Check,
   X,
@@ -711,6 +712,16 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                             </button>
                           </div>
                         ))}
+                      </DropdownMenuGroup>
+                    </>
+                  )}
+                  {user?.is_system_admin === true && (
+                    <>
+                      <DropdownMenuGroup>
+                        <DropdownMenuItem onClick={() => push(paths.admin())}>
+                          <Shield className="h-3.5 w-3.5" />
+                          {t(($) => $.sidebar.system_admin)}
+                        </DropdownMenuItem>
                       </DropdownMenuGroup>
                     </>
                   )}

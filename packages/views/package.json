@@ -49,6 +49,7 @@
     "./wecom": "./wecom/index.ts",
     "./invite": "./invite/index.ts",
     "./invitations": "./invitations/index.ts",
+    "./admin": "./admin/index.ts",
     "./onboarding": "./onboarding/index.ts",
     "./platform": "./platform/index.ts",
     "./i18n": "./i18n/index.ts",

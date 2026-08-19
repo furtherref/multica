@@ -48,6 +48,7 @@
     "invitation_workspace_fallback": "워크스페이스",
     "invitation_join": "참가",
     "invitation_decline": "거절",
+    "system_admin": "시스템 관리",
     "log_out": "로그아웃",
     "new_issue": "새 태스크",
     "new_issue_shortcut": "C",

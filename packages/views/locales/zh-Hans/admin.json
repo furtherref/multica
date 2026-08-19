@@ -1,0 +1,27 @@
+{
+  "page": {
+    "title": "系统管理",
+    "description": "管理整个 Multica 部署中的用户账号。"
+  },
+  "users": {
+    "section_title": "用户 · {{count}}",
+    "search_placeholder": "按姓名或邮箱搜索",
+    "suspended_badge": "已禁用",
+    "actions_menu_aria": "更多操作",
+    "self_badge": "你",
+    "suspend_action": "禁用账号",
+    "restore_action": "恢复账号",
+    "suspend_title": "禁用 {{name}}",
+    "suspend_description": "禁用后，{{name}} 将无法登录 Multica，已登录的会话会在下一次请求时失效，进行中的任务将被取消。你可以随时恢复该账号。",
+    "restore_title": "恢复 {{name}}",
+    "restore_description": "恢复后，{{name}} 可以重新登录 Multica。",
+    "confirm_cancel": "取消",
+    "confirm_action": "确认",
+    "toast_suspended": "已禁用账号",
+    "toast_suspend_failed": "禁用账号失败",
+    "toast_restored": "已恢复账号",
+    "toast_restore_failed": "恢复账号失败",
+    "empty": "没有匹配的用户"
+  },
+  "back_to_workspace": "返回工作区"
+}

@@ -1,0 +1,27 @@
+{
+  "page": {
+    "title": "시스템 관리",
+    "description": "Multica 배포 전체의 사용자 계정을 관리합니다."
+  },
+  "users": {
+    "section_title": "사용자 · {{count}}",
+    "search_placeholder": "이름 또는 이메일로 검색",
+    "suspended_badge": "정지됨",
+    "actions_menu_aria": "추가 작업",
+    "self_badge": "나",
+    "suspend_action": "계정 정지",
+    "restore_action": "계정 복구",
+    "suspend_title": "{{name}} 정지",
+    "suspend_description": "정지하면 {{name}}님은 Multica에 로그인할 수 없고, 이미 로그인된 세션은 다음 요청 시 만료되며, 진행 중인 태스크는 취소됩니다. 이 계정은 언제든지 복구할 수 있습니다.",
+    "restore_title": "{{name}} 복구",
+    "restore_description": "{{name}}님은 다시 Multica에 로그인할 수 있게 됩니다.",
+    "confirm_cancel": "취소",
+    "confirm_action": "확인",
+    "toast_suspended": "계정을 정지했습니다",
+    "toast_suspend_failed": "계정 정지에 실패했습니다",
+    "toast_restored": "계정을 복구했습니다",
+    "toast_restore_failed": "계정 복구에 실패했습니다",
+    "empty": "일치하는 사용자가 없습니다"
+  },
+  "back_to_workspace": "워크스페이스로 돌아가기"
+}

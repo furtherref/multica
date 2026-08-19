@@ -1,0 +1,27 @@
+{
+  "page": {
+    "title": "システム管理",
+    "description": "Multica デプロイ全体のユーザーアカウントを管理します。"
+  },
+  "users": {
+    "section_title": "ユーザー · {{count}}",
+    "search_placeholder": "名前またはメールアドレスで検索",
+    "suspended_badge": "利用停止中",
+    "actions_menu_aria": "その他の操作",
+    "self_badge": "あなた",
+    "suspend_action": "アカウントを停止",
+    "restore_action": "アカウントを復元",
+    "suspend_title": "{{name}} を停止",
+    "suspend_description": "停止すると、{{name}} は Multica にサインインできなくなり、既存のセッションは次のリクエスト時に失効し、進行中のタスクはキャンセルされます。このアカウントはいつでも復元できます。",
+    "restore_title": "{{name}} を復元",
+    "restore_description": "{{name}} は再び Multica にサインインできるようになります。",
+    "confirm_cancel": "キャンセル",
+    "confirm_action": "確認",
+    "toast_suspended": "アカウントを停止しました",
+    "toast_suspend_failed": "アカウントの停止に失敗しました",
+    "toast_restored": "アカウントを復元しました",
+    "toast_restore_failed": "アカウントの復元に失敗しました",
+    "empty": "該当するユーザーがいません"
+  },
+  "back_to_workspace": "ワークスペースに戻る"
+}

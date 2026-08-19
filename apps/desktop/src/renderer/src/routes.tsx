@@ -14,6 +14,7 @@ import {
   RuntimeSettingsPage,
 } from "./pages/runtime-detail-page";
 import { AttachmentPreviewRoute } from "./pages/attachment-preview-page";
+import { AdminPage } from "./pages/admin-page";
 import { IssuesPage } from "@multica/views/issues/components";
 import { ProjectsPage } from "@multica/views/projects/components";
 import { DashboardPage } from "@multica/views/dashboard";
@@ -119,6 +120,15 @@ export const appRoutes: RouteObject[] = [
     errorElement: <DesktopRouteErrorPage />,
     children: [
       { index: true, element: null },
+      // Global (pre-workspace) route: system administration is not
+      // workspace-scoped, so it lives as a top-level sibling of
+      // :workspaceSlug rather than nested under it. AdminPage mounts its own
+      // <DragStrip /> since it renders outside WorkspaceRouteLayout's shell.
+      {
+        path: "admin",
+        element: <AdminPage />,
+        handle: { title: "Admin" },
+      },
       {
         path: ":workspaceSlug",
         element: <WorkspaceRouteLayout />,
