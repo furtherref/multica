@@ -129,6 +129,17 @@ func (h *Handler) SetUserAccountStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetIDStr := uuidToString(targetID)
+	// The DB flip is committed, but the "next request fails" promise also
+	// depends on the cached verdicts being gone — a swallowed invalidation
+	// failure would make this 200 a lie for up to AuthCacheTTL. Surface it
+	// as a 500 instead: PATCH is idempotent, so the admin's retry re-runs
+	// the invalidation against the already-committed status.
+	if err := h.invalidateRevocationCaches(r.Context(), targetIDStr, result.RevokedTokenHashes); err != nil {
+		slog.Error("account status: cache revocation failed after commit",
+			"target_id", targetIDStr, "status", req.Status, "error", err)
+		writeError(w, http.StatusInternalServerError, "account status updated but revocation propagation failed; retry the request")
+		return
+	}
 	h.publishAccountStatusChange(r.Context(), targetIDStr, req.Status, result)
 
 	writeJSON(w, http.StatusOK, AdminUserResponse{
@@ -246,18 +257,38 @@ func (h *Handler) applyAccountStatusChange(ctx context.Context, userID pgtype.UU
 // These are best-effort — the DB state is already converged — and must run
 // AFTER commit so subscribers can never observe state the transaction might
 // still roll back.
-func (h *Handler) publishAccountStatusChange(ctx context.Context, userIDStr, status string, result accountStatusChangeResult) {
-	// Revocation must beat the cache TTL: without this the "next request
-	// fails" promise silently becomes "fails within 10 minutes".
-	if h.AccountGuard != nil {
-		h.AccountGuard.Cache.Invalidate(ctx, userIDStr)
+// invalidateRevocationCaches clears every cached verdict a status change must
+// beat: the account-status cache (all user-identity auth paths) and the
+// daemon-token cache entries for tokens the transaction deleted (the mdt_
+// path, which has no user identity). Each delete is retried once; a persistent
+// failure is returned so the caller can refuse to report a revocation that
+// has not actually propagated.
+func (h *Handler) invalidateRevocationCaches(ctx context.Context, userIDStr string, revokedTokenHashes []string) error {
+	invalidateWithRetry := func(invalidate func() error) error {
+		if err := invalidate(); err != nil {
+			return invalidate()
+		}
+		return nil
 	}
-	for _, hash := range result.RevokedTokenHashes {
-		if h.DaemonTokenCache != nil {
-			h.DaemonTokenCache.Invalidate(ctx, hash)
+	if h.AccountGuard != nil {
+		if err := invalidateWithRetry(func() error {
+			return h.AccountGuard.Cache.Invalidate(ctx, userIDStr)
+		}); err != nil {
+			return err
 		}
 	}
+	for _, hash := range revokedTokenHashes {
+		hash := hash
+		if err := invalidateWithRetry(func() error {
+			return h.DaemonTokenCache.Invalidate(ctx, hash)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
+func (h *Handler) publishAccountStatusChange(ctx context.Context, userIDStr, status string, result accountStatusChangeResult) {
 	if status != auth.AccountStatusSuspended {
 		return
 	}

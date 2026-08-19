@@ -89,11 +89,17 @@ func (c *DaemonTokenCache) Set(ctx context.Context, hash string, id DaemonTokenI
 // Invalidate removes the entry for hash. Called when a daemon token is
 // deleted so the deletion takes effect immediately rather than waiting
 // for the TTL.
-func (c *DaemonTokenCache) Invalidate(ctx context.Context, hash string) {
+// Invalidate removes the cached entry for hash, returning the Redis error so
+// callers whose correctness depends on the delete (account suspension deleting
+// a daemon's mdt_ token) can surface a failure; best-effort callers may ignore
+// the result. A nil receiver returns nil.
+func (c *DaemonTokenCache) Invalidate(ctx context.Context, hash string) error {
 	if c == nil {
-		return
+		return nil
 	}
 	if err := c.rdb.Del(ctx, daemonTokenCacheKey(hash)).Err(); err != nil {
 		slog.Warn("daemon_token_cache: invalidate failed; entry will expire on TTL", "error", err)
+		return err
 	}
+	return nil
 }

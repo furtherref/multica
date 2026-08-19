@@ -12,7 +12,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/redis/go-redis/v9"
 
+	"github.com/multica-ai/multica/server/internal/auth"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -466,4 +468,58 @@ func TestGetMeReportsSystemAdmin(t *testing.T) {
 			t.Fatal("expected is_system_admin=false for non-admin user")
 		}
 	})
+}
+
+// A committed status flip whose cache invalidation silently fails would let
+// the suspended user's warm "active" verdict outlive the 200 by up to
+// AuthCacheTTL. The handler must surface that as a 500 (PATCH is idempotent —
+// the admin retries and the invalidation re-runs) instead of reporting a
+// revocation that has not actually propagated.
+func TestSetAccountStatusFailsWhenCacheInvalidationFails(t *testing.T) {
+	const adminEmail = "admin-set-status-cache-fail-test@multica.ai"
+	const targetEmail = "target-set-status-cache-fail-test@multica.ai"
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM "user" WHERE email IN ($1, $2)`, adminEmail, targetEmail)
+	})
+
+	adminUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Admin Cache Fail Test",
+		Email: adminEmail,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser admin: %v", err)
+	}
+	targetUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Target Cache Fail Test",
+		Email: targetEmail,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser target: %v", err)
+	}
+	withAdminEmails(t, []string{adminEmail})
+
+	// Point the guard's cache at a Redis that cannot be reached, so every
+	// Invalidate attempt fails deterministically.
+	deadRedis := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", DialTimeout: 50 * time.Millisecond, MaxRetries: -1})
+	t.Cleanup(func() { deadRedis.Close() })
+	prevGuard := testHandler.AccountGuard
+	testHandler.AccountGuard = &auth.AccountGuard{Queries: testHandler.Queries, Cache: auth.NewAccountStatusCache(deadRedis)}
+	t.Cleanup(func() { testHandler.AccountGuard = prevGuard })
+
+	w := patchAccountStatus(t, uuidToString(adminUser.ID), uuidToString(targetUser.ID), "suspended")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when cache invalidation fails, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// The DB flip committed before the invalidation attempt — the account
+	// really is suspended; only the propagation promise failed.
+	status, err := testHandler.Queries.GetUserAccountStatus(ctx, targetUser.ID)
+	if err != nil {
+		t.Fatalf("GetUserAccountStatus: %v", err)
+	}
+	if status != auth.AccountStatusSuspended {
+		t.Fatalf("account_status = %q, want suspended (DB flip is committed)", status)
+	}
 }

@@ -768,3 +768,51 @@ func TestDisconnectRuntimesSeversOnlyMatchingConnections(t *testing.T) {
 		t.Fatalf("bystander read after DisconnectRuntimes: %v", err)
 	}
 }
+
+// Cross-node daemon kick: suspension on node A must sever daemon sockets held
+// by node B. The revocation rides the existing ScopeDaemonRuntime relay as a
+// typed frame; each node's DeliverDaemonRuntime dispatch recognizes it and
+// evicts locally instead of forwarding it to the daemon.
+func TestDeliverDaemonRuntimeRevokedFrameSeversConnections(t *testing.T) {
+	M.Reset()
+	defer M.Reset()
+
+	hub := NewHub()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hub.HandleWebSocket(w, r, ClientIdentity{RuntimeIDs: []string{"runtime-revoked"}})
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(time.Second)
+	for hub.RuntimeConnectionCount("runtime-revoked") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("connection was not registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	frame, err := runtimesRevokedFrame([]string{"runtime-revoked"})
+	if err != nil {
+		t.Fatalf("runtimesRevokedFrame: %v", err)
+	}
+	hub.DeliverDaemonRuntime("runtime-revoked", frame, "event-1")
+
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("expected revoked runtime's connection to be closed")
+	}
+	deadline = time.Now().Add(time.Second)
+	for hub.RuntimeConnectionCount("runtime-revoked") != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("revoked runtime's connection was not unregistered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

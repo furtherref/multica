@@ -445,16 +445,22 @@ func main() {
 
 	// Cross-node suspension kick: the router wires h.DisconnectUser to the
 	// LOCAL hub, but in a multi-node deployment a suspended user's sockets
-	// can live on other nodes. Publishing the typed auth_error frame through
-	// the relay-backed broadcaster reaches them: cooperating clients
-	// terminate their own session on it. (Non-cooperating clients keep
-	// read-only events until their next reconnect, which the WS auth path
-	// rejects — documented residual in the design spec.) On single-node
-	// deployments broadcaster == hub, so this is just a local double-send
-	// the client ignores.
+	// can live on other nodes. Publishing the suspended control frame
+	// through the relay-backed broadcaster reaches every node, and each
+	// node's fanoutUser intercepts it and evicts SERVER-SIDE (see
+	// realtime.Hub.fanoutUser) — enforcement does not depend on the client
+	// honoring auth_error. On single-node deployments broadcaster == hub,
+	// so the interception runs directly on the local fanout.
 	h.DisconnectUser = func(userID string) {
 		broadcaster.SendToUser(userID, realtime.AccountSuspendedFrame())
-		hub.DisconnectUser(userID)
+	}
+	// Same story for daemon sockets: the router wires
+	// DisconnectDaemonRuntimes to the LOCAL daemon hub; when the relay
+	// notifier is active, route through it so the revocation also severs
+	// daemon WebSockets held by other nodes (daemonws.Hub interprets the
+	// daemon:runtimes_revoked control frame and evicts locally).
+	if notifier, ok := daemonWakeup.(*daemonws.RelayNotifier); ok {
+		h.DisconnectDaemonRuntimes = notifier.DisconnectRuntimes
 	}
 
 	srv := &http.Server{

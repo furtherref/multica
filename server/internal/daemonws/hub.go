@@ -428,6 +428,17 @@ func (h *Hub) DeliverDaemonRuntime(scopeID string, frame []byte, eventID string)
 		} else if !deduped {
 			M.WakeupDeliveredMiss.Add(1)
 		}
+	case protocol.EventDaemonRuntimesRevoked:
+		// Server-internal control frame: evict locally, never forward to
+		// daemons. Idempotent — a node with no matching sockets is a no-op.
+		var payload protocol.RuntimesRevokedPayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil || len(payload.RuntimeIDs) == 0 {
+			slog.Debug("daemon websocket relay: invalid runtimes_revoked payload", "error", err, "scope_id", scopeID, "event_id", eventID)
+			M.WakeupDeliveredMiss.Add(1)
+			return
+		}
+		h.DisconnectRuntimes(payload.RuntimeIDs)
+		M.WakeupDeliveredHit.Add(1)
 	case protocol.EventDaemonWorkspacesChanged:
 		delivered, deduped := h.notifyUserFrame(scopeID, frame, eventID)
 		if delivered {
@@ -562,6 +573,15 @@ func workspacesChangedFrame() ([]byte, error) {
 	return json.Marshal(protocol.Message{
 		Type:    protocol.EventDaemonWorkspacesChanged,
 		Payload: mustMarshalRaw(protocol.WorkspacesChangedPayload{}),
+	})
+}
+
+func runtimesRevokedFrame(runtimeIDs []string) ([]byte, error) {
+	return json.Marshal(protocol.Message{
+		Type: protocol.EventDaemonRuntimesRevoked,
+		Payload: mustMarshalRaw(protocol.RuntimesRevokedPayload{
+			RuntimeIDs: runtimeIDs,
+		}),
 	})
 }
 

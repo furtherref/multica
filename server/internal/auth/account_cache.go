@@ -66,11 +66,19 @@ func (c *AccountStatusCache) Set(ctx context.Context, userID, status string) {
 // Invalidate removes the entry for userID. Called on suspend/unsuspend so
 // the change takes effect immediately rather than waiting for the TTL —
 // including on the PAT-cache-hit path.
-func (c *AccountStatusCache) Invalidate(ctx context.Context, userID string) {
+// Invalidate removes the cached verdict for userID. Unlike the other cache
+// methods it RETURNS the Redis error: the suspend path's "next request fails"
+// promise depends on this delete, so its caller must be able to surface a
+// failure instead of reporting a revocation that will not propagate until the
+// TTL expires. A nil receiver (no Redis) returns nil — with no cache there is
+// no stale entry to beat.
+func (c *AccountStatusCache) Invalidate(ctx context.Context, userID string) error {
 	if c == nil {
-		return
+		return nil
 	}
 	if err := c.rdb.Del(ctx, accountCacheKey(userID)).Err(); err != nil {
-		slog.Warn("account_cache: invalidate failed; entry will expire on TTL", "error", err)
+		slog.Warn("account_cache: invalidate failed", "error", err)
+		return err
 	}
+	return nil
 }

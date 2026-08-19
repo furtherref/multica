@@ -128,3 +128,33 @@ func (n *RelayNotifier) NotifyPendingWork(runtimeID, kind string) {
 	}
 	M.WakeupPublishedTotal.Add(1)
 }
+
+// DisconnectRuntimes severs the daemon WebSockets for runtimeIDs on this node
+// and, when Redis is configured, publishes the revocation through the relay so
+// every other API node severs its own sockets too — an account suspension must
+// not depend on which node happens to hold the daemon's connection. The
+// signature mirrors Hub.DisconnectRuntimes so either can back
+// Handler.DisconnectDaemonRuntimes.
+func (n *RelayNotifier) DisconnectRuntimes(runtimeIDs []string) {
+	if len(runtimeIDs) == 0 {
+		return
+	}
+	if n.local != nil {
+		n.local.DisconnectRuntimes(runtimeIDs)
+	}
+	if n.relay == nil {
+		return
+	}
+	eventID := ulid.Make().String()
+	frame, err := runtimesRevokedFrame(runtimeIDs)
+	if err != nil {
+		M.WakeupPublishErrors.Add(1)
+		return
+	}
+	if err := n.relay.PublishWithID(realtime.ScopeDaemonRuntime, runtimeIDs[0], "", frame, eventID); err != nil {
+		M.WakeupPublishErrors.Add(1)
+		slog.Warn("daemon websocket revoke publish failed", "error", err, "runtime_ids", runtimeIDs)
+		return
+	}
+	M.WakeupPublishedTotal.Add(1)
+}

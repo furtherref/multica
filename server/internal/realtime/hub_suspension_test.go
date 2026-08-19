@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/auth"
 )
@@ -167,5 +168,46 @@ func TestWSAuthClosePayloadWrapsRejectionsOnly(t *testing.T) {
 	}
 	if got := string(wsAuthClosePayload(wsAuthTimeoutErrMsg)); got != wsAuthTimeoutErrMsg {
 		t.Fatalf("timeout payload must stay raw, got %q", got)
+	}
+}
+
+// Cross-node suspension: the suspend path publishes the suspended control
+// frame through the relay, and every node's delivery of a user-scoped frame
+// lands in fanoutUser. Delivery alone would rely on the client honoring
+// auth_error — the hub must instead evict server-side, so a non-cooperating
+// client on a remote node loses its socket too.
+func TestFanoutUserSuspendedFrameEvictsServerSide(t *testing.T) {
+	hub := NewHub()
+	c := &Client{hub: hub, userID: "user-x", workspaceID: "ws-1", send: make(chan []byte, 4)}
+	hub.mu.Lock()
+	hub.clients[c] = true
+	hub.mu.Unlock()
+	hub.subscribe(c, ScopeUser, "user-x")
+
+	hub.SendToUser("user-x", AccountSuspendedFrame())
+
+	// The client got the frame (cooperating clients still self-terminate)…
+	select {
+	case payload := <-c.send:
+		if string(payload) != string(AccountSuspendedFrame()) {
+			t.Fatalf("payload = %s", payload)
+		}
+	default:
+		t.Fatal("expected suspended frame on send channel")
+	}
+	// …and was evicted server-side regardless. Guard with a timeout so an
+	// unfixed hub (channel never closed) fails instead of hanging.
+	select {
+	case _, ok := <-c.send:
+		if ok {
+			t.Fatal("expected send channel closed after server-side eviction")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("send channel was not closed — client not evicted server-side")
+	}
+	hub.mu.RLock()
+	defer hub.mu.RUnlock()
+	if hub.clients[c] {
+		t.Fatal("client should have been removed from hub.clients")
 	}
 }

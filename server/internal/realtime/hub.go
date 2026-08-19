@@ -1,6 +1,7 @@
 package realtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -585,6 +586,17 @@ func (h *Hub) Broadcast(message []byte) {
 // fanoutUser delivers a message to all clients in the user scope, optionally
 // excluding clients in excludeWorkspace and deduping against eventID.
 func (h *Hub) fanoutUser(userID string, message []byte, excludeWorkspace, eventID string) {
+	// Account-suspension control frame: every node's user-scoped delivery —
+	// local SendToUser and the Redis relay's cross-node consumer — funnels
+	// through here, so intercepting the frame is what makes a multi-node
+	// suspension enforceable server-side. DisconnectUser still best-effort
+	// delivers the frame first (cooperating clients terminate their own
+	// session), then severs the sockets so a non-cooperating client cannot
+	// keep its read-only event stream.
+	if bytes.Equal(message, AccountSuspendedFrame()) {
+		h.DisconnectUser(userID)
+		return
+	}
 	key := sk(ScopeUser, userID)
 	h.mu.RLock()
 	clients := h.rooms[key]
