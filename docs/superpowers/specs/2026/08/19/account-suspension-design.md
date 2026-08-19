@@ -27,7 +27,7 @@ This design aligns fully with upstream in shape (column name, status values, err
 - Permission model: only workspace-level `member.role` (owner/admin/member) — **there is no global admin concept**.
 - Frontend 401/403 handling: `packages/core/api/client.ts` calls `handleUnauthorized` only on 401; web/desktop's `onUnauthorized` (`packages/core/platform/core-provider.tsx`) only clears the token without navigating, and the actual redirect to the login page relies on route guards seeing `user === null` (which only happens when the boot-time `getMe()` returns 401). **Existing 403s trigger no logout/redirect at all.** Mobile (`apps/mobile/app/_layout.tsx`) has a complete logout+redirect implementation to use as a reference.
 - WebSocket: validated only at connect time; the Hub has no per-user disconnect API; the client (`ws-client.ts`) does not recognize `auth_error` and reconnects indefinitely when the connection is rejected.
-- Caches: `auth.AuthCacheTTL = 10min`, shared by `PATCache` / `DaemonTokenCache`; there is also a `MembershipCache`.
+- Caches: `auth.AuthCacheTTL = 10min`, used by `PATCache` (and later the `AccountStatusCache`); there is also a `MembershipCache`. (The audit-era `DaemonTokenCache` was removed during implementation — the mdt_ path is deliberately uncached, see Compatibility and Security Details.)
 - The convergence pattern for member removal: `revokeAndRemoveMember` (`server/internal/handler/workspace_revoke.go`) — cancels in-flight tasks, force-offlines runtimes, deletes daemon tokens, invalidates caches.
 
 ## Confirmed Design Decisions
@@ -55,7 +55,7 @@ This design aligns fully with upstream in shape (column name, status values, err
 2. **Replace the emergency denylist**: delete `temporary_disabled_users.go` and replace every existing call site in place with the DB-status-based check (see the checkpoint inventory under "Current State").
 3. **Per-request effect and caching**:
    - The JWT path gains a per-userID account-status lookup, backed by a Redis cache (reusing `auth.AuthCacheTTL`, 10 minutes), named e.g. `AccountStatusCache`.
-   - **Suspend/restore operations must actively invalidate by userID**: `AccountStatusCache` + `PATCache` + `DaemonTokenCache`, guaranteeing "invalid on the next request". This is the fix for the regression that stalled upstream PR #1689 (PAT cache hits bypassing the check): cache-hit paths also run the status check, and the write path invalidates proactively.
+   - **Suspend/restore operations actively invalidate the `AccountStatusCache` by userID**, guaranteeing "invalid on the next request". This is the fix for the regression that stalled upstream PR #1689 (PAT cache hits bypassing the check): the PAT cache-hit path runs the per-request account check against this cache, so no PAT-cache invalidation is needed; the mdt_ daemon-token path is deliberately uncached, so token deletion needs no cache choreography at all.
 4. **Admin API** (new route group, protected by a system-admin check):
    - `GET /api/admin/users`: lists all users with `account_status`.
    - `PATCH /api/admin/users/{id}/status`: body `{"status":"active"|"suspended"}`; path UUID via `parseUUIDOrBadRequest`; operating on yourself is forbidden.
@@ -64,7 +64,7 @@ This design aligns fully with upstream in shape (column name, status values, err
 5. **Convergence on suspension** (single transaction / sequential execution, modeled on `revokeAndRemoveMember`):
    - Update `account_status = 'suspended'`;
    - Cancel the user's in-flight tasks and force-offline their runtimes;
-   - Invalidate the three cache types above;
+   - Invalidate the account-status cache (pre-commit with rollback-on-failure, plus a post-commit pass that closes the re-population race);
    - Call `Hub.DisconnectUser(userID)` to sever all of their WS connections (send an `auth_error` frame, then close).
    - Restore (`active`) only updates the status and invalidates caches — no convergence actions.
 

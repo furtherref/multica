@@ -784,9 +784,13 @@ func accountSuspendedFrameIssuedAt(ts time.Time) []byte {
 }
 
 // suspendedFrameFreshness is how recently a suspension control frame must
-// have been issued to count as a FRESH authoritative kick (generous enough
-// for inter-node clock skew, far shorter than the relay's replay horizon).
-const suspendedFrameFreshness = 5 * time.Minute
+// have been issued to count as a FRESH authoritative kick. It only needs to
+// cover publish→deliver latency plus inter-node clock skew (both well under
+// seconds), and it MUST stay far below the relay's startup replay horizon
+// (ShardedStreamRelayConfig.ReplayGrace, 5 minutes by default) — a window as
+// wide as the replay horizon would make every replayed suspend event look
+// authoritative and fail closed on a transient status-check outage.
+const suspendedFrameFreshness = 30 * time.Second
 
 // SetAccountChecker wires the status verifier used before a suspension
 // control frame evicts anyone. Safe to call while the hub is serving.

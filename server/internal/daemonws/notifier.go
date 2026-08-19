@@ -14,10 +14,23 @@ import (
 type RelayNotifier struct {
 	local *Hub
 	relay realtime.RelayPublisher
+	// wakeupsViaRelay gates the per-task/runtime wakeup publishes. The
+	// legacy relay only consumes the fixed daemon control scope, so wakeup
+	// publishes there would accumulate one unbounded, never-consumed stream
+	// key per task — legacy mode keeps wakeups local-only (its original
+	// behavior) and rides the relay for control frames alone.
+	wakeupsViaRelay bool
 }
 
 func NewRelayNotifier(local *Hub, relay realtime.RelayPublisher) *RelayNotifier {
-	return &RelayNotifier{local: local, relay: relay}
+	return &RelayNotifier{local: local, relay: relay, wakeupsViaRelay: true}
+}
+
+// NewControlOnlyRelayNotifier is the legacy-relay-mode variant: wakeup hints
+// stay node-local, only daemon control frames (runtime revocations) publish
+// through the relay.
+func NewControlOnlyRelayNotifier(local *Hub, relay realtime.RelayPublisher) *RelayNotifier {
+	return &RelayNotifier{local: local, relay: relay, wakeupsViaRelay: false}
 }
 
 func (n *RelayNotifier) NotifyTaskAvailable(runtimeID, taskID string) {
@@ -28,7 +41,7 @@ func (n *RelayNotifier) NotifyTaskAvailable(runtimeID, taskID string) {
 	if n.local != nil {
 		n.local.notifyTaskAvailable(runtimeID, taskID, eventID)
 	}
-	if n.relay == nil {
+	if n.relay == nil || !n.wakeupsViaRelay {
 		return
 	}
 	frame, err := taskAvailableFrame(runtimeID, taskID)
@@ -56,7 +69,7 @@ func (n *RelayNotifier) NotifyRuntimeProfilesChanged(workspaceID, profileID stri
 	if n.local != nil {
 		n.local.notifyRuntimeProfilesChanged(workspaceID, profileID, eventID)
 	}
-	if n.relay == nil {
+	if n.relay == nil || !n.wakeupsViaRelay {
 		return
 	}
 	frame, err := runtimeProfilesChangedFrame(workspaceID, profileID)
@@ -80,7 +93,7 @@ func (n *RelayNotifier) NotifyWorkspacesChanged(userID string) {
 	if n.local != nil {
 		n.local.notifyWorkspacesChanged(userID, eventID)
 	}
-	if n.relay == nil {
+	if n.relay == nil || !n.wakeupsViaRelay {
 		return
 	}
 	frame, err := workspacesChangedFrame()
@@ -113,7 +126,7 @@ func (n *RelayNotifier) NotifyPendingWork(runtimeID, kind string) {
 	if n.local != nil {
 		n.local.notifyPendingWork(runtimeID, kind, eventID)
 	}
-	if n.relay == nil {
+	if n.relay == nil || !n.wakeupsViaRelay {
 		return
 	}
 	frame, err := pendingWorkFrame(runtimeID, kind)

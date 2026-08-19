@@ -881,3 +881,28 @@ func TestDeliverDaemonRuntimeRevokedReplayFromBeforeStartDropped(t *testing.T) {
 		t.Fatal("stale revocation replay must not sever the connection")
 	}
 }
+
+// Legacy relay mode consumes ONLY the fixed daemon control scope, so wakeup
+// hints must not publish through the relay there — each would create a
+// never-consumed per-task stream key. The control-only notifier keeps
+// wakeups local while revocations still ride the relay.
+func TestControlOnlyNotifierSkipsWakeupPublishes(t *testing.T) {
+	M.Reset()
+	defer M.Reset()
+
+	relay := &recordingRelayPublisher{}
+	notifier := NewControlOnlyRelayNotifier(nil, relay)
+
+	notifier.NotifyTaskAvailable("runtime-1", "task-1")
+	notifier.NotifyPendingWork("runtime-1", "model_list")
+	if relay.scopeType != "" || relay.frame != nil {
+		t.Fatalf("wakeup hints must not publish in control-only mode, got scope %q", relay.scopeType)
+	}
+
+	if err := notifier.DisconnectRuntimes([]string{"rt-1"}); err != nil {
+		t.Fatalf("DisconnectRuntimes: %v", err)
+	}
+	if relay.scopeType != realtime.ScopeDaemonRuntime || relay.scopeID != realtime.DaemonControlScopeID {
+		t.Fatalf("revocation must still publish to the control scope, got (%q, %q)", relay.scopeType, relay.scopeID)
+	}
+}

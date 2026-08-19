@@ -322,7 +322,10 @@ func main() {
 				// this mode, exactly as before.
 				legacy.SetDaemonRuntimeDeliverer(daemonHub)
 				relay = legacy
-				daemonWakeup = daemonws.NewRelayNotifier(daemonHub, legacy)
+				// Control-only: wakeup hints stay local (publishing them
+				// would grow one never-consumed stream key per task — the
+				// legacy relay only consumes the fixed control scope).
+				daemonWakeup = daemonws.NewControlOnlyRelayNotifier(daemonHub, legacy)
 			case "dual":
 				shardedReadRedis = newNamedRedisClient(opts, "realtime-read-sharded")
 				legacyReadRedis = newNamedRedisClient(opts, "realtime-read-legacy")

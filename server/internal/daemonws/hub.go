@@ -171,8 +171,12 @@ type RPCHandler func(ctx context.Context, identity ClientIdentity, method string
 
 // runtimesRevokedSkewGrace tolerates inter-node clock offset when deciding
 // whether a runtimes_revoked frame predates this hub (replay) or is a fresh
-// revocation from a node whose clock runs slightly behind.
-const runtimesRevokedSkewGrace = 2 * time.Second
+// revocation from a node whose clock runs behind. Generous on purpose — VM
+// clocks can drift seconds — because the cost asymmetry is stark: dropping a
+// FRESH revocation leaves a suspended user's daemon socket alive, while
+// acting on a ≤30s-old replay merely bounces a re-paired daemon once (kicks
+// are idempotent and reconnects are gated by per-request token authority).
+const runtimesRevokedSkewGrace = 30 * time.Second
 
 // maxInFlightRPCPerClient bounds concurrent RPC handlers per connection so a
 // single daemon cannot fan out unbounded goroutines / DB work over one socket.
