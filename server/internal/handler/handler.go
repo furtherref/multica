@@ -64,6 +64,11 @@ type Config struct {
 	AllowSignup         bool
 	AllowedEmails       []string
 	AllowedEmailDomains []string
+	// AdminEmails is the system-admin allowlist (comma-separated ADMIN_EMAILS
+	// env var, trimmed and lowercased). Empty means no system admins — the
+	// /api/admin/* surface is inert by default. Membership is checked
+	// case-insensitively in isSystemAdmin.
+	AdminEmails []string
 	// DisableWorkspaceCreation, when true, makes POST /api/workspaces return
 	// 403 for every caller. There is no role/owner exception because the repo
 	// has no platform-admin concept; operators bootstrap the workspace with

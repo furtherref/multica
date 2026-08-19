@@ -65,6 +65,10 @@ type UserResponse struct {
 	ProfileDescription      string          `json:"profile_description"`
 	CreatedAt               string          `json:"created_at"`
 	UpdatedAt               string          `json:"updated_at"`
+	// IsSystemAdmin is set only in GetMe (never in userToResponse) since it
+	// reflects the requesting deployment's ADMIN_EMAILS allowlist, not a
+	// stored user attribute.
+	IsSystemAdmin bool `json:"is_system_admin,omitempty"`
 }
 
 // MaxProfileDescriptionLen caps the user-supplied profile_description body.
@@ -451,7 +455,9 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, h.userToResponse(user))
+	resp := h.userToResponse(user)
+	resp.IsSystemAdmin = h.isSystemAdmin(user.Email)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type UpdateMeRequest struct {
