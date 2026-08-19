@@ -201,8 +201,11 @@ func TestAuth_ValidToken(t *testing.T) {
 
 // Temporarily-disabled-user JWT rejection is no longer exercised here: the
 // middleware package now enforces account suspension exclusively via
-// AccountGuard (see auth_suspension_test.go). handler/auth.go and hub.go
-// still use auth.IsTemporarilyDisabledUser directly until Tasks 5-6.
+// AccountGuard (see auth_suspension_test.go). The emergency denylist
+// (the emergency account denylist) was deleted in account-suspension Task 5;
+// handler/auth.go now enforces via auth.UserMayAuthenticate, and hub.go's
+// realtime path is a known interim gap until Task 6 wires in a real
+// DB-backed AccountChecker.
 
 func TestAuth_MissingClaims(t *testing.T) {
 	handler := authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

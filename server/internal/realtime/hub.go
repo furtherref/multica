@@ -685,9 +685,10 @@ func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (st
 		if !ok {
 			return "", `{"error":"invalid token"}`
 		}
-		if auth.IsTemporarilyDisabledUserID(uid) {
-			return "", `{"error":"account disabled"}`
-		}
+		// NOTE: the emergency account denylist helpers this used to call
+		// were removed (account-suspension Task 5). This is an intentional,
+		// controller-approved interim gap: Task 6 replaces it with a real
+		// DB-backed account-status check via an AccountChecker.
 		return uid, ""
 	}
 
@@ -710,10 +711,10 @@ func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (st
 	if !ok || strings.TrimSpace(uid) == "" {
 		return "", `{"error":"invalid claims"}`
 	}
-	email, _ := claims["email"].(string)
-	if auth.IsTemporarilyDisabledUser(uid, email) {
-		return "", `{"error":"account disabled"}`
-	}
+	// NOTE: the emergency account denylist helpers this used to call
+	// were removed (account-suspension Task 5). This is an intentional,
+	// controller-approved interim gap: Task 6 replaces it with a real
+	// DB-backed account-status check via an AccountChecker.
 	return uid, ""
 }
 

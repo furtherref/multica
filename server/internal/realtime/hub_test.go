@@ -59,29 +59,11 @@ func (s staticPATResolver) ResolveToken(_ context.Context, token string) (string
 	return userID, ok
 }
 
-func TestAuthenticateTokenRejectsTemporarilyDisabledJWTUser(t *testing.T) {
-	token := makeTestTokenForUser(t, "514492f7-b30f-4147-bd33-c0e8ce5d6d4f", "")
-
-	uid, errMsg := authenticateToken(token, nil, context.Background())
-	if uid != "" {
-		t.Fatalf("expected no user ID, got %q", uid)
-	}
-	if !strings.Contains(errMsg, "account disabled") {
-		t.Fatalf("expected account disabled error, got %q", errMsg)
-	}
-}
-
-func TestAuthenticateTokenRejectsTemporarilyDisabledPATUser(t *testing.T) {
-	uid, errMsg := authenticateToken("mul_disabled", staticPATResolver{
-		"mul_disabled": "1d542296-17c6-484a-9914-dcee589be116",
-	}, context.Background())
-	if uid != "" {
-		t.Fatalf("expected no user ID, got %q", uid)
-	}
-	if !strings.Contains(errMsg, "account disabled") {
-		t.Fatalf("expected account disabled error, got %q", errMsg)
-	}
-}
+// The emergency account denylist that used to be checked here was deleted in
+// account-suspension Task 5. authenticateToken no longer rejects suspended
+// accounts by itself — this is an intentional, controller-approved interim
+// gap; Task 6 wires a real DB-backed account-status check (AccountChecker)
+// into this path.
 
 func newTestHub(t *testing.T) (*Hub, *httptest.Server) {
 	t.Helper()
