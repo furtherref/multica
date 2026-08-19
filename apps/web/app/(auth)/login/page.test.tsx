@@ -82,17 +82,28 @@ vi.mock("@/features/auth/auth-cookie", () => ({
   setLoggedInCookie: vi.fn(),
 }));
 
-// Mock api
-vi.mock("@multica/core/api", () => ({
-  api: {
-    listWorkspaces: mockListWorkspaces,
-    listMyInvitations: mockListMyInvitations,
-    verifyCode: vi.fn(),
-    setToken: vi.fn(),
-    getMe: vi.fn(),
-    issueCliToken: mockIssueCliToken,
-  },
-}));
+// Mock api. `errorCode` is a real (non-network) helper the shared LoginPage
+// calls to detect ACCOUNT_SUSPENDED rejections (packages/views/auth/login-page.tsx
+// isAccountSuspendedError) — keep it real rather than dropping it, so tests
+// that reject with a plain Error (no ApiError body) correctly see `undefined`
+// and fall through to the generic message.
+vi.mock("@multica/core/api", async () => {
+  const actual =
+    await vi.importActual<typeof import("@multica/core/api")>(
+      "@multica/core/api",
+    );
+  return {
+    ...actual,
+    api: {
+      listWorkspaces: mockListWorkspaces,
+      listMyInvitations: mockListMyInvitations,
+      verifyCode: vi.fn(),
+      setToken: vi.fn(),
+      getMe: vi.fn(),
+      issueCliToken: mockIssueCliToken,
+    },
+  };
+});
 
 import LoginPage from "./page";
 

@@ -460,7 +460,7 @@ export function LoginPage({
                 type="button"
                 aria-label="Dismiss"
                 onClick={() => setShowSuspendedNotice(false)}
-                className="shrink-0 cursor-pointer text-destructive/70 hover:text-destructive"
+                className="shrink-0 cursor-pointer text-destructive hover:opacity-80"
               >
                 <X className="size-4" />
               </button>
