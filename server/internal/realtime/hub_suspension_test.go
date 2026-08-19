@@ -2,6 +2,8 @@ package realtime
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/auth"
@@ -28,6 +30,27 @@ func TestAuthenticateTokenRejectsSuspended(t *testing.T) {
 	want := `{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}`
 	if errMsg != want {
 		t.Fatalf("errMsg = %q, want %q", errMsg, want)
+	}
+}
+
+// TestAuthenticateTokenTransientErrorDoesNotClaimSuspension guards against
+// conflating a transient AccountChecker failure (e.g. a DB error) with a
+// confirmed suspension. The ws-client only force-logs-out a session on the
+// ACCOUNT_SUSPENDED code, so a transient failure must not carry that code —
+// otherwise a healthy user gets falsely told their account is suspended.
+func TestAuthenticateTokenTransientErrorDoesNotClaimSuspension(t *testing.T) {
+	token := makeTestToken(t)
+
+	uid, errMsg := authenticateToken(token, nil, fakeAccountChecker{err: errors.New("db unavailable")}, context.Background())
+
+	if uid != "" {
+		t.Fatalf("uid = %q, want empty", uid)
+	}
+	if strings.Contains(errMsg, "ACCOUNT_SUSPENDED") {
+		t.Fatalf("errMsg = %q, must not contain ACCOUNT_SUSPENDED for a transient error", errMsg)
+	}
+	if errMsg != accountStatusUnavailableErrMsg {
+		t.Fatalf("errMsg = %q, want %q", errMsg, accountStatusUnavailableErrMsg)
 	}
 }
 

@@ -707,6 +707,13 @@ type AccountChecker interface {
 
 const accountSuspendedErrMsg = `{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}`
 
+// accountStatusUnavailableErrMsg is used when the account check itself fails
+// transiently (e.g. a DB error), as opposed to a confirmed suspension. It
+// deliberately carries no "code" field: the ws-client only force-logs-out a
+// session on ACCOUNT_SUSPENDED, so a code-less message here is treated as an
+// ordinary auth failure rather than a false suspension signal.
+const accountStatusUnavailableErrMsg = `{"error":"account status unavailable"}`
+
 // authenticateToken validates a JWT or PAT string and returns the user ID.
 func authenticateToken(tokenStr string, pr PATResolver, ac AccountChecker, ctx context.Context) (string, string) {
 	if strings.HasPrefix(tokenStr, "mul_") {
@@ -719,7 +726,10 @@ func authenticateToken(tokenStr string, pr PATResolver, ac AccountChecker, ctx c
 		}
 		if ac != nil {
 			if err := ac.Check(ctx, uid); err != nil {
-				return "", accountSuspendedErrMsg
+				if errors.Is(err, auth.ErrAccountSuspended) {
+					return "", accountSuspendedErrMsg
+				}
+				return "", accountStatusUnavailableErrMsg
 			}
 		}
 		return uid, ""
@@ -746,7 +756,10 @@ func authenticateToken(tokenStr string, pr PATResolver, ac AccountChecker, ctx c
 	}
 	if ac != nil {
 		if err := ac.Check(ctx, uid); err != nil {
-			return "", accountSuspendedErrMsg
+			if errors.Is(err, auth.ErrAccountSuspended) {
+				return "", accountSuspendedErrMsg
+			}
+			return "", accountStatusUnavailableErrMsg
 		}
 	}
 	return uid, ""
