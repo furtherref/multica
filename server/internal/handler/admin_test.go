@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -211,15 +213,34 @@ func TestSuspendCancelsRuntimesAndTasks(t *testing.T) {
 	})
 	withAdminEmails(t, []string{adminEmail})
 
+	daemonID := "suspend-cancel-daemon-" + uuid.NewString()
 	var runtimeID string
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, visibility, owner_id)
-		VALUES ($1, NULL, 'Suspend Cancel Runtime', 'cloud', 'handler_test_runtime', 'online', 'x', '{}'::jsonb, now(), 'private', $2)
-		RETURNING id`, testWorkspaceID, targetIDStr).Scan(&runtimeID); err != nil {
+		VALUES ($1, $2, 'Suspend Cancel Runtime', 'cloud', 'handler_test_runtime', 'online', 'x', '{}'::jsonb, now(), 'private', $3)
+		RETURNING id`, testWorkspaceID, daemonID, targetIDStr).Scan(&runtimeID); err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, runtimeID)
+	})
+
+	// Seed an mdt_ daemon token for this runtime's daemon. Finding 3: without
+	// deleting it on suspend, a suspended user's already-paired daemon keeps
+	// daemon-API access via mdt_ (which carries no user identity) and its
+	// heartbeat/register calls would bring the force-offlined runtime back
+	// online, undoing the rest of this convergence.
+	tokenHash := "suspend-cancel-token-hash-" + uuid.NewString()
+	if _, err := testHandler.Queries.CreateDaemonToken(ctx, db.CreateDaemonTokenParams{
+		TokenHash:   tokenHash,
+		WorkspaceID: parseUUID(testWorkspaceID),
+		DaemonID:    daemonID,
+		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+	}); err != nil {
+		t.Fatalf("seed daemon token: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM daemon_token WHERE token_hash = $1`, tokenHash)
 	})
 
 	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Suspend Cancel Agent")
@@ -244,6 +265,14 @@ func TestSuspendCancelsRuntimesAndTasks(t *testing.T) {
 	}
 	if runtimeStatus != "offline" {
 		t.Fatalf("runtime status = %q, want offline", runtimeStatus)
+	}
+
+	var tokenCount int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM daemon_token WHERE token_hash = $1`, tokenHash).Scan(&tokenCount); err != nil {
+		t.Fatalf("read daemon_token count: %v", err)
+	}
+	if tokenCount != 0 {
+		t.Fatalf("daemon_token count = %d, want 0 (deleted on suspend)", tokenCount)
 	}
 }
 

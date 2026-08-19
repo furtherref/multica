@@ -92,7 +92,8 @@
 
 - 403 响应体带稳定 `code` 字段，旧客户端（不识别 code）表现为普通 403 报错，不会误登出——符合 API 兼容规则（不 pin 单一布尔、显式判断）。
 - 已知残留窗口（与上游一致，文档化即可）：已签发的 CDN 签名 cookie / 预签名 URL 在 TTL 内仍有效。
-- `ADMIN_EMAILS` 未配置时不存在系统管理员，admin API 全部 403，`/admin` 入口不可见——默认关闭。
+- `ADMIN_EMAILS` 未配置时不存在系统管理员，admin API 全部 403，`/admin` 入口不可见——默认关闭。任何管理员的存在都依赖这项配置，务必在部署时设置。
+- 残留窗口：daemon 若以 PAT（`mul_`）认证，逐请求即被拦截；`mdt_` daemon token 无用户身份，因此禁用时 `quiesceSuspendedUser` 同步删除该用户名下 runtime 对应的 daemon token（镜像 `revokeAndRemoveMember`），使其在下次请求前失效，而非等到 TTL 过期。
 
 ## 测试计划
 

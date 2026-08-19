@@ -144,11 +144,16 @@ func (h *Handler) SetUserAccountStatus(w http.ResponseWriter, r *http.Request) {
 
 // quiesceSuspendedUser converges runtime-side state after a suspension: any
 // in-flight tasks on the user's runtimes are cancelled (so agents stop
-// gracefully) and those runtimes are forced offline. Unlike member removal
-// (revokeAndRemoveMember) nothing is archived or deleted — suspension is
-// reversible. Failures are logged, not surfaced: the status flip and cache
-// invalidation in SetUserAccountStatus are the security boundary; this is
-// best-effort cleanup.
+// gracefully), those runtimes are forced offline, and any daemon_token rows
+// for their daemons are deleted. Unlike member removal (revokeAndRemoveMember)
+// nothing is archived — suspension is reversible: an unsuspended user simply
+// re-pairs the daemon to get a fresh mdt_ token. Deleting the daemon token is
+// what makes suspension actually stick for the mdt_ auth path — without it a
+// suspended user's already-running daemon keeps daemon-API access (DaemonAuth
+// has no user identity on that path) and its heartbeat/register calls bring
+// force-offlined runtimes back online, undoing the rest of this convergence.
+// Failures are logged, not surfaced: the status flip and cache invalidation in
+// SetUserAccountStatus are the security boundary; this is best-effort cleanup.
 func (h *Handler) quiesceSuspendedUser(ctx context.Context, userID pgtype.UUID, userIDStr string) {
 	runtimes, err := h.Queries.ListAgentRuntimesByOwnerAllWorkspaces(ctx, userID)
 	if err != nil {
@@ -185,6 +190,33 @@ func (h *Handler) quiesceSuspendedUser(ctx context.Context, userID pgtype.UUID, 
 		}
 		if _, err := h.Queries.ForceOfflineRuntimesByIDs(ctx, runtimeIDs); err != nil {
 			slog.Error("suspend: force offline failed", "user_id", userIDStr, "error", err)
+		}
+
+		// Delete daemon_token rows for these runtimes' daemons, mirroring
+		// revokeAndRemoveMember (workspace_revoke.go). DeleteDaemonTokensByWorkspaceAndDaemons
+		// is scoped to one workspace, and quiesce spans every workspace the
+		// user has runtimes in, so group daemon IDs per workspace first.
+		daemonIDsByWs := map[string][]string{}
+		for _, rt := range runtimes {
+			if rt.DaemonID.Valid && rt.DaemonID.String != "" {
+				wsID := uuidToString(rt.WorkspaceID)
+				daemonIDsByWs[wsID] = append(daemonIDsByWs[wsID], rt.DaemonID.String)
+			}
+		}
+		for wsID, daemonIDs := range daemonIDsByWs {
+			hashes, err := h.Queries.DeleteDaemonTokensByWorkspaceAndDaemons(ctx, db.DeleteDaemonTokensByWorkspaceAndDaemonsParams{
+				WorkspaceID: parseUUID(wsID),
+				DaemonIds:   daemonIDs,
+			})
+			if err != nil {
+				slog.Error("suspend: delete daemon tokens failed", "user_id", userIDStr, "workspace_id", wsID, "error", err)
+				continue
+			}
+			if h.DaemonTokenCache != nil {
+				for _, hash := range hashes {
+					h.DaemonTokenCache.Invalidate(ctx, hash)
+				}
+			}
 		}
 	}
 
