@@ -76,7 +76,7 @@ func WithDaemonContext(ctx context.Context, workspaceID, daemonID string) contex
 // branch — same fail-closed contract as the regular Auth middleware.
 //
 // Cache misses fall back to the original DB-backed behavior.
-func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.DaemonTokenCache, cloudPAT *auth.CloudPATVerifier) func(http.Handler) http.Handler {
+func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.DaemonTokenCache, cloudPAT *auth.CloudPATVerifier, guard *auth.AccountGuard) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// X-Actor-Source is server-set only — strip any
@@ -170,7 +170,7 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 					writeError(w, http.StatusServiceUnavailable, "cloud pat verifier unavailable")
 					return
 				}
-				if rejectTemporarilyDisabledUser(w, r, identity.OwnerID, "", DaemonAuthPathCloudPAT) {
+				if rejectSuspendedUser(w, r, guard, identity.OwnerID, DaemonAuthPathCloudPAT) {
 					return
 				}
 				r.Header.Set("X-User-ID", identity.OwnerID)
@@ -194,7 +194,7 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 				hash := auth.HashToken(tokenString)
 
 				if userID, ok := patCache.Get(r.Context(), hash); ok {
-					if rejectTemporarilyDisabledUser(w, r, userID, "", DaemonAuthPathPAT) {
+					if rejectSuspendedUser(w, r, guard, userID, DaemonAuthPathPAT) {
 						return
 					}
 					r.Header.Set("X-User-ID", userID)
@@ -215,7 +215,7 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 				}
 
 				userID := uuidToString(pat.UserID)
-				if rejectTemporarilyDisabledUser(w, r, userID, "", DaemonAuthPathPAT) {
+				if rejectSuspendedUser(w, r, guard, userID, DaemonAuthPathPAT) {
 					return
 				}
 				r.Header.Set("X-User-ID", userID)
@@ -258,8 +258,7 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 				writeError(w, http.StatusUnauthorized, "invalid claims")
 				return
 			}
-			email, _ := claims["email"].(string)
-			if rejectTemporarilyDisabledUser(w, r, sub, email, DaemonAuthPathJWT) {
+			if rejectSuspendedUser(w, r, guard, sub, DaemonAuthPathJWT) {
 				return
 			}
 			r.Header.Set("X-User-ID", sub)
