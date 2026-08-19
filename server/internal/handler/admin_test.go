@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -147,6 +148,31 @@ func TestSetAccountStatusRejectsUnknownStatus(t *testing.T) {
 	w := patchAccountStatus(t, uuidToString(adminUser.ID), testUserID, "banned")
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for unknown status, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSetAccountStatusUnknownUser404(t *testing.T) {
+	const adminEmail = "admin-set-status-unknown-user-test@multica.ai"
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM "user" WHERE email = $1`, adminEmail)
+	})
+
+	adminUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Admin Set Status Unknown User Test",
+		Email: adminEmail,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	withAdminEmails(t, []string{adminEmail})
+
+	// A well-formed UUID that matches no row in "user".
+	missingID := uuid.NewString()
+	w := patchAccountStatus(t, uuidToString(adminUser.ID), missingID, "suspended")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown user, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
