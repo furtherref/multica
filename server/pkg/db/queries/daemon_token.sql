@@ -9,12 +9,11 @@ WHERE token_hash = $1 AND expires_at > now();
 
 -- name: DeleteDaemonTokensByWorkspaceAndDaemons :many
 -- Deletes every daemon_token row matching the (workspace_id, daemon_id)
--- pairs implied by `daemon_ids`. Used by the member-revocation flow to
--- nuke tokens for all runtimes a leaving member owned in one shot.
--- Returns token_hash so the caller can invalidate auth.DaemonTokenCache
--- before the 10-minute TTL expires — without that invalidate, a daemon
--- can keep using its stale token until cache eviction even though the
--- DB row is gone.
+-- pairs implied by `daemon_ids`. Used by member revocation and account
+-- suspension to nuke tokens for all runtimes a member owned in one shot.
+-- The delete IS the revocation: the mdt_ auth path is deliberately
+-- uncached (see middleware.DaemonAuth), so it takes effect on the
+-- daemon's very next request. token_hash is returned for logging.
 DELETE FROM daemon_token
 WHERE workspace_id = @workspace_id
   AND daemon_id = ANY(@daemon_ids::text[])
