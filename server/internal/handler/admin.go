@@ -1,9 +1,16 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/multica-ai/multica/server/internal/auth"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -73,4 +80,115 @@ func (h *Handler) ListAllUsers(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"users": resp})
+}
+
+type SetAccountStatusRequest struct {
+	Status string `json:"status"`
+}
+
+// SetUserAccountStatus flips a user's account_status (active/suspended).
+// Suspension is reversible admin action, not removal: unlike
+// revokeAndRemoveMember, nothing here archives agents or deletes rows.
+func (h *Handler) SetUserAccountStatus(w http.ResponseWriter, r *http.Request) {
+	admin, ok := h.requireSystemAdmin(w, r)
+	if !ok {
+		return
+	}
+	targetID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "id")
+	if !ok {
+		return
+	}
+	var req SetAccountStatusRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Status != auth.AccountStatusActive && req.Status != auth.AccountStatusSuspended {
+		writeError(w, http.StatusBadRequest, "invalid status")
+		return
+	}
+	if uuidToString(targetID) == uuidToString(admin.ID) {
+		writeError(w, http.StatusForbidden, "cannot change your own account status")
+		return
+	}
+
+	updated, err := h.Queries.SetUserAccountStatus(r.Context(), db.SetUserAccountStatusParams{
+		ID:            targetID,
+		AccountStatus: req.Status,
+	})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+
+	targetIDStr := uuidToString(targetID)
+	// Revocation must beat the cache TTL: without this the "next request
+	// fails" promise silently becomes "fails within 10 minutes".
+	if h.AccountGuard != nil {
+		h.AccountGuard.Cache.Invalidate(r.Context(), targetIDStr)
+	}
+
+	if req.Status == auth.AccountStatusSuspended {
+		h.quiesceSuspendedUser(r.Context(), targetID, targetIDStr)
+	}
+
+	writeJSON(w, http.StatusOK, AdminUserResponse{
+		ID:            targetIDStr,
+		Name:          updated.Name,
+		Email:         updated.Email,
+		AvatarURL:     h.resolveAvatarURLPtr(textToPtr(updated.AvatarUrl)),
+		AccountStatus: updated.AccountStatus,
+		CreatedAt:     timestampToString(updated.CreatedAt),
+	})
+}
+
+// quiesceSuspendedUser converges runtime-side state after a suspension: any
+// in-flight tasks on the user's runtimes are cancelled (so agents stop
+// gracefully) and those runtimes are forced offline. Unlike member removal
+// (revokeAndRemoveMember) nothing is archived or deleted — suspension is
+// reversible. Failures are logged, not surfaced: the status flip and cache
+// invalidation in SetUserAccountStatus are the security boundary; this is
+// best-effort cleanup.
+func (h *Handler) quiesceSuspendedUser(ctx context.Context, userID pgtype.UUID, userIDStr string) {
+	runtimes, err := h.Queries.ListAgentRuntimesByOwnerAllWorkspaces(ctx, userID)
+	if err != nil {
+		slog.Error("suspend: list runtimes failed", "user_id", userIDStr, "error", err)
+	} else if len(runtimes) > 0 {
+		runtimeIDs := make([]pgtype.UUID, len(runtimes))
+		// A user's runtimes can span workspaces; AgentTaskQueue carries no
+		// workspace_id of its own, so resolve each cancelled task's
+		// workspace through the runtime it was queued on.
+		workspaceByRuntime := make(map[string]string, len(runtimes))
+		for i, rt := range runtimes {
+			runtimeIDs[i] = rt.ID
+			workspaceByRuntime[uuidToString(rt.ID)] = uuidToString(rt.WorkspaceID)
+		}
+		cancelled, err := h.Queries.CancelAgentTasksByRuntimeOrAgent(ctx, db.CancelAgentTasksByRuntimeOrAgentParams{
+			RuntimeIds: runtimeIDs,
+			AgentIds:   nil,
+		})
+		if err != nil {
+			slog.Error("suspend: cancel tasks failed", "user_id", userIDStr, "error", err)
+		} else if h.TaskService != nil {
+			// Group per workspace: BroadcastCancelledTasks takes one workspace.
+			byWs := map[string][]db.AgentTaskQueue{}
+			for _, t := range cancelled {
+				wsID := workspaceByRuntime[uuidToString(t.RuntimeID)]
+				byWs[wsID] = append(byWs[wsID], t)
+			}
+			for wsID, tasks := range byWs {
+				if wsID == "" {
+					continue
+				}
+				h.TaskService.BroadcastCancelledTasks(ctx, wsID, tasks)
+			}
+		}
+		if _, err := h.Queries.ForceOfflineRuntimesByIDs(ctx, runtimeIDs); err != nil {
+			slog.Error("suspend: force offline failed", "user_id", userIDStr, "error", err)
+		}
+	}
+
+	if h.DisconnectUser != nil {
+		h.DisconnectUser(userIDStr)
+	}
 }

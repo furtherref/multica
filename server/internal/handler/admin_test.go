@@ -1,14 +1,225 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// patchAccountStatus builds a PATCH /api/admin/users/{id}/status request with
+// {"status": status} as the body and the given actor's X-User-ID header, and
+// wires the chi URL param the handler reads via chi.URLParam(r, "id").
+func patchAccountStatus(t *testing.T, actorID, targetID, status string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"status": status})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest("PATCH", "/api/admin/users/"+targetID+"/status", bytes.NewReader(body))
+	req.Header.Set("X-User-ID", actorID)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", targetID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	testHandler.SetUserAccountStatus(w, req)
+	return w
+}
+
+func TestSetAccountStatusSuspendsAndRestores(t *testing.T) {
+	const adminEmail = "admin-set-status-test@multica.ai"
+	const targetEmail = "target-set-status-test@multica.ai"
+	ctx := context.Background()
+
+	// Uses a dedicated target user, never the shared testUserID fixture:
+	// suspending testUserID would run quiesceSuspendedUser against the
+	// package-wide shared "Handler Test Runtime" it owns (see
+	// setupHandlerTestFixture), force-offlining it and cancelling any
+	// queued tasks other tests in this package depend on.
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM "user" WHERE email IN ($1, $2)`, adminEmail, targetEmail)
+	})
+
+	adminUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Admin Set Status Test",
+		Email: adminEmail,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser admin: %v", err)
+	}
+	targetUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Target Set Status Test",
+		Email: targetEmail,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser target: %v", err)
+	}
+	targetIDStr := uuidToString(targetUser.ID)
+	withAdminEmails(t, []string{adminEmail})
+
+	w := patchAccountStatus(t, uuidToString(adminUser.ID), targetIDStr, "suspended")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 suspending, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp AdminUserResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.AccountStatus != "suspended" {
+		t.Fatalf("expected account_status=suspended in response, got %q", resp.AccountStatus)
+	}
+	var status string
+	if err := testPool.QueryRow(ctx, `SELECT account_status FROM "user" WHERE id = $1`, targetIDStr).Scan(&status); err != nil {
+		t.Fatalf("read account_status: %v", err)
+	}
+	if status != "suspended" {
+		t.Fatalf("DB account_status = %q, want suspended", status)
+	}
+
+	w = patchAccountStatus(t, uuidToString(adminUser.ID), targetIDStr, "active")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 restoring, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := testPool.QueryRow(ctx, `SELECT account_status FROM "user" WHERE id = $1`, targetIDStr).Scan(&status); err != nil {
+		t.Fatalf("read account_status: %v", err)
+	}
+	if status != "active" {
+		t.Fatalf("DB account_status = %q, want active", status)
+	}
+}
+
+func TestSetAccountStatusRejectsSelf(t *testing.T) {
+	const adminEmail = "admin-set-status-self-test@multica.ai"
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM "user" WHERE email = $1`, adminEmail)
+	})
+
+	adminUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Admin Set Status Self Test",
+		Email: adminEmail,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	withAdminEmails(t, []string{adminEmail})
+
+	adminIDStr := uuidToString(adminUser.ID)
+	w := patchAccountStatus(t, adminIDStr, adminIDStr, "suspended")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 self-status-change, got %d: %s", w.Code, w.Body.String())
+	}
+	var status string
+	if err := testPool.QueryRow(ctx, `SELECT account_status FROM "user" WHERE id = $1`, adminIDStr).Scan(&status); err != nil {
+		t.Fatalf("read account_status: %v", err)
+	}
+	if status != "active" {
+		t.Fatalf("self-change must not mutate status; got %q", status)
+	}
+}
+
+func TestSetAccountStatusRejectsUnknownStatus(t *testing.T) {
+	const adminEmail = "admin-set-status-unknown-test@multica.ai"
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM "user" WHERE email = $1`, adminEmail)
+	})
+
+	adminUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Admin Set Status Unknown Test",
+		Email: adminEmail,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	withAdminEmails(t, []string{adminEmail})
+
+	w := patchAccountStatus(t, uuidToString(adminUser.ID), testUserID, "banned")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown status, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSuspendCancelsRuntimesAndTasks(t *testing.T) {
+	const adminEmail = "admin-set-status-suspend-cancel-test@multica.ai"
+	const targetEmail = "target-set-status-suspend-cancel-test@multica.ai"
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM "user" WHERE email IN ($1, $2)`, adminEmail, targetEmail)
+	})
+
+	adminUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Admin Suspend Cancel Test",
+		Email: adminEmail,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser admin: %v", err)
+	}
+	targetUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Target Suspend Cancel Test",
+		Email: targetEmail,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser target: %v", err)
+	}
+	targetIDStr := uuidToString(targetUser.ID)
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'member')`,
+		testWorkspaceID, targetIDStr,
+	); err != nil {
+		t.Fatalf("add target member: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, targetIDStr)
+	})
+	withAdminEmails(t, []string{adminEmail})
+
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, visibility, owner_id)
+		VALUES ($1, NULL, 'Suspend Cancel Runtime', 'cloud', 'handler_test_runtime', 'online', 'x', '{}'::jsonb, now(), 'private', $2)
+		RETURNING id`, testWorkspaceID, targetIDStr).Scan(&runtimeID); err != nil {
+		t.Fatalf("create runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, runtimeID)
+	})
+
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Suspend Cancel Agent")
+	taskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+
+	w := patchAccountStatus(t, uuidToString(adminUser.ID), targetIDStr, "suspended")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 suspending, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var taskStatus string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&taskStatus); err != nil {
+		t.Fatalf("read task status: %v", err)
+	}
+	if taskStatus != "cancelled" {
+		t.Fatalf("task status = %q, want cancelled", taskStatus)
+	}
+
+	var runtimeStatus string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&runtimeStatus); err != nil {
+		t.Fatalf("read runtime status: %v", err)
+	}
+	if runtimeStatus != "offline" {
+		t.Fatalf("runtime status = %q, want offline", runtimeStatus)
+	}
+}
 
 // withAdminEmails temporarily swaps testHandler's admin allowlist and
 // restores it after the test, since testHandler is a package-level

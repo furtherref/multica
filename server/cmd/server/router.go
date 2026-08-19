@@ -1030,6 +1030,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// Account guard: shared by Auth and DaemonAuth so both middlewares
 	// enforce account_status (suspension) from the same cached lookup.
 	accountGuard := &auth.AccountGuard{Queries: queries, Cache: auth.NewAccountStatusCache(rdb)}
+	h.AccountGuard = accountGuard
+	h.DisconnectUser = hub.DisconnectUser
 
 	// Cloud PAT verifier: validates mcn_ tokens against Multica Cloud
 	// Fleet. Returns nil when no Fleet URL is configured — the Auth /
@@ -1270,6 +1272,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 		// --- System-admin routes (gated by ADMIN_EMAILS via requireSystemAdmin) ---
 		r.Get("/api/admin/users", h.ListAllUsers)
+		r.Patch("/api/admin/users/{id}/status", h.SetUserAccountStatus)
 		r.Post("/api/me/onboarding/cloud-waitlist", h.JoinCloudWaitlist)
 		// DEPRECATED — shim routes for desktop < v3 during the rollout
 		// window. v3 frontend creates the Helper agent + starter issue

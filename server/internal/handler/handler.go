@@ -355,7 +355,19 @@ type Handler struct {
 	// so the feature degrades cleanly on deployments without a private key.
 	// Wired in cmd/server/router.go after New.
 	PRRefresh *ghsnapshot.Manager
-	cfg       Config
+	// AccountGuard backs the admin account-status endpoint's cache
+	// invalidation: after SetUserAccountStatus flips a row, the guard's
+	// cached verdict for that user must be cleared so revocation beats the
+	// cache TTL instead of taking effect "within 10 minutes". Shared with
+	// the Auth / DaemonAuth middlewares. Wired in cmd/server/router.go
+	// after New, once accountGuard is constructed. Nil-safe.
+	AccountGuard *auth.AccountGuard
+	// DisconnectUser force-closes every realtime connection belonging to a
+	// user. Injected as a func (rather than a *realtime.Hub field) so the
+	// account-status handler doesn't need a direct Hub dependency. Wired in
+	// cmd/server/router.go to hub.DisconnectUser. Nil-safe.
+	DisconnectUser func(userID string)
+	cfg            Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {
