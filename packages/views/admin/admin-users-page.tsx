@@ -53,6 +53,12 @@ function AdminUserRow({
 }) {
   const { t } = useT("admin");
   const isSuspended = user.account_status === "suspended";
+  // Server-driven enum: an installed client talking to a newer backend may
+  // see an account_status value it doesn't recognize (schema falls back to
+  // "unknown" — see packages/core/admin/schema.ts). Never guess a menu
+  // action against a state we can't interpret: show a neutral badge and
+  // hide the ⋯ menu entirely rather than defaulting to "active" behavior.
+  const isUnknownStatus = user.account_status === "unknown";
   const name = displayName(user);
 
   return (
@@ -84,9 +90,12 @@ function AdminUserRow({
           {t(($) => $.users.suspended_badge)}
         </Badge>
       )}
+      {isUnknownStatus && (
+        <Badge variant="outline">{t(($) => $.users.unknown_status_badge)}</Badge>
+      )}
       {isSelf ? (
         <Badge variant="outline">{t(($) => $.users.self_badge)}</Badge>
-      ) : (
+      ) : isUnknownStatus ? null : (
         <DropdownMenu>
           <DropdownMenuTrigger
             render={

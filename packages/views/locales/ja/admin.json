@@ -7,6 +7,7 @@
     "section_title": "ユーザー · {{count}}",
     "search_placeholder": "名前またはメールアドレスで検索",
     "suspended_badge": "利用停止中",
+    "unknown_status_badge": "不明な状態",
     "actions_menu_aria": "その他の操作",
     "self_badge": "あなた",
     "suspend_action": "アカウントを停止",

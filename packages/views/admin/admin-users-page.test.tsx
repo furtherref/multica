@@ -106,6 +106,16 @@ describe("AdminUsersPage", () => {
         account_status: "active",
         created_at: "2024-01-01T00:00:00Z",
       },
+      // Unrecognized status from a newer backend — schema falls back to
+      // "unknown". Must not be treated as active: neutral badge, no menu.
+      {
+        id: "user-4",
+        name: "Dana Unknown",
+        email: "dana@example.com",
+        avatar_url: null,
+        account_status: "unknown",
+        created_at: "2024-01-01T00:00:00Z",
+      },
     ];
     mockSetUserAccountStatus.mockResolvedValue({
       id: "user-3",
@@ -132,6 +142,15 @@ describe("AdminUsersPage", () => {
     const carolRow = screen.getByTestId("admin-user-row-user-3");
     expect(within(bobRow).getByText("Suspended")).toBeTruthy();
     expect(within(carolRow).queryByText("Suspended")).toBeNull();
+  });
+
+  it("shows a neutral unknown-status badge and no menu for an unrecognized account_status", () => {
+    render(<AdminUsersPage />, { wrapper: I18nWrapper });
+
+    const danaRow = screen.getByTestId("admin-user-row-user-4");
+    expect(within(danaRow).getByText("Unknown status")).toBeTruthy();
+    expect(within(danaRow).queryByText("Suspended")).toBeNull();
+    expect(within(danaRow).queryByRole("button", { name: /more actions/i })).toBeNull();
   });
 
   it("does not render a menu on the current user's own row", () => {
