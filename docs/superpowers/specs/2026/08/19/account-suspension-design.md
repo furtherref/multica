@@ -1,119 +1,119 @@
-# 账号禁用（Account Suspension）设计方案
+# Account Suspension Design
 
-日期：2026-08-19
-状态：待复核
-分支：`feat/account-suspension`
+Date: 2026-08-19
+Status: pending review
+Branch: `feat/account-suspension`
 
-## 背景与目标
+## Background and Goals
 
-需要支持"人员禁用"：账号被禁用后不可登录 Multica；已登录的会话在下一次请求时失效，前端自动返回登录页。
+We need to support suspending a person's account: once suspended, the user can no longer log in to Multica; sessions that are already logged in become invalid on their next request, and the frontend automatically returns to the login page.
 
-上游 `multica-ai/multica` 已有对口设计但未合并：
+Upstream `multica-ai/multica` has a matching design that was never merged:
 
-- **Issue #1688**（open）：v1 方案——`"user"` 表加 `account_status` 列（`active`/`suspended`），`suspended` 时所有认证路径统一返回 **403 + 稳定错误码 `ACCOUNT_SUSPENDED`**；会话失效靠中间件每次请求重新校验用户状态实现（本项目为无状态 JWT，无 sessions 表、无吊销机制）。软删除与邮箱唯一性调整推迟到 v2。
-- **PR #1689**（open，已停滞）：完整实现了 #1688，reviewer 已 "approve with clarifications"，但 main 合入 Redis PAT 缓存（10 分钟 TTL）后产生 must-fix 回归——**PAT 缓存命中路径绕过禁用检查**，禁用后 PAT 仍可用最多 10 分钟；作者未再跟进。reviewer 另指出：已建立的 WebSocket 连接不会被踢，只拒新连接。
+- **Issue #1688** (open): the v1 plan — add an `account_status` column to the `"user"` table (`active`/`suspended`); when `suspended`, every auth path uniformly returns **403 + the stable error code `ACCOUNT_SUSPENDED`**; session invalidation works by having the middleware re-validate the user's status on every request (this project uses stateless JWTs — no sessions table, no revocation mechanism). Soft delete and email-uniqueness changes are deferred to v2.
+- **PR #1689** (open, stalled): fully implemented #1688 and the reviewer gave "approve with clarifications", but after main merged the Redis PAT cache (10-minute TTL) a must-fix regression appeared — **the PAT cache-hit path bypasses the suspension check**, so a suspended user's PAT keeps working for up to 10 minutes; the author never followed up. The reviewer also noted: already-established WebSocket connections are not kicked, only new connections are rejected.
 
-本方案在形状上完全对齐上游（列名、状态值、错误码、集中式 helper），将来上游合并其后代版本时同步成本接近零，并额外修复上游 PR 停滞的两个缺口（PAT 缓存绕过、WS 不踢线）。
+This design aligns fully with upstream in shape (column name, status values, error code, centralized helper), so a future upstream merge of any descendant of that work costs close to nothing, and it additionally fixes the two gaps that stalled the upstream PR (PAT cache bypass, no WS kick).
 
-## 现状要点（代码调研结论）
+## Current State (code audit conclusions)
 
-- 认证：无状态 JWT（HS256，cookie `multica_auth`，默认 30 天 TTL），登录方式为邮箱验证码 + Google OAuth，无密码。`POST /auth/logout` 仅清 cookie，无服务端吊销。
-- 会话校验：`middleware.Auth`（`server/internal/middleware/auth.go`）与 `middleware.DaemonAuth`；凭证类型含 JWT、`mul_` PAT、`mat_` task token、`mdt_` daemon token、`mcn_` cloud PAT。JWT 路径目前零 DB 读。
-- `"user"` 表无任何 status/disabled 列。但已存在硬编码应急黑名单 `server/internal/auth/temporary_disabled_users.go`，其注释明确说明"等账号禁用持久化到 user 模型后删除此文件"。它已在以下位置埋好检查点，全部返回 403 `"account disabled"`：
-  - `middleware/auth.go` 全部 5 条认证路径（task_token / cloud_pat / pat_cache / pat / jwt）
-  - `middleware/daemon_auth.go` 4 处
-  - `realtime/hub.go` `authenticateToken` 2 处
-  - `handler/auth.go`：`issueJWT`、`findOrCreateUser`、`SendCode`、`VerifyCode`、Google 登录、`IssueCliToken`
-- 权限模型：只有 workspace 级 `member.role`（owner/admin/member），**无全局管理员概念**。
-- 前端 401/403 处理：`packages/core/api/client.ts` 仅在 401 时调 `handleUnauthorized`；web/desktop 的 `onUnauthorized`（`packages/core/platform/core-provider.tsx`）只清 token 不导航，真正跳登录页依赖路由守卫看到 `user === null`（仅启动时 `getMe()` 401 触发）。**现有 403 不会触发任何登出/跳转**。mobile（`apps/mobile/app/_layout.tsx`）有完整的登出+跳转实现，可作参照。
-- WebSocket：仅连接时校验；Hub 无按用户断连 API；客户端 `ws-client.ts` 不识别 `auth_error`，连接被拒会无限重连。
-- 缓存：`auth.AuthCacheTTL = 10min`，供 `PATCache` / `DaemonTokenCache`；另有 `MembershipCache`。
-- 成员移除的收敛模式：`revokeAndRemoveMember`（`server/internal/handler/workspace_revoke.go`）——取消进行中任务、force-offline runtime、删 daemon token、失效缓存。
+- Auth: stateless JWT (HS256, cookie `multica_auth`, default 30-day TTL); login methods are email verification code + Google OAuth, no passwords. `POST /auth/logout` only clears the cookie — no server-side revocation.
+- Session validation: `middleware.Auth` (`server/internal/middleware/auth.go`) and `middleware.DaemonAuth`; credential types include JWT, `mul_` PAT, `mat_` task token, `mdt_` daemon token, `mcn_` cloud PAT. The JWT path currently performs zero DB reads.
+- The `"user"` table has no status/disabled column of any kind. However, a hardcoded emergency denylist already exists at `server/internal/auth/temporary_disabled_users.go`, whose comment explicitly says "Remove this once account suspension is persisted and enforced from the user model." It has checkpoints planted at the following locations, all returning 403 `"account disabled"`:
+  - `middleware/auth.go` — all 5 auth paths (task_token / cloud_pat / pat_cache / pat / jwt)
+  - `middleware/daemon_auth.go` — 4 sites
+  - `realtime/hub.go` `authenticateToken` — 2 sites
+  - `handler/auth.go`: `issueJWT`, `findOrCreateUser`, `SendCode`, `VerifyCode`, Google login, `IssueCliToken`
+- Permission model: only workspace-level `member.role` (owner/admin/member) — **there is no global admin concept**.
+- Frontend 401/403 handling: `packages/core/api/client.ts` calls `handleUnauthorized` only on 401; web/desktop's `onUnauthorized` (`packages/core/platform/core-provider.tsx`) only clears the token without navigating, and the actual redirect to the login page relies on route guards seeing `user === null` (which only happens when the boot-time `getMe()` returns 401). **Existing 403s trigger no logout/redirect at all.** Mobile (`apps/mobile/app/_layout.tsx`) has a complete logout+redirect implementation to use as a reference.
+- WebSocket: validated only at connect time; the Hub has no per-user disconnect API; the client (`ws-client.ts`) does not recognize `auth_error` and reconnects indefinitely when the connection is rejected.
+- Caches: `auth.AuthCacheTTL = 10min`, shared by `PATCache` / `DaemonTokenCache`; there is also a `MembershipCache`.
+- The convergence pattern for member removal: `revokeAndRemoveMember` (`server/internal/handler/workspace_revoke.go`) — cancels in-flight tasks, force-offlines runtimes, deletes daemon tokens, invalidates caches.
 
-## 已确认的设计决策
+## Confirmed Design Decisions
 
-| 决策点 | 结论 |
+| Decision | Conclusion |
 | --- | --- |
-| 权限模型 | 环境变量 `ADMIN_EMAILS` 配置系统管理员（逗号分隔邮箱），仅系统管理员可禁用/恢复；管理员不能禁用自己 |
-| 现存 WS 连接 | 禁用时立即踢掉（新增 `Hub.DisconnectUser`） |
-| 管理 UI | 本期一起做，新增全局 `/admin` 页（pre-workspace 单词路由，符合路由规则） |
-| 与上游对齐 | 列名 `account_status`、状态值 `active`/`suspended`、错误码 `ACCOUNT_SUSPENDED`、集中式 `auth.UserMayAuthenticate` |
+| Permission model | `ADMIN_EMAILS` env var configures system admins (comma-separated emails); only system admins can suspend/restore; an admin cannot suspend themselves |
+| Existing WS connections | Kicked immediately on suspension (new `Hub.DisconnectUser`) |
+| Admin UI | Built in this iteration: a new global `/admin` page (pre-workspace single-word route, per routing rules) |
+| Upstream alignment | Column `account_status`, values `active`/`suspended`, error code `ACCOUNT_SUSPENDED`, centralized `auth.UserMayAuthenticate` |
 
-## 设计
+## Design
 
-### 数据库
+### Database
 
-- 迁移：`ALTER TABLE "user" ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active'` + `CHECK (account_status IN ('active','suspended'))`。
-- 不加索引、不加外键、不做级联，符合仓库迁移规则（加列本身无需 CONCURRENTLY）。
-- `server/pkg/db/queries/user.sql` 增加按 id 读状态、按 id 更新状态的查询；`make sqlc` 重新生成（本机需 sqlc v1.31.1）。
+- Migration: `ALTER TABLE "user" ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active'` + `CHECK (account_status IN ('active','suspended'))`.
+- No indexes, no foreign keys, no cascades — per the repo migration rules (a plain column-add needs no CONCURRENTLY).
+- `server/pkg/db/queries/user.sql` gains read-status-by-id and update-status-by-id queries; regenerate with `make sqlc` (local machine needs sqlc v1.31.1).
 
-### 后端强制逻辑
+### Backend Enforcement
 
-1. **集中检查**：新建 `server/internal/auth/account.go`：
-   - `UserMayAuthenticate(status string) error`：仅 `active` 放行；`suspended`、空值、未知值一律拒绝（fail-closed）。
-   - `WriteAccountSuspendedResponse(w)`：统一写出 `403` + `{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}`。
-2. **替换应急黑名单**：删除 `temporary_disabled_users.go`，其全部现有调用点原位替换为基于 DB 状态的检查（调用点清单见"现状要点"）。
-3. **每请求生效与缓存**：
-   - JWT 路径新增按 userID 的账号状态查询，配 Redis 缓存（复用 `auth.AuthCacheTTL` 10 分钟），命名如 `AccountStatusCache`。
-   - **禁用/恢复操作必须主动按 userID 失效**：`AccountStatusCache` + `PATCache` + `DaemonTokenCache`，保证"下一次请求即失效"。这是对上游 PR #1689 停滞回归（PAT 缓存命中绕过检查）的修复：缓存命中路径同样执行状态检查，且写路径主动失效。
-4. **管理 API**（新路由组，系统管理员中间件保护）：
-   - `GET /api/admin/users`：列全部用户及 `account_status`。
-   - `PATCH /api/admin/users/{id}/status`：body `{"status":"active"|"suspended"}`；路径 UUID 用 `parseUUIDOrBadRequest`；禁止操作自己。
-   - 系统管理员判定：请求用户 email ∈ `ADMIN_EMAILS`（server config 读取，大小写不敏感比对）。
-   - `GET /api/me` 响应增加 `is_system_admin: boolean`，供前端显隐入口。
-5. **禁用时的收敛**（单事务/顺序执行，参照 `revokeAndRemoveMember` 模式）：
-   - 更新 `account_status = 'suspended'`；
-   - 取消该用户进行中的任务、force-offline 其 runtimes；
-   - 失效上述三类缓存；
-   - 调用 `Hub.DisconnectUser(userID)` 断开其全部 WS 连接（发送 `auth_error` 帧后 close）。
-   - 恢复（`active`）只更新状态并失效缓存，无收敛动作。
+1. **Centralized check**: new `server/internal/auth/account.go`:
+   - `UserMayAuthenticate(status string) error`: only `active` passes; `suspended`, empty, and unknown values are all rejected (fail-closed).
+   - `WriteAccountSuspendedResponse(w)`: uniformly writes `403` + `{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}`.
+2. **Replace the emergency denylist**: delete `temporary_disabled_users.go` and replace every existing call site in place with the DB-status-based check (see the checkpoint inventory under "Current State").
+3. **Per-request effect and caching**:
+   - The JWT path gains a per-userID account-status lookup, backed by a Redis cache (reusing `auth.AuthCacheTTL`, 10 minutes), named e.g. `AccountStatusCache`.
+   - **Suspend/restore operations must actively invalidate by userID**: `AccountStatusCache` + `PATCache` + `DaemonTokenCache`, guaranteeing "invalid on the next request". This is the fix for the regression that stalled upstream PR #1689 (PAT cache hits bypassing the check): cache-hit paths also run the status check, and the write path invalidates proactively.
+4. **Admin API** (new route group, protected by a system-admin check):
+   - `GET /api/admin/users`: lists all users with `account_status`.
+   - `PATCH /api/admin/users/{id}/status`: body `{"status":"active"|"suspended"}`; path UUID via `parseUUIDOrBadRequest`; operating on yourself is forbidden.
+   - System-admin determination: requesting user's email ∈ `ADMIN_EMAILS` (read from server config, case-insensitive comparison).
+   - `GET /api/me` response gains `is_system_admin: boolean` for the frontend to show/hide the entry point.
+5. **Convergence on suspension** (single transaction / sequential execution, modeled on `revokeAndRemoveMember`):
+   - Update `account_status = 'suspended'`;
+   - Cancel the user's in-flight tasks and force-offline their runtimes;
+   - Invalidate the three cache types above;
+   - Call `Hub.DisconnectUser(userID)` to sever all of their WS connections (send an `auth_error` frame, then close).
+   - Restore (`active`) only updates the status and invalidates caches — no convergence actions.
 
 ### WebSocket
 
-- `Hub` 维护 userID → connections 索引（或遍历现有连接表），新增 `DisconnectUser(userID)`。
-- 连接时校验沿用现有 `authenticateToken` 检查点（替换为 DB 状态检查后自动生效）。
-- 客户端 `packages/core/api/ws-client.ts`：识别 `auth_error` 帧与升级被拒（403），停止重连并触发会话终止流程（当前行为是无限重连、无用户可见信号）。
+- The `Hub` maintains a userID → connections index (or walks the existing connection table) and gains `DisconnectUser(userID)`.
+- Connect-time validation keeps the existing `authenticateToken` checkpoints (they take effect automatically once replaced with the DB status check).
+- Client `packages/core/api/ws-client.ts`: recognize `auth_error` frames and rejected upgrades (403), stop reconnecting, and trigger the session-termination flow (current behavior is infinite reconnects with no user-visible signal).
 
-### 前端（web / desktop 共享 + mobile）
+### Frontend (web / desktop shared + mobile)
 
-1. **会话终止流程**：
-   - `packages/core/api/client.ts`：在现有 401 处理旁增加 403 + `code === "ACCOUNT_SUSPENDED"` 分支，同样走 `handleUnauthorized`（携带禁用原因标记）。
-   - 补全 web/desktop 的 `onUnauthorized`（`core-provider.tsx`）：清 auth store 用户 + 清 token + 导航到登录页（参照 mobile `_layout.tsx` 的完整实现，含防循环的幂等保护）。
-   - 登录页根据标记显示"账号已被禁用，请联系管理员"提示。
-   - mobile 的独立 client（`apps/mobile/data/api.ts`）同步增加 `ACCOUNT_SUSPENDED` 分支。
-2. **登录被拒**：验证码 / Google 登录接口返回 `ACCOUNT_SUSPENDED` 时，登录表单原地显示禁用提示（不进入通用错误文案）。
-3. **管理页 `/admin`**：
-   - 页面与组件放 `packages/views/admin/`；web（`apps/web/app/admin/`）与 desktop 路由各自接线。
-   - 仅 `is_system_admin === true` 显示入口并允许访问；服务端仍是最终权限校验。
-   - 功能：用户列表（姓名、邮箱、状态、加入时间），禁用/恢复操作带确认弹窗；被禁用用户有明显状态标识；自己那一行不显示禁用操作。
-   - API 响应经 zod schema + `parseWithFallback` 解析；UI 对字段做防御性可选链；文案（中英）遵循 `apps/docs/content/docs/developers/conventions*.mdx`。
+1. **Session-termination flow**:
+   - `packages/core/api/client.ts`: beside the existing 401 handling, add a 403 + `code === "ACCOUNT_SUSPENDED"` branch that also goes through `handleUnauthorized` (carrying a suspended-reason marker).
+   - Complete web/desktop's `onUnauthorized` (`core-provider.tsx`): clear the auth store user + clear the token + navigate to the login page (modeled on mobile's complete `_layout.tsx` implementation, including idempotency protection against loops).
+   - The login page shows an "account suspended, contact your administrator" notice based on the marker.
+   - Mobile's independent client (`apps/mobile/data/api.ts`) gains the same `ACCOUNT_SUSPENDED` branch.
+2. **Login rejection**: when the verification-code / Google login endpoints return `ACCOUNT_SUSPENDED`, the login form shows the suspension notice in place (not the generic error copy).
+3. **Admin page `/admin`**:
+   - Page and components live in `packages/views/admin/`; web (`apps/web/app/admin/`) and desktop wire up their own routing.
+   - Only `is_system_admin === true` shows the entry and allows access; the server remains the final authority.
+   - Features: user list (name, email, status, joined date), suspend/restore actions with confirmation dialogs; suspended users are clearly marked; your own row shows no suspend action.
+   - API responses parsed through zod schemas + `parseWithFallback`; the UI optional-chains fields defensively; copy (Chinese and English) follows `apps/docs/content/docs/developers/conventions*.mdx`.
 
-### 兼容性与安全细节
+### Compatibility and Security Details
 
-- 403 响应体带稳定 `code` 字段，旧客户端（不识别 code）表现为普通 403 报错，不会误登出——符合 API 兼容规则（不 pin 单一布尔、显式判断）。
-- 已知残留窗口（与上游一致，文档化即可）：已签发的 CDN 签名 cookie / 预签名 URL 在 TTL 内仍有效。
-- `ADMIN_EMAILS` 未配置时不存在系统管理员，admin API 全部 403，`/admin` 入口不可见——默认关闭。任何管理员的存在都依赖这项配置，务必在部署时设置。
-- 残留窗口：daemon 若以 PAT（`mul_`）认证，逐请求即被拦截；`mdt_` daemon token 无用户身份，因此禁用时 `quiesceSuspendedUser` 同步删除该用户名下 runtime 对应的 daemon token（镜像 `revokeAndRemoveMember`），使其在下次请求前失效，而非等到 TTL 过期。
+- The 403 response body carries a stable `code` field; older clients that don't recognize the code see an ordinary 403 error and are never falsely logged out — consistent with the API compatibility rules (never pin a single boolean, use explicit checks).
+- Known residual window (same as upstream, documenting is sufficient): already-issued CDN signed cookies / presigned URLs remain valid within their TTL.
+- When `ADMIN_EMAILS` is unconfigured there are no system admins, every admin API returns 403, and the `/admin` entry is invisible — off by default. The existence of any admin depends on this setting; be sure to configure it at deployment.
+- Residual window: a daemon that authenticates with a PAT (`mul_`) is blocked per-request; `mdt_` daemon tokens carry no user identity, so on suspension `quiesceSuspendedUser` also deletes the daemon tokens for the daemons on the user's runtimes (mirroring `revokeAndRemoveMember`), invalidating them before their next request rather than waiting for the TTL to expire.
 
-## 测试计划
+## Test Plan
 
-按仓库测试分层规则，行为性改动先写失败测试（TDD）：
+Per the repo's test layering rules, behavioral changes get a failing test first (TDD):
 
-- **Go（`server/`）**：
-  - `UserMayAuthenticate` 单测：active 放行；suspended / 空 / 未知值拒绝（fail-closed）。
-  - 集成测试：禁用后——验证码登录被拒、已有 JWT 下一请求 403 + `ACCOUNT_SUSPENDED`、PAT（含缓存命中路径）下一请求 403、daemon token 路径 403、`IssueCliToken` 被拒。
-  - 缓存失效即时性：禁用后立即请求（缓存未过期）仍被拒。
-  - Admin API：非管理员 403、管理员可禁用/恢复、不能禁用自己、`parseUUIDOrBadRequest` 边界。
-  - `Hub.DisconnectUser`：禁用后连接被断开、新连接被拒。
-- **TS**：
-  - `packages/core`：admin API schema 解析 + malformed-response 测试；client 403 + `ACCOUNT_SUSPENDED` 触发会话终止；ws-client 收到 `auth_error` 停止重连。
-  - `packages/views`：admin 页组件测试（列表渲染、确认弹窗、自己不可禁用、禁用态标识）。
-  - `apps/web` / desktop：登出跳转接线测试（如有必要）。
-- 验证命令：`make test`、`pnpm typecheck`、`pnpm --filter @multica/core test`、`pnpm --filter @multica/views test`。
+- **Go (`server/`)**:
+  - `UserMayAuthenticate` unit tests: active passes; suspended / empty / unknown values rejected (fail-closed).
+  - Integration tests: after suspension — verification-code login rejected, an existing JWT's next request returns 403 + `ACCOUNT_SUSPENDED`, PAT (including the cache-hit path) returns 403 on the next request, the daemon-token path returns 403, `IssueCliToken` rejected.
+  - Cache-invalidation immediacy: a request immediately after suspension (cache not yet expired) is still rejected.
+  - Admin API: non-admin gets 403, an admin can suspend/restore, cannot suspend themselves, `parseUUIDOrBadRequest` boundaries.
+  - `Hub.DisconnectUser`: connections severed after suspension, new connections rejected.
+- **TS**:
+  - `packages/core`: admin API schema parsing + malformed-response tests; client 403 + `ACCOUNT_SUSPENDED` triggers session termination; ws-client stops reconnecting on `auth_error`.
+  - `packages/views`: admin page component tests (list rendering, confirmation dialog, self not suspendable, suspended-state marking).
+  - `apps/web` / desktop: logout-redirect wiring tests (if necessary).
+- Verification commands: `make test`, `pnpm typecheck`, `pnpm --filter @multica/core test`, `pnpm --filter @multica/views test`.
 
-## 明确不做（本期）
+## Explicitly Out of Scope (this iteration)
 
-- 软删除（`deleted_at`）、邮箱唯一性调整（上游 v2 范围）。
-- 禁用原因字段、审计日志。
-- 已签发 CDN 签名凭证的即时吊销。
-- workspace 级"仅移出成员"之外的新语义（现有 `revokeAndRemoveMember` 不变）。
+- Soft delete (`deleted_at`) and email-uniqueness changes (upstream's v2 scope).
+- A suspension-reason field and audit logging.
+- Immediate revocation of already-issued CDN signed credentials.
+- Any new semantics beyond the workspace-level "remove member only" (the existing `revokeAndRemoveMember` is unchanged).
