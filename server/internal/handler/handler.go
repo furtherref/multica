@@ -368,13 +368,13 @@ type Handler struct {
 	// cmd/server/router.go to hub.DisconnectUser; cmd/server/main.go wraps
 	// it with a relay publish so suspension also reaches connections held
 	// by OTHER nodes. Nil-safe.
-	DisconnectUser func(userID string)
+	DisconnectUser func(userID string) error
 	// DisconnectDaemonRuntimes force-closes live daemon WebSockets watching
 	// the given runtimes. Suspension deletes the daemon's mdt_ token, but a
 	// token only gates NEW connections — an established socket keeps its
 	// cached identity, so it must be severed explicitly. Wired in
 	// cmd/server/router.go to daemonHub.DisconnectRuntimes. Nil-safe.
-	DisconnectDaemonRuntimes func(runtimeIDs []string)
+	DisconnectDaemonRuntimes func(runtimeIDs []string) error
 	cfg                      Config
 }
 

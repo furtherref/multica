@@ -135,26 +135,30 @@ func (n *RelayNotifier) NotifyPendingWork(runtimeID, kind string) {
 // not depend on which node happens to hold the daemon's connection. The
 // signature mirrors Hub.DisconnectRuntimes so either can back
 // Handler.DisconnectDaemonRuntimes.
-func (n *RelayNotifier) DisconnectRuntimes(runtimeIDs []string) {
+func (n *RelayNotifier) DisconnectRuntimes(runtimeIDs []string) error {
 	if len(runtimeIDs) == 0 {
-		return
+		return nil
 	}
 	if n.local != nil {
 		n.local.DisconnectRuntimes(runtimeIDs)
 	}
 	if n.relay == nil {
-		return
+		return nil
 	}
 	eventID := ulid.Make().String()
 	frame, err := runtimesRevokedFrame(runtimeIDs)
 	if err != nil {
 		M.WakeupPublishErrors.Add(1)
-		return
+		return err
 	}
+	// Unlike the wakeup hints above, a lost revocation is NOT harmless — a
+	// daemon socket on another node would keep serving a suspended user — so
+	// the publish error is returned for the suspend endpoint to surface.
 	if err := n.relay.PublishWithID(realtime.ScopeDaemonRuntime, runtimeIDs[0], "", frame, eventID); err != nil {
 		M.WakeupPublishErrors.Add(1)
 		slog.Warn("daemon websocket revoke publish failed", "error", err, "runtime_ids", runtimeIDs)
-		return
+		return err
 	}
 	M.WakeupPublishedTotal.Add(1)
+	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -129,18 +130,38 @@ func (h *Handler) SetUserAccountStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetIDStr := uuidToString(targetID)
-	// The DB flip is committed, but the "next request fails" promise also
-	// depends on the cached verdicts being gone — a swallowed invalidation
-	// failure would make this 200 a lie for up to AuthCacheTTL. Surface it
-	// as a 500 instead: PATCH is idempotent, so the admin's retry re-runs
-	// the invalidation against the already-committed status.
-	if err := h.invalidateRevocationCaches(r.Context(), targetIDStr, result.RevokedTokenHashes); err != nil {
-		slog.Error("account status: cache revocation failed after commit",
+	// The caches were already cleared pre-commit (see applyAccountStatusChange);
+	// this second pass closes the small window where a concurrent request
+	// re-cached a verdict between that invalidation and the commit. The
+	// account entry is retried and surfaced — the PATCH is idempotent, so the
+	// admin's retry re-runs it against the committed status. Daemon-token
+	// entries are best-effort here: their hashes are unrecoverable after the
+	// committed delete, they were already cleared pre-commit, and a re-cached
+	// entry expires within AuthCacheTTL.
+	if h.AccountGuard != nil {
+		if err := h.AccountGuard.Cache.Invalidate(r.Context(), targetIDStr); err != nil {
+			if err = h.AccountGuard.Cache.Invalidate(r.Context(), targetIDStr); err != nil {
+				slog.Error("account status: post-commit cache revocation failed",
+					"target_id", targetIDStr, "status", req.Status, "error", err)
+				writeError(w, http.StatusInternalServerError, "account status updated but revocation propagation failed; retry the request")
+				return
+			}
+		}
+	}
+	for _, hash := range result.RevokedTokenHashes {
+		_ = h.DaemonTokenCache.Invalidate(r.Context(), hash)
+	}
+
+	// Live-connection revocation must also hold before we report success: a
+	// swallowed relay-publish failure would leave sockets on other nodes
+	// serving a suspended user. The runtime IDs and user ID are re-derivable,
+	// so the idempotent retry re-runs the kicks.
+	if err := h.publishAccountStatusChange(r.Context(), targetIDStr, req.Status, result); err != nil {
+		slog.Error("account status: live-connection revocation failed",
 			"target_id", targetIDStr, "status", req.Status, "error", err)
-		writeError(w, http.StatusInternalServerError, "account status updated but revocation propagation failed; retry the request")
+		writeError(w, http.StatusInternalServerError, "account status updated but live-connection revocation failed; retry the request")
 		return
 	}
-	h.publishAccountStatusChange(r.Context(), targetIDStr, req.Status, result)
 
 	writeJSON(w, http.StatusOK, AdminUserResponse{
 		ID:            targetIDStr,
@@ -246,6 +267,17 @@ func (h *Handler) applyAccountStatusChange(ctx context.Context, userID pgtype.UU
 		}
 	}
 
+	// Invalidate the cached verdicts BEFORE committing: if Redis refuses the
+	// deletes we roll back and nothing changed, so the admin's retry re-runs
+	// the whole convergence — including re-deriving the daemon-token hashes
+	// from the not-yet-deleted rows. (After a commit those hashes are gone
+	// and a retry could never re-invalidate them.) Clearing a cache entry
+	// for a row the rollback then restores is harmless — it repopulates on
+	// the next read.
+	if err := h.invalidateRevocationCaches(ctx, uuidToString(userID), result.RevokedTokenHashes); err != nil {
+		return empty, fmt.Errorf("revoking cached verdicts: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return empty, err
 	}
@@ -288,9 +320,9 @@ func (h *Handler) invalidateRevocationCaches(ctx context.Context, userIDStr stri
 	return nil
 }
 
-func (h *Handler) publishAccountStatusChange(ctx context.Context, userIDStr, status string, result accountStatusChangeResult) {
+func (h *Handler) publishAccountStatusChange(ctx context.Context, userIDStr, status string, result accountStatusChangeResult) error {
 	if status != auth.AccountStatusSuspended {
-		return
+		return nil
 	}
 
 	if h.TaskService != nil && len(result.Cancelled) > 0 {
@@ -308,13 +340,23 @@ func (h *Handler) publishAccountStatusChange(ctx context.Context, userIDStr, sta
 		}
 	}
 
+	// Both kicks run even if the first fails — then the failures surface
+	// together. A relay-publish failure here means sockets on other nodes
+	// would keep serving the suspended user, so the caller must not report
+	// success on it; the kicks are re-derivable and re-run on retry.
+	var kickErrs []error
 	if h.DisconnectUser != nil {
-		h.DisconnectUser(userIDStr)
+		if err := h.DisconnectUser(userIDStr); err != nil {
+			kickErrs = append(kickErrs, fmt.Errorf("user connections: %w", err))
+		}
 	}
 	// Sever live daemon WebSockets watching the suspended user's runtimes:
 	// the token deletion above only gates NEW daemon connections, while an
 	// established socket keeps its cached identity.
 	if h.DisconnectDaemonRuntimes != nil && len(result.RuntimeIDStrs) > 0 {
-		h.DisconnectDaemonRuntimes(result.RuntimeIDStrs)
+		if err := h.DisconnectDaemonRuntimes(result.RuntimeIDStrs); err != nil {
+			kickErrs = append(kickErrs, fmt.Errorf("daemon connections: %w", err))
+		}
 	}
+	return errors.Join(kickErrs...)
 }

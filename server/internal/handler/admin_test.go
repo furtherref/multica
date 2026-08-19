@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -252,8 +253,9 @@ func TestSuspendCancelsRuntimesAndTasks(t *testing.T) {
 	// NEW connections), so suspension must also sever it explicitly.
 	var disconnectedRuntimes []string
 	prevDisconnect := testHandler.DisconnectDaemonRuntimes
-	testHandler.DisconnectDaemonRuntimes = func(runtimeIDs []string) {
+	testHandler.DisconnectDaemonRuntimes = func(runtimeIDs []string) error {
 		disconnectedRuntimes = append(disconnectedRuntimes, runtimeIDs...)
+		return nil
 	}
 	t.Cleanup(func() { testHandler.DisconnectDaemonRuntimes = prevDisconnect })
 
@@ -470,11 +472,12 @@ func TestGetMeReportsSystemAdmin(t *testing.T) {
 	})
 }
 
-// A committed status flip whose cache invalidation silently fails would let
-// the suspended user's warm "active" verdict outlive the 200 by up to
-// AuthCacheTTL. The handler must surface that as a 500 (PATCH is idempotent —
-// the admin retries and the invalidation re-runs) instead of reporting a
-// revocation that has not actually propagated.
+// A status flip whose cache invalidation silently fails would let the
+// suspended user's warm "active" verdict outlive the 200 by up to
+// AuthCacheTTL. Invalidation runs BEFORE the commit, so a failure rolls the
+// whole change back: the handler returns 500 and NOTHING changed — the
+// admin's retry re-runs the full convergence, including re-deriving the
+// daemon-token hashes from the still-existing rows.
 func TestSetAccountStatusFailsWhenCacheInvalidationFails(t *testing.T) {
 	const adminEmail = "admin-set-status-cache-fail-test@multica.ai"
 	const targetEmail = "target-set-status-cache-fail-test@multica.ai"
@@ -513,13 +516,62 @@ func TestSetAccountStatusFailsWhenCacheInvalidationFails(t *testing.T) {
 		t.Fatalf("expected 500 when cache invalidation fails, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// The DB flip committed before the invalidation attempt — the account
-	// really is suspended; only the propagation promise failed.
+	// Pre-commit invalidation failure rolls the transaction back: the
+	// account must still be active, so the admin's retry can converge fully.
+	status, err := testHandler.Queries.GetUserAccountStatus(ctx, targetUser.ID)
+	if err != nil {
+		t.Fatalf("GetUserAccountStatus: %v", err)
+	}
+	if status != auth.AccountStatusActive {
+		t.Fatalf("account_status = %q, want active (failed invalidation must roll back the flip)", status)
+	}
+}
+
+// A swallowed live-connection kick failure (e.g. the relay publish that tells
+// other nodes to sever the suspended user's sockets) must not hide behind a
+// 200: the status is committed, but the handler reports 500 so the idempotent
+// retry re-runs the kicks (user ID and runtime IDs are re-derivable).
+func TestSetAccountStatusFailsWhenKickFails(t *testing.T) {
+	const adminEmail = "admin-set-status-kick-fail-test@multica.ai"
+	const targetEmail = "target-set-status-kick-fail-test@multica.ai"
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM "user" WHERE email IN ($1, $2)`, adminEmail, targetEmail)
+	})
+
+	adminUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Admin Kick Fail Test",
+		Email: adminEmail,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser admin: %v", err)
+	}
+	targetUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Target Kick Fail Test",
+		Email: targetEmail,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser target: %v", err)
+	}
+	withAdminEmails(t, []string{adminEmail})
+
+	prevDisconnect := testHandler.DisconnectUser
+	testHandler.DisconnectUser = func(string) error { return errors.New("relay unavailable") }
+	t.Cleanup(func() { testHandler.DisconnectUser = prevDisconnect })
+
+	w := patchAccountStatus(t, uuidToString(adminUser.ID), uuidToString(targetUser.ID), "suspended")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when the connection kick fails, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// The flip itself committed — the account is suspended; only the
+	// live-connection revocation needs the retry.
 	status, err := testHandler.Queries.GetUserAccountStatus(ctx, targetUser.ID)
 	if err != nil {
 		t.Fatalf("GetUserAccountStatus: %v", err)
 	}
 	if status != auth.AccountStatusSuspended {
-		t.Fatalf("account_status = %q, want suspended (DB flip is committed)", status)
+		t.Fatalf("account_status = %q, want suspended (kick failure is post-commit)", status)
 	}
 }

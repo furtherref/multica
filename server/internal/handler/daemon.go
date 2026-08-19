@@ -1197,6 +1197,22 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 func (h *Handler) recordHeartbeat(ctx context.Context, rt db.AgentRuntime) error {
 	now := time.Now()
 
+	// A heartbeat that passed auth BEFORE its owner was suspended (an
+	// in-flight HTTP request, or a WS handler holding a pre-suspension
+	// runtime row) must not resurrect a runtime the suspension transaction
+	// just force-offlined. Re-check the owner's account status here — the
+	// guard's cached lookup keeps this off the DB hot path. Only a CONFIRMED
+	// suspension skips the write: transient lookup failures fall through, as
+	// auth already gated this request and liveness must not flap on a Redis
+	// or DB hiccup.
+	if rt.OwnerID.Valid && h.AccountGuard != nil {
+		if err := h.AccountGuard.Check(ctx, uuidToString(rt.OwnerID)); errors.Is(err, auth.ErrAccountSuspended) {
+			slog.Warn("heartbeat: dropping liveness write for suspended owner",
+				"runtime_id", uuidToString(rt.ID), "owner_id", uuidToString(rt.OwnerID))
+			return nil
+		}
+	}
+
 	// Decide whether the DB row needs a write *before* touching Redis, so a
 	// Touch failure can simply force needDBWrite=true without re-evaluating
 	// the structural reasons.

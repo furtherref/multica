@@ -1031,8 +1031,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// enforce account_status (suspension) from the same cached lookup.
 	accountGuard := &auth.AccountGuard{Queries: queries, Cache: auth.NewAccountStatusCache(rdb)}
 	h.AccountGuard = accountGuard
-	h.DisconnectUser = hub.DisconnectUser
-	h.DisconnectDaemonRuntimes = daemonHub.DisconnectRuntimes
+	h.DisconnectUser = func(userID string) error {
+		hub.DisconnectUser(userID)
+		return nil
+	}
+	h.DisconnectDaemonRuntimes = func(runtimeIDs []string) error {
+		daemonHub.DisconnectRuntimes(runtimeIDs)
+		return nil
+	}
 
 	// Cloud PAT verifier: validates mcn_ tokens against Multica Cloud
 	// Fleet. Returns nil when no Fleet URL is configured — the Auth /

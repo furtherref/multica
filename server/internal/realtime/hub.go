@@ -593,7 +593,7 @@ func (h *Hub) fanoutUser(userID string, message []byte, excludeWorkspace, eventI
 	// delivers the frame first (cooperating clients terminate their own
 	// session), then severs the sockets so a non-cooperating client cannot
 	// keep its read-only event stream.
-	if bytes.Equal(message, AccountSuspendedFrame()) {
+	if isAccountSuspendedControlFrame(message) {
 		h.DisconnectUser(userID)
 		return
 	}
@@ -758,6 +758,30 @@ func wsAuthClosePayload(errMsg string) []byte {
 // by this node's DisconnectUser).
 func AccountSuspendedFrame() []byte {
 	return wsAuthErrorFrame(accountSuspendedErrMsg)
+}
+
+// isAccountSuspendedControlFrame recognizes the suspension control frame
+// STRUCTURALLY: the Redis relay's injectEventID round-trips frames through a
+// map — adding event_id and reordering keys — so a bytes.Equal comparison
+// against AccountSuspendedFrame() never matches on the consuming node. The
+// size guard plus substring check keeps the JSON parse off the hot fanout
+// path for ordinary events; only server code can author a top-level
+// type:"auth_error" frame, so user-generated payload content cannot spoof
+// this (it would fail the typed parse below).
+func isAccountSuspendedControlFrame(message []byte) bool {
+	if len(message) > 512 || !bytes.Contains(message, []byte(`"auth_error"`)) {
+		return false
+	}
+	var probe struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Code string `json:"code"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(message, &probe); err != nil {
+		return false
+	}
+	return probe.Type == "auth_error" && probe.Payload.Code == auth.AccountSuspendedCode
 }
 
 // authenticateToken validates a JWT or PAT string and returns the user ID.

@@ -23,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
+	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -446,13 +447,21 @@ func main() {
 	// Cross-node suspension kick: the router wires h.DisconnectUser to the
 	// LOCAL hub, but in a multi-node deployment a suspended user's sockets
 	// can live on other nodes. Publishing the suspended control frame
-	// through the relay-backed broadcaster reaches every node, and each
-	// node's fanoutUser intercepts it and evicts SERVER-SIDE (see
-	// realtime.Hub.fanoutUser) — enforcement does not depend on the client
-	// honoring auth_error. On single-node deployments broadcaster == hub,
-	// so the interception runs directly on the local fanout.
-	h.DisconnectUser = func(userID string) {
-		broadcaster.SendToUser(userID, realtime.AccountSuspendedFrame())
+	// through the relay reaches every node, and each node's fanoutUser
+	// recognizes it and evicts SERVER-SIDE (see realtime.Hub.fanoutUser) —
+	// enforcement does not depend on the client honoring auth_error. The
+	// publish error is RETURNED so the suspend endpoint refuses to report
+	// success when remote nodes were never told (the kick is re-derivable,
+	// so the admin's idempotent retry re-runs it).
+	h.DisconnectUser = func(userID string) error {
+		hub.DisconnectUser(userID)
+		if relay == nil {
+			return nil
+		}
+		return relay.PublishWithID(
+			realtime.ScopeUser, userID, "",
+			realtime.AccountSuspendedFrame(), ulid.Make().String(),
+		)
 	}
 	// Same story for daemon sockets: the router wires
 	// DisconnectDaemonRuntimes to the LOCAL daemon hub; when the relay

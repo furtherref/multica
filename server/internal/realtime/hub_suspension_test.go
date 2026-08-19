@@ -211,3 +211,39 @@ func TestFanoutUserSuspendedFrameEvictsServerSide(t *testing.T) {
 		t.Fatal("client should have been removed from hub.clients")
 	}
 }
+
+// The Redis relay's injectEventID round-trips frames through a map (adding
+// event_id and reordering keys), so the control frame that reaches a remote
+// node is NOT byte-identical to AccountSuspendedFrame(). Interception must
+// match structurally, not by bytes.Equal.
+func TestFanoutUserSuspendedFrameEvictsAfterRelayMutation(t *testing.T) {
+	hub := NewHub()
+	c := &Client{hub: hub, userID: "user-y", workspaceID: "ws-1", send: make(chan []byte, 4)}
+	hub.mu.Lock()
+	hub.clients[c] = true
+	hub.mu.Unlock()
+	hub.subscribe(c, ScopeUser, "user-y")
+
+	mutated := injectEventID(AccountSuspendedFrame(), "01JEVENTIDULID0000000000")
+	if string(mutated) == string(AccountSuspendedFrame()) {
+		t.Fatal("test setup: injectEventID did not mutate the frame")
+	}
+	hub.fanoutUser("user-y", mutated, "", "01JEVENTIDULID0000000000")
+
+	select {
+	case _, ok := <-c.send:
+		if !ok {
+			t.Fatal("send channel closed before the frame was delivered")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected the mutated suspended frame to be delivered")
+	}
+	select {
+	case _, ok := <-c.send:
+		if ok {
+			t.Fatal("expected send channel closed after server-side eviction")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("send channel was not closed — mutated control frame not recognized")
+	}
+}
