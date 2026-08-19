@@ -260,6 +260,12 @@ SELECT * FROM agent_runtime
 WHERE workspace_id = $1 AND owner_id = $2
 ORDER BY created_at ASC;
 
+-- name: ListAgentRuntimesByOwnerAllWorkspaces :many
+-- All runtimes a user owns across every workspace. Used by account
+-- suspension to cancel in-flight tasks and force runtimes offline.
+SELECT * FROM agent_runtime
+WHERE owner_id = $1;
+
 -- name: ForceOfflineRuntimesByIDs :many
 -- Unconditionally flips a known set of runtime IDs to offline. Distinct from
 -- MarkRuntimesOfflineByIDs (which keeps a stale-window predicate so the

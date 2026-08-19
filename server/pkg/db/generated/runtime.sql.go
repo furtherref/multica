@@ -666,6 +666,51 @@ func (q *Queries) ListAgentRuntimesByOwner(ctx context.Context, arg ListAgentRun
 	return items, nil
 }
 
+const listAgentRuntimesByOwnerAllWorkspaces = `-- name: ListAgentRuntimesByOwnerAllWorkspaces :many
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name FROM agent_runtime
+WHERE owner_id = $1
+`
+
+// All runtimes a user owns across every workspace. Used by account
+// suspension to cancel in-flight tasks and force runtimes offline.
+func (q *Queries) ListAgentRuntimesByOwnerAllWorkspaces(ctx context.Context, ownerID pgtype.UUID) ([]AgentRuntime, error) {
+	rows, err := q.db.Query(ctx, listAgentRuntimesByOwnerAllWorkspaces, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentRuntime{}
+	for rows.Next() {
+		var i AgentRuntime
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.DaemonID,
+			&i.Name,
+			&i.RuntimeMode,
+			&i.Provider,
+			&i.Status,
+			&i.DeviceInfo,
+			&i.Metadata,
+			&i.LastSeenAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.OwnerID,
+			&i.LegacyDaemonID,
+			&i.Visibility,
+			&i.ProfileID,
+			&i.CustomName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDaemonCustomNames = `-- name: ListDaemonCustomNames :many
 SELECT custom_name FROM agent_runtime
 WHERE workspace_id = $1
