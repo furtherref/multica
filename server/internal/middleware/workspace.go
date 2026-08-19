@@ -155,6 +155,15 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Write([]byte(`{"error":"` + msg + `"}`))
 }
 
+// writeErrorWithCode mirrors writeError but adds a stable machine-readable
+// "code" field alongside the human-readable message, for clients that need
+// to branch on the error type (e.g. ACCOUNT_SUSPENDED).
+func writeErrorWithCode(w http.ResponseWriter, status int, msg, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	w.Write([]byte(`{"error":"` + msg + `","code":"` + code + `"}`))
+}
+
 // RequireWorkspaceMember resolves the workspace from slug (preferred) or UUID
 // (fallback), validates membership, and injects the member and workspace ID
 // into the request context.

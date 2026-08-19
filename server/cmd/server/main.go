@@ -23,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
+	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -311,8 +312,20 @@ func main() {
 			switch relayMode {
 			case "legacy":
 				relayReadRedis = newNamedRedisClient(opts, "realtime-read")
-				relay = realtime.NewRedisRelayWithClients(hub, relayWriteRedis, relayReadRedis)
-				slog.Info("daemon websocket wakeup: Redis fanout disabled in legacy realtime relay mode")
+				legacy := realtime.NewRedisRelayWithClients(hub, relayWriteRedis, relayReadRedis)
+				// Suspension revocations (daemon:runtimes_revoked) must reach
+				// every node in EVERY relay mode. They publish to the FIXED
+				// daemon control scope, which any relay carrying a daemon
+				// deliverer consumes unconditionally (see RedisRelay.Start) —
+				// per-runtime wakeup shard streams still have no legacy
+				// consumer, so wakeup hints remain best-effort local-only in
+				// this mode, exactly as before.
+				legacy.SetDaemonRuntimeDeliverer(daemonHub)
+				relay = legacy
+				// Control-only: wakeup hints stay local (publishing them
+				// would grow one never-consumed stream key per task — the
+				// legacy relay only consumes the fixed control scope).
+				daemonWakeup = daemonws.NewControlOnlyRelayNotifier(daemonHub, legacy)
 			case "dual":
 				shardedReadRedis = newNamedRedisClient(opts, "realtime-read-sharded")
 				legacyReadRedis = newNamedRedisClient(opts, "realtime-read-legacy")
@@ -442,6 +455,34 @@ func main() {
 		FeatureFlags:        flags,
 		HeartbeatScheduler:  heartbeatScheduler,
 	})
+
+	// Cross-node suspension kick: the router wires h.DisconnectUser to the
+	// LOCAL hub, but in a multi-node deployment a suspended user's sockets
+	// can live on other nodes. Publishing the suspended control frame
+	// through the relay reaches every node, and each node's fanoutUser
+	// recognizes it and evicts SERVER-SIDE (see realtime.Hub.fanoutUser) —
+	// enforcement does not depend on the client honoring auth_error. The
+	// publish error is RETURNED so the suspend endpoint refuses to report
+	// success when remote nodes were never told (the kick is re-derivable,
+	// so the admin's idempotent retry re-runs it).
+	h.DisconnectUser = func(userID string) error {
+		hub.DisconnectUser(userID)
+		if relay == nil {
+			return nil
+		}
+		return relay.PublishWithID(
+			realtime.ScopeUser, userID, "",
+			realtime.AccountSuspendedFrame(), ulid.Make().String(),
+		)
+	}
+	// Same story for daemon sockets: the router wires
+	// DisconnectDaemonRuntimes to the LOCAL daemon hub; when the relay
+	// notifier is active, route through it so the revocation also severs
+	// daemon WebSockets held by other nodes (daemonws.Hub interprets the
+	// daemon:runtimes_revoked control frame and evicts locally).
+	if notifier, ok := daemonWakeup.(*daemonws.RelayNotifier); ok {
+		h.DisconnectDaemonRuntimes = notifier.DisconnectRuntimes
+	}
 
 	srv := &http.Server{
 		Addr:    ":" + port,

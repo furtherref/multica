@@ -177,6 +177,26 @@ export interface ApiClientOptions {
   onUnauthorized?: () => void;
 }
 
+// Server sends 403 `{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}`
+// on every authenticated path once an account is suspended (see
+// server/internal/auth/account.go AccountSuspendedCode). Mirrors
+// packages/core/auth/utils.ts ACCOUNT_SUSPENDED_CODE as a local constant
+// (per apps/mobile/CLAUDE.md "mobile owns its own code" — importing a
+// runtime value from @multica/core would violate the type/pure-function-only
+// import limit).
+const ACCOUNT_SUSPENDED_CODE = "ACCOUNT_SUSPENDED";
+
+/** True when a 403 response body is the account-suspension rejection, as
+ *  opposed to an ordinary permission-denied 403. Explicit string equality
+ *  per the spec — a truthy/loose check would also fire on unrelated codes. */
+function isAccountSuspendedBody(body: unknown): boolean {
+  return (
+    !!body &&
+    typeof body === "object" &&
+    (body as { code?: unknown }).code === ACCOUNT_SUSPENDED_CODE
+  );
+}
+
 class ApiClient {
   private token: string | null = null;
   private options: ApiClientOptions = {};
@@ -273,19 +293,25 @@ class ApiClient {
     const duration = Date.now() - start;
 
     if (!res.ok) {
-      // 401 sign-out hook: invoke once, let the platform layer (auth-store)
-      // clear the token + navigate. Subsequent requests in flight will also
-      // 401 and re-enter here, so the callback must be idempotent.
-      if (res.status === 401) {
-        this.options.onUnauthorized?.();
-      }
-
+      // Parse the body FIRST — the 403 branch needs `body.code` to tell an
+      // account-suspension rejection apart from an ordinary permission
+      // denial, and the response body stream can only be read once.
       let body: unknown;
       try {
         body = await res.json();
       } catch {
         body = undefined;
       }
+
+      // 401 sign-out hook: invoke once, let the platform layer (auth-store)
+      // clear the token + navigate. Subsequent requests in flight will also
+      // 401 and re-enter here, so the callback must be idempotent. A 403
+      // carrying ACCOUNT_SUSPENDED reuses the same flow — the account is
+      // gone either way, so mobile signs out and redirects to /login.
+      if (res.status === 401 || (res.status === 403 && isAccountSuspendedBody(body))) {
+        this.options.onUnauthorized?.();
+      }
+
       const message =
         (body && typeof body === "object" && "message" in body
           ? String((body as { message: unknown }).message)
@@ -1230,12 +1256,16 @@ class ApiClient {
     const duration = Date.now() - start;
 
     if (!res.ok) {
-      if (res.status === 401) this.options.onUnauthorized?.();
+      // Parse the body FIRST (single-read constraint) so the 403 branch can
+      // inspect `body.code` — same ordering as the main fetch() above.
       let body: unknown;
       try {
         body = await res.json();
       } catch {
         body = undefined;
+      }
+      if (res.status === 401 || (res.status === 403 && isAccountSuspendedBody(body))) {
+        this.options.onUnauthorized?.();
       }
       const message =
         (body && typeof body === "object" && "message" in body

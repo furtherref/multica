@@ -169,6 +169,15 @@ type HeartbeatHandler func(ctx context.Context, identity ClientIdentity, runtime
 // goroutine, so it must not assume it owns the read pump.
 type RPCHandler func(ctx context.Context, identity ClientIdentity, method string, body json.RawMessage) (status int, respBody json.RawMessage, err error)
 
+// runtimesRevokedSkewGrace tolerates inter-node clock offset when deciding
+// whether a runtimes_revoked frame predates this hub (replay) or is a fresh
+// revocation from a node whose clock runs behind. Generous on purpose — VM
+// clocks can drift seconds — because the cost asymmetry is stark: dropping a
+// FRESH revocation leaves a suspended user's daemon socket alive, while
+// acting on a ≤30s-old replay merely bounces a re-paired daemon once (kicks
+// are idempotent and reconnects are gated by per-request token authority).
+const runtimesRevokedSkewGrace = 30 * time.Second
+
 // maxInFlightRPCPerClient bounds concurrent RPC handlers per connection so a
 // single daemon cannot fan out unbounded goroutines / DB work over one socket.
 const maxInFlightRPCPerClient = 8
@@ -186,9 +195,13 @@ type MessageKindRecorder interface {
 type Hub struct {
 	upgrader websocket.Upgrader
 
-	mu          sync.RWMutex
-	clients     map[*client]bool
-	byRuntime   map[string]map[*client]bool
+	mu        sync.RWMutex
+	clients   map[*client]bool
+	byRuntime map[string]map[*client]bool
+	// startedAt anchors the replay gate for runtimes_revoked control frames:
+	// frames issued before this hub existed cannot target any socket it
+	// holds.
+	startedAt   time.Time
 	byWorkspace map[string]map[*client]bool
 	byUser      map[string]map[*client]bool
 
@@ -216,6 +229,7 @@ func NewHub() *Hub {
 		byRuntime:   make(map[string]map[*client]bool),
 		byWorkspace: make(map[string]map[*client]bool),
 		byUser:      make(map[string]map[*client]bool),
+		startedAt:   time.Now(),
 	}
 }
 
@@ -428,6 +442,33 @@ func (h *Hub) DeliverDaemonRuntime(scopeID string, frame []byte, eventID string)
 		} else if !deduped {
 			M.WakeupDeliveredMiss.Add(1)
 		}
+	case protocol.EventDaemonRuntimesRevoked:
+		// Server-internal control frame: evict locally, never forward to
+		// daemons. Idempotent — a node with no matching sockets is a no-op.
+		var payload protocol.RuntimesRevokedPayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil || len(payload.RuntimeIDs) == 0 {
+			slog.Debug("daemon websocket relay: invalid runtimes_revoked payload", "error", err, "scope_id", scopeID, "event_id", eventID)
+			M.WakeupDeliveredMiss.Add(1)
+			return
+		}
+		// A revocation is a connection-lifecycle event: every socket this
+		// node holds postdates process start, and a reconnect after a
+		// genuine revocation is rejected by per-request token authority.
+		// A frame issued before this hub started is therefore a relay
+		// REPLAY that could only hit re-paired, legitimate connections —
+		// drop it. Missing/unparseable issued_at is treated the same way
+		// (only replays from older builds lack it).
+		// RFC3339Nano keeps sub-second precision so a frame issued in the
+		// same second the hub started still counts as fresh; the skew grace
+		// tolerates small clock offsets between publishing nodes.
+		issuedAt, err := time.Parse(time.RFC3339Nano, payload.IssuedAt)
+		if err != nil || issuedAt.Before(h.startedAt.Add(-runtimesRevokedSkewGrace)) {
+			slog.Debug("daemon websocket relay: dropping replayed runtimes_revoked", "scope_id", scopeID, "event_id", eventID)
+			M.WakeupDeliveredMiss.Add(1)
+			return
+		}
+		h.DisconnectRuntimes(payload.RuntimeIDs)
+		M.WakeupDeliveredHit.Add(1)
 	case protocol.EventDaemonWorkspacesChanged:
 		delivered, deduped := h.notifyUserFrame(scopeID, frame, eventID)
 		if delivered {
@@ -565,6 +606,20 @@ func workspacesChangedFrame() ([]byte, error) {
 	})
 }
 
+func runtimesRevokedFrame(runtimeIDs []string) ([]byte, error) {
+	return runtimesRevokedFrameAt(runtimeIDs, time.Now())
+}
+
+func runtimesRevokedFrameAt(runtimeIDs []string, issuedAt time.Time) ([]byte, error) {
+	return json.Marshal(protocol.Message{
+		Type: protocol.EventDaemonRuntimesRevoked,
+		Payload: mustMarshalRaw(protocol.RuntimesRevokedPayload{
+			RuntimeIDs: runtimeIDs,
+			IssuedAt:   issuedAt.UTC().Format(time.RFC3339Nano),
+		}),
+	})
+}
+
 func pendingWorkFrame(runtimeID, kind string) ([]byte, error) {
 	return json.Marshal(protocol.Message{
 		Type: protocol.EventDaemonPendingWork,
@@ -587,6 +642,28 @@ func (h *Hub) RuntimeConnectionCount(runtimeID string) int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.byRuntime[runtimeID])
+}
+
+// DisconnectRuntimes force-closes every connection watching any of the given
+// runtimes. Called on account suspension: deleting the daemon's mdt_ token
+// only gates NEW connections, while an already-established socket keeps
+// serving heartbeats and RPCs with its cached identity — severing it here is
+// what makes the revocation effective for live daemons. Closing the conn
+// makes readPump exit, which cancels the client context and unregisters it;
+// a legitimate daemon that reconnects is rejected by DaemonAuth (deleted
+// token / suspended owner) before it reaches this hub again.
+func (h *Hub) DisconnectRuntimes(runtimeIDs []string) {
+	h.mu.RLock()
+	targets := make(map[*client]struct{})
+	for _, runtimeID := range runtimeIDs {
+		for c := range h.byRuntime[runtimeID] {
+			targets[c] = struct{}{}
+		}
+	}
+	h.mu.RUnlock()
+	for c := range targets {
+		c.conn.Close()
+	}
 }
 
 func (h *Hub) WorkspaceConnectionCount(workspaceID string) int {

@@ -127,6 +127,17 @@ type PendingWorkPayload struct {
 	Kind      string `json:"kind,omitempty"`
 }
 
+// RuntimesRevokedPayload carries the runtime IDs whose daemon connections
+// must be severed after an account suspension. Server-internal (relay only);
+// never delivered to daemons.
+type RuntimesRevokedPayload struct {
+	RuntimeIDs []string `json:"runtime_ids"`
+	// IssuedAt (RFC3339) anchors the consumer-side replay gate: frames
+	// issued before a node's daemon hub started are relay replays and are
+	// dropped there.
+	IssuedAt string `json:"issued_at"`
+}
+
 // TaskProgressPayload is sent from daemon to server during task execution.
 type TaskProgressPayload struct {
 	TaskID  string `json:"task_id"`

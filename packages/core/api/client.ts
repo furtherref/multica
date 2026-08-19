@@ -224,6 +224,13 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
+import { ACCOUNT_SUSPENDED_CODE } from "../auth/utils";
+import {
+  adminUserListSchema,
+  adminUserSchema,
+  EMPTY_ADMIN_USER,
+  type AdminUser,
+} from "../admin/schema";
 import {
   AgentTaskListSchema,
   AttachmentResponseSchema,
@@ -438,6 +445,15 @@ export interface ApiClientIdentity {
 export interface ApiClientOptions {
   logger?: Logger;
   onUnauthorized?: () => void;
+  /**
+   * Fires whenever the server rejects the caller's session outright:
+   * `"unauthorized"` on a 401 (alongside the existing `onUnauthorized`,
+   * kept for back-compat) and `"account_suspended"` on a 403 whose body
+   * carries `code === ACCOUNT_SUSPENDED_CODE`. A plain 403 (permission
+   * denied on an otherwise-valid session) does NOT fire this — only a
+   * rejection of the session itself does.
+   */
+  onSessionRejected?: (reason: "unauthorized" | "account_suspended") => void;
   /** Identifies the client to the server. Sent as X-Client-* headers. */
   identity?: ApiClientIdentity;
 }
@@ -613,16 +629,16 @@ export class ApiClient {
     // to /login which leaves the workspace route, and the next workspace
     // entry will overwrite the id. No clear needed here.
     this.options.onUnauthorized?.();
+    this.options.onSessionRejected?.("unauthorized");
   }
 
-  private async parseErrorMessage(res: Response, fallback: string): Promise<string> {
-    try {
-      const data = await res.json() as { error?: string };
-      if (typeof data.error === "string" && data.error) return data.error;
-    } catch {
-      // Ignore non-JSON error bodies.
-    }
-    return fallback;
+  // Distinct from handleUnauthorized: a suspended account gets a 403 (the
+  // session is valid, but the server refuses to act on its behalf), not a
+  // 401. Clears the token the same way so the next request doesn't retry
+  // with dead credentials.
+  private handleAccountSuspended() {
+    this.token = null;
+    this.options.onSessionRejected?.("account_suspended");
   }
 
   // Reads the response body once for both human-readable error message and
@@ -667,8 +683,20 @@ export class ApiClient {
     });
 
     if (!res.ok) {
-      if (res.status === 401) this.handleUnauthorized();
+      // Parse the body FIRST — the 403 branch needs `body.code` to tell an
+      // account-suspension rejection apart from an ordinary permission
+      // denial, and the body stream can only be read once.
       const { message, body } = await this.parseErrorBody(res, `API error: ${res.status} ${res.statusText}`);
+      if (res.status === 401) {
+        this.handleUnauthorized();
+      } else if (
+        res.status === 403 &&
+        body &&
+        typeof body === "object" &&
+        (body as { code?: unknown }).code === ACCOUNT_SUSPENDED_CODE
+      ) {
+        this.handleAccountSuspended();
+      }
       const logLevel = res.status === 404 ? "warn" : "error";
       this.logger[logLevel](`← ${res.status} ${path}`, { rid, duration: `${Date.now() - start}ms`, error: message });
       throw new ApiError(message, res.status, res.statusText, body);
@@ -724,6 +752,30 @@ export class ApiClient {
     const raw = await this.fetch<unknown>("/api/me");
     return parseWithFallback(raw, UserSchema, EMPTY_USER, {
       endpoint: "GET /api/me",
+    });
+  }
+
+  // System-admin user management (GET /api/admin/users, PATCH
+  // /api/admin/users/{id}/status). Reachable only when `getMe().is_system_admin
+  // === true`; the server 403s (ordinary permission denial, not
+  // ACCOUNT_SUSPENDED) for everyone else.
+  async getAdminUsers(): Promise<AdminUser[]> {
+    const raw = await this.fetch<unknown>("/api/admin/users");
+    return parseWithFallback(raw, adminUserListSchema, { users: [] }, {
+      endpoint: "GET /api/admin/users",
+    }).users ?? [];
+  }
+
+  async setUserAccountStatus(
+    userId: string,
+    status: "active" | "suspended",
+  ): Promise<AdminUser> {
+    const raw = await this.fetch<unknown>(`/api/admin/users/${userId}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+    return parseWithFallback(raw, adminUserSchema, EMPTY_ADMIN_USER, {
+      endpoint: "PATCH /api/admin/users/:id/status",
     });
   }
 
@@ -2835,8 +2887,17 @@ export class ApiClient {
     });
 
     if (!res.ok) {
-      if (res.status === 401) this.handleUnauthorized();
-      const message = await this.parseErrorMessage(res, `Upload failed: ${res.status}`);
+      const { message, body } = await this.parseErrorBody(res, `Upload failed: ${res.status}`);
+      if (res.status === 401) {
+        this.handleUnauthorized();
+      } else if (
+        res.status === 403 &&
+        body &&
+        typeof body === "object" &&
+        (body as { code?: unknown }).code === ACCOUNT_SUSPENDED_CODE
+      ) {
+        this.handleAccountSuspended();
+      }
       this.logger.error(`← ${res.status} /api/upload-file`, { rid, duration: `${Date.now() - start}ms`, error: message });
       throw new Error(message);
     }

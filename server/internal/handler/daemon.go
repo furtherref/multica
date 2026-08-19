@@ -1194,8 +1194,34 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 // The actual DB write is delegated to h.HeartbeatScheduler so production can
 // coalesce many runtimes' bumps into one bulk UPDATE per tick. See
 // heartbeat_scheduler.go for the two implementations.
+// runtimeOwnerSuspended reports whether rt's owner is CONFIRMED suspended.
+// Used by the daemon paths a stale mdt_ cache entry could otherwise still
+// drive (heartbeat liveness, task claim): the mdt_ token carries no user
+// identity, so per-request enforcement happens against the runtime's owner
+// through the AccountGuard's cached lookup. Transient lookup failures return
+// false — auth already gated the request, and daemon behavior must not flap
+// on a Redis or DB hiccup.
+func (h *Handler) runtimeOwnerSuspended(ctx context.Context, rt db.AgentRuntime) bool {
+	if !rt.OwnerID.Valid || h.AccountGuard == nil {
+		return false
+	}
+	return errors.Is(h.AccountGuard.Check(ctx, uuidToString(rt.OwnerID)), auth.ErrAccountSuspended)
+}
+
 func (h *Handler) recordHeartbeat(ctx context.Context, rt db.AgentRuntime) error {
 	now := time.Now()
+
+	// A heartbeat that passed auth BEFORE its owner was suspended (an
+	// in-flight HTTP request, or a WS handler holding a pre-suspension
+	// runtime row) must not resurrect a runtime the suspension transaction
+	// just force-offlined. This app-level check saves the scheduler work in
+	// the common case; the transactionally airtight closure is the
+	// suspended-owner predicate inside MarkAgentRuntimeOnline itself.
+	if h.runtimeOwnerSuspended(ctx, rt) {
+		slog.Warn("heartbeat: dropping liveness write for suspended owner",
+			"runtime_id", uuidToString(rt.ID), "owner_id", uuidToString(rt.OwnerID))
+		return nil
+	}
 
 	// Decide whether the DB row needs a write *before* touching Redis, so a
 	// Touch failure can simply force needDBWrite=true without re-evaluating
@@ -1659,6 +1685,13 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		// with a NULL daemon_id (e.g. cloud runtimes) are not machine-pinned, so
 		// they stay claimable — same tolerance as the WS handler.
 		if rt.DaemonID.Valid && rt.DaemonID.String != req.DaemonID {
+			continue
+		}
+		// A stale mdt_ cache entry can authenticate for up to AuthCacheTTL
+		// after suspension deleted the token; the claim path re-checks the
+		// runtime owner per-request so a suspended user's runtimes never
+		// receive new work regardless of how the caller authenticated.
+		if h.runtimeOwnerSuspended(r.Context(), rt) {
 			continue
 		}
 		runtimeByID[uuidToString(rt.ID)] = rt
@@ -3075,6 +3108,13 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	// runtime_id (defense-in-depth against upstream routing bugs).
 	runtime, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID)
 	if !ok {
+		return
+	}
+	// Same per-request owner re-check as the batch claim: a stale mdt_ cache
+	// entry must not hand a suspended user's runtime new work.
+	if h.runtimeOwnerSuspended(r.Context(), runtime) {
+		outcome = "owner_suspended"
+		payloadBytes, _ = writeMeasuredJSON(w, http.StatusOK, map[string]any{"task": nil})
 		return
 	}
 	runtimeWorkspaceID := uuidToString(runtime.WorkspaceID)

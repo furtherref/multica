@@ -2,10 +2,12 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -62,6 +64,12 @@ func (p *PassthroughHeartbeatScheduler) Schedule(ctx context.Context, rt db.Agen
 		// Fall through to MarkAgentRuntimeOnline to flip the row back.
 	}
 	_, err := p.queries.MarkAgentRuntimeOnline(ctx, rt.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The query's suspended-owner predicate refused the online flip (the
+		// owner was suspended between this heartbeat's auth and this write).
+		// A benign skip, not a failure — the runtime stays force-offlined.
+		return nil
+	}
 	return err
 }
 

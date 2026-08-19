@@ -1,6 +1,7 @@
 package realtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -283,6 +284,12 @@ type Hub struct {
 	mu         sync.RWMutex
 
 	authorizer ScopeAuthorizer
+
+	// accountChecker verifies a user's CURRENT status before a suspension
+	// control frame is acted on (guards against relay REPLAYS of old suspend
+	// events kicking a since-restored account). Guarded by mu; nil means
+	// "trust the frame" (minimal hubs and tests).
+	accountChecker AccountChecker
 
 	// Subscription lifecycle hooks. Both can be nil.
 	onFirstSubscriber SubscriptionCallback
@@ -585,6 +592,27 @@ func (h *Hub) Broadcast(message []byte) {
 // fanoutUser delivers a message to all clients in the user scope, optionally
 // excluding clients in excludeWorkspace and deduping against eventID.
 func (h *Hub) fanoutUser(userID string, message []byte, excludeWorkspace, eventID string) {
+	// Account-suspension control frame: every node's user-scoped delivery —
+	// local SendToUser and the Redis relay's cross-node consumer — funnels
+	// through here, so intercepting the frame is what makes a multi-node
+	// suspension enforceable server-side. DisconnectUser still best-effort
+	// delivers the frame first (cooperating clients terminate their own
+	// session), then severs the sockets so a non-cooperating client cannot
+	// keep its read-only event stream.
+	if matched, fresh := isAccountSuspendedControlFrame(message); matched {
+		// A control frame can be a relay REPLAY from before a restore (the
+		// sharded relay replays recent stream entries on start), so verify
+		// the user's CURRENT status before acting: an active user's sockets
+		// must be left alone AND must not receive the frame — a cooperating
+		// client would falsely log itself out. When the status check itself
+		// fails transiently, freshness decides: a FRESH frame is an
+		// authoritative kick whose origin already reported success, so it
+		// fails CLOSED (evict); a stale frame is a replay and is dropped.
+		if h.confirmSuspendedForKick(userID, fresh) {
+			h.DisconnectUser(userID)
+		}
+		return
+	}
 	key := sk(ScopeUser, userID)
 	h.mu.RLock()
 	clients := h.rooms[key]
@@ -661,6 +689,29 @@ func (h *Hub) evictSlow(slow []*Client) {
 	}
 }
 
+// DisconnectUser force-closes every connection belonging to userID. Called
+// when an account is suspended so an open tab loses realtime access at the
+// same moment its HTTP credentials die. Best-effort: the auth_error frame
+// is dropped if the send buffer is full; eviction still proceeds.
+func (h *Hub) DisconnectUser(userID string) {
+	payload := AccountSuspendedFrame()
+	h.mu.RLock()
+	var targets []*Client
+	for c := range h.clients {
+		if c.userID == userID {
+			select {
+			case c.send <- payload:
+			default:
+			}
+			targets = append(targets, c)
+		}
+	}
+	h.mu.RUnlock()
+	if len(targets) > 0 {
+		h.evictSlow(targets)
+	}
+}
+
 // Snapshot returns a JSON-friendly summary of the hub state.
 func (h *Hub) Snapshot() map[string]any {
 	h.mu.RLock()
@@ -675,8 +726,138 @@ func (h *Hub) Snapshot() map[string]any {
 	}
 }
 
+// AccountChecker reports whether a user's account is in good standing.
+// Satisfied by *auth.AccountGuard; a nil AccountChecker is treated as
+// "allow" so minimal test hubs keep working without wiring one up.
+type AccountChecker interface {
+	Check(ctx context.Context, userID string) error
+}
+
+const accountSuspendedErrMsg = `{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}`
+
+// accountStatusUnavailableErrMsg is used when the account check itself fails
+// transiently (e.g. a DB error), as opposed to a confirmed suspension. It
+// deliberately carries no "code" field: the ws-client only force-logs-out a
+// session on ACCOUNT_SUSPENDED, so a code-less message here is treated as an
+// ordinary auth failure rather than a false suspension signal.
+const accountStatusUnavailableErrMsg = `{"error":"account status unavailable"}`
+
+// wsAuthTimeoutErrMsg is returned by firstMessageAuth when the first frame
+// never arrives or cannot be read — a condition that can be transient (slow
+// network), not a credential rejection.
+const wsAuthTimeoutErrMsg = `{"error":"auth timeout or read error"}`
+
+// wsAuthErrorFrame wraps a rejection payload in the typed auth_error envelope.
+// The ws-client's frame guard drops anything without a string `type`, so a
+// raw {"error":...} rejection is invisible to it and the client reconnects
+// forever; the envelope is what lets it stop the loop (and, for
+// ACCOUNT_SUSPENDED, terminate the session).
+func wsAuthErrorFrame(errMsg string) []byte {
+	return []byte(`{"type":"auth_error","payload":` + errMsg + `}`)
+}
+
+// wsAuthClosePayload picks the frame to send before closing a rejected
+// connection. Genuine credential rejections get the typed envelope; transient
+// conditions stay raw on purpose — a typed auth_error permanently stops the
+// client's reconnect loop, which is only correct when the credentials
+// themselves were rejected.
+func wsAuthClosePayload(errMsg string) []byte {
+	if errMsg == accountStatusUnavailableErrMsg || errMsg == wsAuthTimeoutErrMsg {
+		return []byte(errMsg)
+	}
+	return wsAuthErrorFrame(errMsg)
+}
+
+// AccountSuspendedFrame is the typed auth_error frame pushed to a suspended
+// user's live connections. Exported so the suspend path can also publish it
+// through the cross-node relay (connections on other nodes are not reachable
+// by this node's DisconnectUser). The embedded issued_at lets consuming
+// nodes distinguish a FRESH authoritative kick from a relay REPLAY when the
+// local status re-check fails transiently.
+func AccountSuspendedFrame() []byte {
+	return accountSuspendedFrameIssuedAt(time.Now())
+}
+
+func accountSuspendedFrameIssuedAt(ts time.Time) []byte {
+	return []byte(`{"type":"auth_error","payload":{"error":"account suspended","code":"ACCOUNT_SUSPENDED","issued_at":"` +
+		ts.UTC().Format(time.RFC3339Nano) + `"}}`)
+}
+
+// suspendedFrameFreshness is how recently a suspension control frame must
+// have been issued to count as a FRESH authoritative kick. It only needs to
+// cover publish→deliver latency plus inter-node clock skew (both well under
+// seconds), and it MUST stay far below the relay's startup replay horizon
+// (ShardedStreamRelayConfig.ReplayGrace, 5 minutes by default) — a window as
+// wide as the replay horizon would make every replayed suspend event look
+// authoritative and fail closed on a transient status-check outage.
+const suspendedFrameFreshness = 30 * time.Second
+
+// SetAccountChecker wires the status verifier used before a suspension
+// control frame evicts anyone. Safe to call while the hub is serving.
+func (h *Hub) SetAccountChecker(ac AccountChecker) {
+	h.mu.Lock()
+	h.accountChecker = ac
+	h.mu.Unlock()
+}
+
+// confirmSuspendedForKick decides whether a suspension control frame should
+// evict. No checker wired → trust the frame (minimal hubs/tests, and the
+// brief window before the router wires the guard). Active → never (a replay
+// must not kick a restored account). Confirmed suspended → always. A
+// TRANSIENT check failure falls back to the frame's freshness: fresh
+// authoritative kicks fail closed, stale replays fail open.
+func (h *Hub) confirmSuspendedForKick(userID string, fresh bool) bool {
+	h.mu.RLock()
+	ac := h.accountChecker
+	h.mu.RUnlock()
+	if ac == nil {
+		return true
+	}
+	err := ac.Check(context.Background(), userID)
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, auth.ErrAccountSuspended):
+		return true
+	default:
+		return fresh
+	}
+}
+
+// isAccountSuspendedControlFrame recognizes the suspension control frame
+// STRUCTURALLY: the Redis relay's injectEventID round-trips frames through a
+// map — adding event_id and reordering keys — so a bytes.Equal comparison
+// against AccountSuspendedFrame() never matches on the consuming node. The
+// size guard plus substring check keeps the JSON parse off the hot fanout
+// path for ordinary events; only server code can author a top-level
+// type:"auth_error" frame, so user-generated payload content cannot spoof
+// this (it would fail the typed parse below).
+func isAccountSuspendedControlFrame(message []byte) (matched, fresh bool) {
+	if len(message) > 512 || !bytes.Contains(message, []byte(`"auth_error"`)) {
+		return false, false
+	}
+	var probe struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Code     string `json:"code"`
+			IssuedAt string `json:"issued_at"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(message, &probe); err != nil {
+		return false, false
+	}
+	if probe.Type != "auth_error" || probe.Payload.Code != auth.AccountSuspendedCode {
+		return false, false
+	}
+	// Missing/unparseable issued_at (frames from older builds) counts as
+	// stale: on a transient status-check failure such a frame is dropped —
+	// the conservative side, since only replays lack a fresh timestamp.
+	ts, err := time.Parse(time.RFC3339Nano, probe.Payload.IssuedAt)
+	return true, err == nil && time.Since(ts) < suspendedFrameFreshness
+}
+
 // authenticateToken validates a JWT or PAT string and returns the user ID.
-func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (string, string) {
+func authenticateToken(tokenStr string, pr PATResolver, ac AccountChecker, ctx context.Context) (string, string) {
 	if strings.HasPrefix(tokenStr, "mul_") {
 		if pr == nil {
 			return "", `{"error":"invalid token"}`
@@ -685,8 +866,13 @@ func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (st
 		if !ok {
 			return "", `{"error":"invalid token"}`
 		}
-		if auth.IsTemporarilyDisabledUserID(uid) {
-			return "", `{"error":"account disabled"}`
+		if ac != nil {
+			if err := ac.Check(ctx, uid); err != nil {
+				if errors.Is(err, auth.ErrAccountSuspended) {
+					return "", accountSuspendedErrMsg
+				}
+				return "", accountStatusUnavailableErrMsg
+			}
 		}
 		return uid, ""
 	}
@@ -710,9 +896,13 @@ func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (st
 	if !ok || strings.TrimSpace(uid) == "" {
 		return "", `{"error":"invalid claims"}`
 	}
-	email, _ := claims["email"].(string)
-	if auth.IsTemporarilyDisabledUser(uid, email) {
-		return "", `{"error":"account disabled"}`
+	if ac != nil {
+		if err := ac.Check(ctx, uid); err != nil {
+			if errors.Is(err, auth.ErrAccountSuspended) {
+				return "", accountSuspendedErrMsg
+			}
+			return "", accountStatusUnavailableErrMsg
+		}
 	}
 	return uid, ""
 }
@@ -772,7 +962,7 @@ func writeWSAuthErrorAndClose(conn *websocket.Conn, payload []byte, attrs ...any
 
 // HandleWebSocket upgrades an HTTP connection to WebSocket with cookie or
 // first-message auth.
-func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug SlugResolver, w http.ResponseWriter, r *http.Request) {
+func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, ac AccountChecker, resolveSlug SlugResolver, w http.ResponseWriter, r *http.Request) {
 	workspaceID := r.URL.Query().Get("workspace_id")
 	if workspaceID == "" {
 		if slug := r.URL.Query().Get("workspace_slug"); slug != "" && resolveSlug != nil {
@@ -791,10 +981,10 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 
 	var userID string
 	if cookie, err := r.Cookie(auth.AuthCookieName); err == nil && cookie.Value != "" {
-		uid, errMsg := authenticateToken(cookie.Value, pr, r.Context())
+		uid, errMsg := authenticateToken(cookie.Value, pr, ac, r.Context())
 		if errMsg != "" {
 			status := http.StatusUnauthorized
-			if errMsg == `{"error":"account disabled"}` {
+			if errMsg == accountSuspendedErrMsg {
 				status = http.StatusForbidden
 			}
 			http.Error(w, errMsg, status)
@@ -824,12 +1014,12 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 			return
 		}
 		if errMsg != "" {
-			writeWSAuthErrorAndClose(conn, []byte(errMsg), "workspace_id", workspaceID)
+			writeWSAuthErrorAndClose(conn, wsAuthClosePayload(errMsg), "workspace_id", workspaceID)
 			return
 		}
-		uid, errMsg := authenticateToken(tokenStr, pr, r.Context())
+		uid, errMsg := authenticateToken(tokenStr, pr, ac, r.Context())
 		if errMsg != "" {
-			writeWSAuthErrorAndClose(conn, []byte(errMsg), "workspace_id", workspaceID)
+			writeWSAuthErrorAndClose(conn, wsAuthClosePayload(errMsg), "workspace_id", workspaceID)
 			return
 		}
 		if !mc.IsMember(r.Context(), uid, workspaceID) {

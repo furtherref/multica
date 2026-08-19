@@ -14,10 +14,23 @@ import (
 type RelayNotifier struct {
 	local *Hub
 	relay realtime.RelayPublisher
+	// wakeupsViaRelay gates the per-task/runtime wakeup publishes. The
+	// legacy relay only consumes the fixed daemon control scope, so wakeup
+	// publishes there would accumulate one unbounded, never-consumed stream
+	// key per task — legacy mode keeps wakeups local-only (its original
+	// behavior) and rides the relay for control frames alone.
+	wakeupsViaRelay bool
 }
 
 func NewRelayNotifier(local *Hub, relay realtime.RelayPublisher) *RelayNotifier {
-	return &RelayNotifier{local: local, relay: relay}
+	return &RelayNotifier{local: local, relay: relay, wakeupsViaRelay: true}
+}
+
+// NewControlOnlyRelayNotifier is the legacy-relay-mode variant: wakeup hints
+// stay node-local, only daemon control frames (runtime revocations) publish
+// through the relay.
+func NewControlOnlyRelayNotifier(local *Hub, relay realtime.RelayPublisher) *RelayNotifier {
+	return &RelayNotifier{local: local, relay: relay, wakeupsViaRelay: false}
 }
 
 func (n *RelayNotifier) NotifyTaskAvailable(runtimeID, taskID string) {
@@ -28,7 +41,7 @@ func (n *RelayNotifier) NotifyTaskAvailable(runtimeID, taskID string) {
 	if n.local != nil {
 		n.local.notifyTaskAvailable(runtimeID, taskID, eventID)
 	}
-	if n.relay == nil {
+	if n.relay == nil || !n.wakeupsViaRelay {
 		return
 	}
 	frame, err := taskAvailableFrame(runtimeID, taskID)
@@ -56,7 +69,7 @@ func (n *RelayNotifier) NotifyRuntimeProfilesChanged(workspaceID, profileID stri
 	if n.local != nil {
 		n.local.notifyRuntimeProfilesChanged(workspaceID, profileID, eventID)
 	}
-	if n.relay == nil {
+	if n.relay == nil || !n.wakeupsViaRelay {
 		return
 	}
 	frame, err := runtimeProfilesChangedFrame(workspaceID, profileID)
@@ -80,7 +93,7 @@ func (n *RelayNotifier) NotifyWorkspacesChanged(userID string) {
 	if n.local != nil {
 		n.local.notifyWorkspacesChanged(userID, eventID)
 	}
-	if n.relay == nil {
+	if n.relay == nil || !n.wakeupsViaRelay {
 		return
 	}
 	frame, err := workspacesChangedFrame()
@@ -113,7 +126,7 @@ func (n *RelayNotifier) NotifyPendingWork(runtimeID, kind string) {
 	if n.local != nil {
 		n.local.notifyPendingWork(runtimeID, kind, eventID)
 	}
-	if n.relay == nil {
+	if n.relay == nil || !n.wakeupsViaRelay {
 		return
 	}
 	frame, err := pendingWorkFrame(runtimeID, kind)
@@ -127,4 +140,41 @@ func (n *RelayNotifier) NotifyPendingWork(runtimeID, kind string) {
 		return
 	}
 	M.WakeupPublishedTotal.Add(1)
+}
+
+// DisconnectRuntimes severs the daemon WebSockets for runtimeIDs on this node
+// and, when Redis is configured, publishes the revocation through the relay so
+// every other API node severs its own sockets too — an account suspension must
+// not depend on which node happens to hold the daemon's connection. The
+// signature mirrors Hub.DisconnectRuntimes so either can back
+// Handler.DisconnectDaemonRuntimes.
+func (n *RelayNotifier) DisconnectRuntimes(runtimeIDs []string) error {
+	if len(runtimeIDs) == 0 {
+		return nil
+	}
+	if n.local != nil {
+		n.local.DisconnectRuntimes(runtimeIDs)
+	}
+	if n.relay == nil {
+		return nil
+	}
+	eventID := ulid.Make().String()
+	frame, err := runtimesRevokedFrame(runtimeIDs)
+	if err != nil {
+		M.WakeupPublishErrors.Add(1)
+		return err
+	}
+	// Unlike the wakeup hints above, a lost revocation is NOT harmless — a
+	// daemon socket on another node would keep serving a suspended user — so
+	// the publish error is returned for the suspend endpoint to surface, and
+	// the frame rides the FIXED control scope that every relay with a daemon
+	// deliverer consumes unconditionally (per-runtime shard streams have no
+	// consumer in legacy relay mode).
+	if err := n.relay.PublishWithID(realtime.ScopeDaemonRuntime, realtime.DaemonControlScopeID, "", frame, eventID); err != nil {
+		M.WakeupPublishErrors.Add(1)
+		slog.Warn("daemon websocket revoke publish failed", "error", err, "runtime_ids", runtimeIDs)
+		return err
+	}
+	M.WakeupPublishedTotal.Add(1)
+	return nil
 }

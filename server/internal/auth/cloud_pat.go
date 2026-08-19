@@ -189,7 +189,7 @@ type CloudPATVerifierConfig struct {
 
 	// Redis backs the positive-result cache. Nil disables caching —
 	// every Verify call hits Fleet. Same nil-safe contract as
-	// PATCache / DaemonTokenCache.
+	// PATCache.
 	Redis *redis.Client
 }
 

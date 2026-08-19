@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/multica-ai/multica/server/internal/auth"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -61,7 +62,19 @@ type mockRow struct {
 	err error
 }
 
+// Scan simulates a found-user row. It only needs to satisfy
+// findOrCreateUser's fail-closed account_status check (auth.UserMayAuthenticate
+// in server/internal/handler/auth.go) — GetUserByEmail's last scan target is
+// &i.AccountStatus (server/pkg/db/generated/user.sql.go), so on a
+// no-error Scan we set it to "active"; a zero-value "" would otherwise be
+// treated as suspended by the fail-closed rule and every findOrCreateUser
+// call in this file would incorrectly reject an "existing" mock user.
 func (m *mockRow) Scan(dest ...interface{}) error {
+	if m.err == nil && len(dest) > 0 {
+		if status, ok := dest[len(dest)-1].(*string); ok {
+			*status = auth.AccountStatusActive
+		}
+	}
 	return m.err
 }
 

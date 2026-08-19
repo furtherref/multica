@@ -666,6 +666,51 @@ func (q *Queries) ListAgentRuntimesByOwner(ctx context.Context, arg ListAgentRun
 	return items, nil
 }
 
+const listAgentRuntimesByOwnerAllWorkspaces = `-- name: ListAgentRuntimesByOwnerAllWorkspaces :many
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name FROM agent_runtime
+WHERE owner_id = $1
+`
+
+// All runtimes a user owns across every workspace. Used by account
+// suspension to cancel in-flight tasks and force runtimes offline.
+func (q *Queries) ListAgentRuntimesByOwnerAllWorkspaces(ctx context.Context, ownerID pgtype.UUID) ([]AgentRuntime, error) {
+	rows, err := q.db.Query(ctx, listAgentRuntimesByOwnerAllWorkspaces, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentRuntime{}
+	for rows.Next() {
+		var i AgentRuntime
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.DaemonID,
+			&i.Name,
+			&i.RuntimeMode,
+			&i.Provider,
+			&i.Status,
+			&i.DeviceInfo,
+			&i.Metadata,
+			&i.LastSeenAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.OwnerID,
+			&i.LegacyDaemonID,
+			&i.Visibility,
+			&i.ProfileID,
+			&i.CustomName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDaemonCustomNames = `-- name: ListDaemonCustomNames :many
 SELECT custom_name FROM agent_runtime
 WHERE workspace_id = $1
@@ -864,13 +909,25 @@ func (q *Queries) LockWorkspaceForRuntimeMerge(ctx context.Context, runtimeIds [
 const markAgentRuntimeOnline = `-- name: MarkAgentRuntimeOnline :one
 UPDATE agent_runtime
 SET status = 'online', last_seen_at = now(), updated_at = now()
-WHERE id = $1
+WHERE agent_runtime.id = $1
+  AND (agent_runtime.owner_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM "user" u
+      WHERE u.id = agent_runtime.owner_id AND u.account_status = 'suspended'
+  ))
 RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name
 `
 
 // Used on the offline→online transition (and on first heartbeat after
 // registration). Writes status, last_seen_at, and updated_at because the
 // status flip is a real state change and we want updated_at to reflect it.
+//
+// The suspended-owner predicate closes the suspension TOCTOU at the write
+// itself: an in-flight heartbeat whose app-level owner check read 'active'
+// BEFORE the suspension transaction committed would otherwise resurrect the
+// force-offlined row here. Inside one database, this predicate and the
+// suspension's status flip serialize — no application-level check can offer
+// that. Zero rows (pgx.ErrNoRows) means "owner suspended, flip refused";
+// callers treat it as a benign skip.
 func (q *Queries) MarkAgentRuntimeOnline(ctx context.Context, id pgtype.UUID) (AgentRuntime, error) {
 	row := q.db.QueryRow(ctx, markAgentRuntimeOnline, id)
 	var i AgentRuntime
@@ -1428,7 +1485,21 @@ ON CONFLICT (workspace_id, daemon_id, provider) WHERE profile_id IS NULL
 DO UPDATE SET
     name = EXCLUDED.name,
     runtime_mode = EXCLUDED.runtime_mode,
-    status = EXCLUDED.status,
+    -- A registration must not resurrect a runtime whose (preserved) owner is
+    -- suspended: a stale mdt_ cache entry can still authenticate for up to
+    -- AuthCacheTTL after suspension deleted the daemon token, and this write
+    -- would otherwise flip the force-offlined row back online. Same
+    -- write-side closure as MarkAgentRuntimeOnline.
+    status = CASE
+        WHEN COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id) IS NOT NULL
+             AND EXISTS (
+                 SELECT 1 FROM "user" u
+                 WHERE u.id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id)
+                   AND u.account_status = 'suspended'
+             )
+        THEN 'offline'
+        ELSE EXCLUDED.status
+    END,
     device_info = EXCLUDED.device_info,
     metadata = EXCLUDED.metadata,
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),
@@ -1532,7 +1603,17 @@ DO UPDATE SET
     name = EXCLUDED.name,
     runtime_mode = EXCLUDED.runtime_mode,
     provider = EXCLUDED.provider,
-    status = EXCLUDED.status,
+    -- Same suspended-owner write guard as UpsertAgentRuntime above.
+    status = CASE
+        WHEN COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id) IS NOT NULL
+             AND EXISTS (
+                 SELECT 1 FROM "user" u
+                 WHERE u.id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id)
+                   AND u.account_status = 'suspended'
+             )
+        THEN 'offline'
+        ELSE EXCLUDED.status
+    END,
     device_info = EXCLUDED.device_info,
     metadata = EXCLUDED.metadata,
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),

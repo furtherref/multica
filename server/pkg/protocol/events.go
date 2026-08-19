@@ -153,6 +153,12 @@ const (
 	// itself: the daemon still pulls the request through the normal heartbeat
 	// claim, so a lost or duplicated hint is harmless.
 	EventDaemonPendingWork = "daemon:pending_work"
+	// EventDaemonRuntimesRevoked is a server-internal control frame on the
+	// ScopeDaemonRuntime relay: account suspension revoked the listed
+	// runtimes' daemon tokens, and every API node must sever its live daemon
+	// WebSockets for them (a deleted token only gates NEW connections). The
+	// consuming hub evicts locally and never forwards this frame to daemons.
+	EventDaemonRuntimesRevoked = "daemon:runtimes_revoked"
 	// Generic daemon→server request/response over the WebSocket control
 	// connection (MUL-4257). The daemon sends EventDaemonRPCRequest with a
 	// correlation id + method + body; the server replies EventDaemonRPCResponse

@@ -48,6 +48,7 @@
     "invitation_workspace_fallback": "工作区",
     "invitation_join": "加入",
     "invitation_decline": "拒绝",
+    "system_admin": "系统管理",
     "log_out": "退出登录",
     "new_issue": "新建任务",
     "new_issue_shortcut": "C",

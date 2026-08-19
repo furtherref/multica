@@ -64,6 +64,11 @@ type Config struct {
 	AllowSignup         bool
 	AllowedEmails       []string
 	AllowedEmailDomains []string
+	// AdminEmails is the system-admin allowlist (comma-separated ADMIN_EMAILS
+	// env var, trimmed and lowercased). Empty means no system admins — the
+	// /api/admin/* surface is inert by default. Membership is checked
+	// case-insensitively in isSystemAdmin.
+	AdminEmails []string
 	// DisableWorkspaceCreation, when true, makes POST /api/workspaces return
 	// 403 for every caller. There is no role/owner exception because the repo
 	// has no platform-admin concept; operators bootstrap the workspace with
@@ -210,7 +215,6 @@ type Handler struct {
 	// nil Metrics as "PostHog only".
 	Metrics                      *obsmetrics.BusinessMetrics
 	PATCache                     *auth.PATCache
-	DaemonTokenCache             *auth.DaemonTokenCache
 	MembershipCache              *auth.MembershipCache
 	WebhookRateLimiter           WebhookRateLimiter
 	WebhookIPRateLimiter         WebhookRateLimiter
@@ -350,7 +354,27 @@ type Handler struct {
 	// so the feature degrades cleanly on deployments without a private key.
 	// Wired in cmd/server/router.go after New.
 	PRRefresh *ghsnapshot.Manager
-	cfg       Config
+	// AccountGuard backs the admin account-status endpoint's cache
+	// invalidation: after SetUserAccountStatus flips a row, the guard's
+	// cached verdict for that user must be cleared so revocation beats the
+	// cache TTL instead of taking effect "within 10 minutes". Shared with
+	// the Auth / DaemonAuth middlewares. Wired in cmd/server/router.go
+	// after New, once accountGuard is constructed. Nil-safe.
+	AccountGuard *auth.AccountGuard
+	// DisconnectUser force-closes every realtime connection belonging to a
+	// user. Injected as a func (rather than a *realtime.Hub field) so the
+	// account-status handler doesn't need a direct Hub dependency. Wired in
+	// cmd/server/router.go to hub.DisconnectUser; cmd/server/main.go wraps
+	// it with a relay publish so suspension also reaches connections held
+	// by OTHER nodes. Nil-safe.
+	DisconnectUser func(userID string) error
+	// DisconnectDaemonRuntimes force-closes live daemon WebSockets watching
+	// the given runtimes. Suspension deletes the daemon's mdt_ token, but a
+	// token only gates NEW connections — an established socket keeps its
+	// cached identity, so it must be severed explicitly. Wired in
+	// cmd/server/router.go to daemonHub.DisconnectRuntimes. Nil-safe.
+	DisconnectDaemonRuntimes func(runtimeIDs []string) error
+	cfg                      Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {

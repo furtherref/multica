@@ -4,6 +4,7 @@ import {
   createContext,
   use,
   useEffect,
+  useRef,
   useState,
   useCallback,
   useSyncExternalStore,
@@ -44,6 +45,11 @@ export interface WSProviderProps {
   identity?: ClientIdentity;
   /** Optional callback for showing toast messages (platform-specific, e.g. sonner) */
   onToast?: (message: string, type?: "info" | "error") => void;
+  /** Fired when the server rejects the WS connection's auth because the
+   *  account is suspended (ws-client's `auth_error` frame with
+   *  `code === ACCOUNT_SUSPENDED`). Threaded through to the same session-kill
+   *  as the API client's `onSessionRejected("account_suspended")`. */
+  onAuthRejected?: () => void;
 }
 
 export function WSProvider({
@@ -54,6 +60,7 @@ export function WSProvider({
   cookieAuth,
   identity,
   onToast,
+  onAuthRejected,
 }: WSProviderProps) {
   const user = authStore((s) => s.user);
   // Reactive read of the current workspace slug (URL-driven singleton in
@@ -76,6 +83,14 @@ export function WSProvider({
   const identityVersion = identity?.version;
   const identityOS = identity?.os;
 
+  // A ref, not a dependency: the caller (CoreProvider) passes a fresh
+  // closure each render. Tracking it in the effect's deps would tear down
+  // and reconnect the live WS connection on every unrelated re-render;
+  // reading it via ref keeps the connection stable while still calling the
+  // latest callback if auth is ever rejected.
+  const onAuthRejectedRef = useRef(onAuthRejected);
+  onAuthRejectedRef.current = onAuthRejected;
+
   useEffect(() => {
     if (!user || !wsSlug) return;
 
@@ -95,6 +110,7 @@ export function WSProvider({
               os: identityOS,
             }
           : undefined,
+      onAuthRejected: () => onAuthRejectedRef.current?.(),
     });
     ws.setAuth(token, wsSlug);
     setWsClient(ws);

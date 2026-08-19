@@ -57,7 +57,29 @@ vi.mock("@multica/core/auth", () => ({
       }),
     },
   ),
+  SESSION_ENDED_REASON_KEY: "multica_session_ended_reason",
+  ACCOUNT_SUSPENDED_CODE: "ACCOUNT_SUSPENDED",
 }));
+
+const MockApiError = vi.hoisted(() => {
+  return class MockApiError extends Error {
+    status: number;
+    statusText: string;
+    body?: unknown;
+    constructor(
+      message: string,
+      status: number,
+      statusText: string,
+      body?: unknown,
+    ) {
+      super(message);
+      this.name = "ApiError";
+      this.status = status;
+      this.statusText = statusText;
+      this.body = body;
+    }
+  };
+});
 
 vi.mock("@multica/core/api", () => ({
   api: {
@@ -66,6 +88,21 @@ vi.mock("@multica/core/api", () => ({
     setToken: mockApiSetToken,
     getMe: mockApiGetMe,
     issueCliToken: mockApiIssueCliToken,
+  },
+  ApiError: MockApiError,
+  // Mirrors the real @multica/core/api errorCode() behavior against our
+  // MockApiError, since login-page.tsx now delegates to the shared helper
+  // instead of re-deriving the check itself.
+  errorCode: (err: unknown) => {
+    if (
+      err instanceof MockApiError &&
+      err.body &&
+      typeof err.body === "object"
+    ) {
+      const code = (err.body as { code?: unknown }).code;
+      if (typeof code === "string" && code.length > 0) return code;
+    }
+    return undefined;
   },
 }));
 
@@ -675,6 +712,60 @@ describe("LoginPage", () => {
   // -------------------------------------------------------------------------
   // Back button on code step
   // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // Account suspended notice
+  // -------------------------------------------------------------------------
+
+  it("shows suspended notice on mount when reason key is set, and clears the key", () => {
+    localStorage.setItem("multica_session_ended_reason", "account_suspended");
+
+    renderWithI18n(<LoginPage onSuccess={onSuccess} />);
+
+    expect(
+      screen.getByText(/this account has been suspended/i),
+    ).toBeInTheDocument();
+    expect(
+      localStorage.getItem("multica_session_ended_reason"),
+    ).toBeNull();
+  });
+
+  it("does not show suspended notice when reason key is absent", () => {
+    renderWithI18n(<LoginPage onSuccess={onSuccess} />);
+
+    expect(
+      screen.queryByText(/this account has been suspended/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show suspended notice for an unrelated reason value", () => {
+    localStorage.setItem("multica_session_ended_reason", "some_other_reason");
+
+    renderWithI18n(<LoginPage onSuccess={onSuccess} />);
+
+    expect(
+      screen.queryByText(/this account has been suspended/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows inline suspended message when sendCode rejects with ACCOUNT_SUSPENDED", async () => {
+    mockSendCode.mockRejectedValueOnce(
+      new MockApiError("Forbidden", 403, "Forbidden", {
+        code: "ACCOUNT_SUSPENDED",
+      }),
+    );
+    renderWithI18n(<LoginPage onSuccess={onSuccess} />);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(/email/i), "test@example.com");
+    await user.click(screen.getByRole("button", { name: /continue/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/this account has been suspended/i),
+      ).toBeInTheDocument();
+    });
+  });
 
   it("back button returns to email step", async () => {
     mockSendCode.mockResolvedValueOnce(undefined);

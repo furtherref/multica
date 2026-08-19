@@ -1,5 +1,6 @@
 import type { WSMessage, WSEventType } from "../types/events";
 import { type Logger, noopLogger } from "../logger";
+import { ACCOUNT_SUSPENDED_CODE } from "../auth/utils";
 
 type EventHandler = (payload: unknown, actorId?: string, actorType?: string) => void;
 
@@ -50,6 +51,11 @@ export class WSClient {
   private onReconnectCallbacks = new Set<() => void>();
   private anyHandlers = new Set<(msg: WSMessage) => void>();
   private logger: Logger;
+  private options: { onAuthRejected?: () => void };
+  // Set once the server rejects auth (e.g. suspended account). The server
+  // will keep refusing this credential, so retrying is pointless and just
+  // spams the connection; only an explicit connect() (fresh login) clears it.
+  private authRejected = false;
 
   constructor(
     url: string,
@@ -57,12 +63,14 @@ export class WSClient {
       logger?: Logger;
       cookieAuth?: boolean;
       identity?: WSClientIdentity;
+      onAuthRejected?: () => void;
     },
   ) {
     this.baseUrl = url;
     this.logger = options?.logger ?? noopLogger;
     this.cookieAuth = options?.cookieAuth ?? false;
     this.identity = options?.identity;
+    this.options = { onAuthRejected: options?.onAuthRejected };
   }
 
   setAuth(token: string | null, workspaceSlug: string) {
@@ -72,6 +80,9 @@ export class WSClient {
 
   connect() {
     this.badFrameLogged = false;
+    // A fresh explicit connect() (e.g. after a new login) is allowed to
+    // retry again even if a previous credential was rejected.
+    this.authRejected = false;
     const url = new URL(this.baseUrl);
     // Token is never sent as a URL query parameter — it would be logged by
     // proxies, CDNs, and browser history.  In cookie mode the HttpOnly cookie
@@ -129,6 +140,18 @@ export class WSClient {
         }
         return;
       }
+      if ((msg as any).type === "auth_error") {
+        // The server has rejected this credential outright (bad token, or a
+        // suspended account) — retrying will only reproduce the same
+        // rejection, so stop the reconnect loop here rather than let onclose
+        // schedule another attempt.
+        const code = (msg as { payload?: { code?: string } }).payload?.code;
+        this.logger.warn("ws: auth rejected, stopping reconnects", { code });
+        this.authRejected = true;
+        this.ws?.close();
+        if (code === ACCOUNT_SUSPENDED_CODE) this.options.onAuthRejected?.();
+        return;
+      }
       if ((msg as any).type === "auth_ack") {
         this.onAuthenticated();
         return;
@@ -146,6 +169,7 @@ export class WSClient {
     };
 
     this.ws.onclose = () => {
+      if (this.authRejected) return;
       this.scheduleReconnect();
     };
 
@@ -161,6 +185,7 @@ export class WSClient {
    * does not yet expose a visible disconnected state or manual retry action.
    */
   private scheduleReconnect() {
+    if (this.authRejected) return;
     const base = Math.min(
       RECONNECT_BASE_DELAY_MS * 2 ** this.reconnectAttempt,
       RECONNECT_MAX_DELAY_MS,

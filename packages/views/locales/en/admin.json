@@ -1,0 +1,28 @@
+{
+  "page": {
+    "title": "System administration",
+    "description": "Manage user accounts across the whole Multica deployment."
+  },
+  "users": {
+    "section_title": "Users · {{count}}",
+    "search_placeholder": "Search by name or email",
+    "suspended_badge": "Suspended",
+    "unknown_status_badge": "Unknown status",
+    "actions_menu_aria": "More actions",
+    "self_badge": "You",
+    "suspend_action": "Suspend account",
+    "restore_action": "Restore account",
+    "suspend_title": "Suspend {{name}}",
+    "suspend_description": "Once suspended, {{name}} will not be able to sign in to Multica, their active sessions will expire on their next request, and in-progress tasks will be cancelled. You can restore this account at any time.",
+    "restore_title": "Restore {{name}}",
+    "restore_description": "{{name}} will be able to sign in to Multica again.",
+    "confirm_cancel": "Cancel",
+    "confirm_action": "Confirm",
+    "toast_suspended": "Account suspended",
+    "toast_suspend_failed": "Failed to suspend account",
+    "toast_restored": "Account restored",
+    "toast_restore_failed": "Failed to restore account",
+    "empty": "No users match your search"
+  },
+  "back_to_workspace": "Back to workspace"
+}

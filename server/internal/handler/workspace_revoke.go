@@ -234,9 +234,9 @@ func (h *Handler) publishRevocation(ctx context.Context, result revocationResult
 		return
 	}
 
-	for _, hash := range result.RevokedTokenHashes {
-		h.DaemonTokenCache.Invalidate(ctx, hash)
-	}
+	// No daemon-token cache to invalidate: the mdt_ auth path is
+	// deliberately uncached (see middleware.DaemonAuth), so the tx's token
+	// deletion is already authoritative on the daemon's next request.
 
 	// Per-task cancellation: TaskService handles status reconciliation and
 	// per-task event broadcast. Run this before the agent:archived burst so
