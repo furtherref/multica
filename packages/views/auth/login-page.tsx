@@ -25,7 +25,7 @@ import {
   ACCOUNT_SUSPENDED_CODE,
 } from "@multica/core/auth";
 import { workspaceKeys } from "@multica/core/workspace/queries";
-import { api, ApiError } from "@multica/core/api";
+import { api, errorCode } from "@multica/core/api";
 import type { User } from "@multica/core/types";
 import { useT } from "../i18n";
 
@@ -88,12 +88,7 @@ export function redirectToCliCallback(url: string, token: string, state: string)
  * other login failure.
  */
 function isAccountSuspendedError(err: unknown): boolean {
-  return (
-    err instanceof ApiError &&
-    err.body != null &&
-    typeof err.body === "object" &&
-    (err.body as { code?: unknown }).code === ACCOUNT_SUSPENDED_CODE
-  );
+  return errorCode(err) === ACCOUNT_SUSPENDED_CODE;
 }
 
 export function validateCliCallback(cliCallback: string): boolean {

@@ -90,6 +90,20 @@ vi.mock("@multica/core/api", () => ({
     issueCliToken: mockApiIssueCliToken,
   },
   ApiError: MockApiError,
+  // Mirrors the real @multica/core/api errorCode() behavior against our
+  // MockApiError, since login-page.tsx now delegates to the shared helper
+  // instead of re-deriving the check itself.
+  errorCode: (err: unknown) => {
+    if (
+      err instanceof MockApiError &&
+      err.body &&
+      typeof err.body === "object"
+    ) {
+      const code = (err.body as { code?: unknown }).code;
+      if (typeof code === "string" && code.length > 0) return code;
+    }
+    return undefined;
+  },
 }));
 
 vi.mock("@multica/core/types", () => ({}));
