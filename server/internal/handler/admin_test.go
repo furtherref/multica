@@ -472,6 +472,87 @@ func TestGetMeReportsSystemAdmin(t *testing.T) {
 	})
 }
 
+// The frontend auth store replaces its user object with the login response
+// (and with the PATCH /api/me response after profile edits), so every
+// current-user serialization must carry is_system_admin — not just GetMe.
+// Regression: admins saw the system-admin menu only after an app restart
+// (which refetches /api/me), and lost it again on re-login.
+func TestVerifyCodeReportsSystemAdmin(t *testing.T) {
+	const email = "admin-verify-code-test@multica.ai"
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM verification_code WHERE email = $1`, email)
+		user, err := testHandler.Queries.GetUserByEmail(ctx, email)
+		if err == nil {
+			workspaces, listErr := testHandler.Queries.ListWorkspaces(ctx, user.ID)
+			if listErr == nil {
+				for _, workspace := range workspaces {
+					_ = testHandler.Queries.DeleteWorkspace(ctx, workspace.ID)
+				}
+			}
+		}
+		testPool.Exec(ctx, `DELETE FROM "user" WHERE email = $1`, email)
+	})
+
+	withAdminEmails(t, []string{email})
+	createVerificationCodeForTest(t, email, "424242")
+
+	w := httptest.NewRecorder()
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(map[string]string{"email": email, "code": "424242"})
+	req := httptest.NewRequest("POST", "/auth/verify-code", &buf)
+	req.Header.Set("Content-Type", "application/json")
+	testHandler.VerifyCode(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("VerifyCode: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp LoginResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.User.IsSystemAdmin {
+		t.Fatal("expected is_system_admin=true in login response for admin user")
+	}
+}
+
+func TestUpdateMeReportsSystemAdmin(t *testing.T) {
+	const email = "admin-update-me-test@multica.ai"
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM "user" WHERE email = $1`, email)
+	})
+
+	adminUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Admin UpdateMe Test",
+		Email: email,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	withAdminEmails(t, []string{email})
+
+	w := httptest.NewRecorder()
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(map[string]string{"name": "Renamed Admin"})
+	req := httptest.NewRequest("PATCH", "/api/me", &buf)
+	req.Header.Set("X-User-ID", uuidToString(adminUser.ID))
+	testHandler.UpdateMe(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateMe: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp UserResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.IsSystemAdmin {
+		t.Fatal("expected is_system_admin=true in UpdateMe response for admin user")
+	}
+}
+
 // A status flip whose cache invalidation silently fails would let the
 // suspended user's warm "active" verdict outlive the 200 by up to
 // AuthCacheTTL. Invalidation runs BEFORE the commit, so a failure rolls the

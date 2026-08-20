@@ -65,9 +65,11 @@ type UserResponse struct {
 	ProfileDescription      string          `json:"profile_description"`
 	CreatedAt               string          `json:"created_at"`
 	UpdatedAt               string          `json:"updated_at"`
-	// IsSystemAdmin is set only in GetMe (never in userToResponse) since it
-	// reflects the requesting deployment's ADMIN_EMAILS allowlist, not a
-	// stored user attribute.
+	// IsSystemAdmin reflects the serving deployment's ADMIN_EMAILS allowlist,
+	// not a stored user attribute. userToResponse sets it because the frontend
+	// auth store replaces its user object with login and PATCH /api/me
+	// responses, not only GetMe — any current-user response missing the flag
+	// hides the system-admin UI until the next /api/me fetch.
 	IsSystemAdmin bool `json:"is_system_admin,omitempty"`
 }
 
@@ -98,6 +100,7 @@ func (h *Handler) userToResponse(u db.User) UserResponse {
 		ProfileDescription:      u.ProfileDescription,
 		CreatedAt:               timestampToString(u.CreatedAt),
 		UpdatedAt:               timestampToString(u.UpdatedAt),
+		IsSystemAdmin:           h.isSystemAdmin(u.Email),
 	}
 }
 
@@ -455,9 +458,7 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := h.userToResponse(user)
-	resp.IsSystemAdmin = h.isSystemAdmin(user.Email)
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, h.userToResponse(user))
 }
 
 type UpdateMeRequest struct {
