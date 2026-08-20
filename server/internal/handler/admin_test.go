@@ -406,6 +406,124 @@ func TestListAllUsersRequiresSystemAdmin(t *testing.T) {
 	})
 }
 
+// GET /api/admin/users?status= filters the listing by account_status in the
+// handler: absent/empty defaults to "active", "suspended" and "all" narrow or
+// widen it, anything else is a 400.
+func TestListAllUsersStatusFilter(t *testing.T) {
+	const adminEmail = "admin-list-users-status-test@multica.ai"
+	const suspendedEmail = "suspended-list-users-status-test@multica.ai"
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM "user" WHERE email IN ($1, $2)`, adminEmail, suspendedEmail)
+	})
+
+	adminUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Admin List Users Status Test",
+		Email: adminEmail,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser admin: %v", err)
+	}
+	suspendedUser, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Suspended List Users Status Test",
+		Email: suspendedEmail,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser suspended: %v", err)
+	}
+	// Flip the fixture directly instead of going through the suspension
+	// handler: this test only cares about the listing filter, not the
+	// suspend convergence (which force-offlines runtimes etc.).
+	if _, err := testPool.Exec(ctx, `UPDATE "user" SET account_status = 'suspended' WHERE id = $1`, uuidToString(suspendedUser.ID)); err != nil {
+		t.Fatalf("suspend fixture user: %v", err)
+	}
+	withAdminEmails(t, []string{adminEmail})
+
+	listUsers := func(t *testing.T, rawQuery string) (*httptest.ResponseRecorder, []AdminUserResponse) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		url := "/api/admin/users"
+		if rawQuery != "" {
+			url += "?" + rawQuery
+		}
+		req := httptest.NewRequest("GET", url, nil)
+		req.Header.Set("X-User-ID", uuidToString(adminUser.ID))
+		testHandler.ListAllUsers(w, req)
+		if w.Code != http.StatusOK {
+			return w, nil
+		}
+		var resp struct {
+			Users []AdminUserResponse `json:"users"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		return w, resp.Users
+	}
+
+	contains := func(users []AdminUserResponse, id string) bool {
+		for _, u := range users {
+			if u.ID == id {
+				return true
+			}
+		}
+		return false
+	}
+	adminID := uuidToString(adminUser.ID)
+	suspendedID := uuidToString(suspendedUser.ID)
+
+	t.Run("default_returns_only_active", func(t *testing.T) {
+		w, users := listUsers(t, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if !contains(users, adminID) {
+			t.Fatal("expected active admin user in default listing")
+		}
+		if contains(users, suspendedID) {
+			t.Fatal("default listing must not contain suspended users")
+		}
+		for _, u := range users {
+			if u.AccountStatus != auth.AccountStatusActive {
+				t.Fatalf("default listing leaked account_status=%q for user %s", u.AccountStatus, u.ID)
+			}
+		}
+	})
+
+	t.Run("suspended_returns_only_suspended", func(t *testing.T) {
+		w, users := listUsers(t, "status=suspended")
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if !contains(users, suspendedID) {
+			t.Fatal("expected suspended user in status=suspended listing")
+		}
+		for _, u := range users {
+			if u.AccountStatus != auth.AccountStatusSuspended {
+				t.Fatalf("status=suspended leaked account_status=%q for user %s", u.AccountStatus, u.ID)
+			}
+		}
+	})
+
+	t.Run("all_returns_both", func(t *testing.T) {
+		w, users := listUsers(t, "status=all")
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if !contains(users, adminID) || !contains(users, suspendedID) {
+			t.Fatal("status=all must contain both active and suspended users")
+		}
+	})
+
+	t.Run("invalid_status_400", func(t *testing.T) {
+		w, _ := listUsers(t, "status=banned")
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid status, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
 func TestGetMeReportsSystemAdmin(t *testing.T) {
 	const adminEmail = "admin-getme-test@multica.ai"
 	ctx := context.Background()

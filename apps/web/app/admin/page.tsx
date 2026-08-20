@@ -32,5 +32,11 @@ export default function AdminRoutePage() {
 
   if (isLoading || !user || user.is_system_admin !== true) return null;
 
-  return <AdminUsersPage />;
+  // The page renders a full-height sidebar + scrolling content split, so it
+  // needs a definite viewport height from the route wrapper.
+  return (
+    <div className="h-dvh overflow-hidden">
+      <AdminUsersPage />
+    </div>
+  );
 }

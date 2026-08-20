@@ -1,11 +1,18 @@
 {
   "page": {
-    "title": "系统管理",
+    "title": "账号管理",
     "description": "管理整个 Multica 部署中的用户账号。"
+  },
+  "sidebar": {
+    "console": "系统管理"
   },
   "users": {
     "section_title": "用户 · {{count}}",
     "search_placeholder": "按姓名或邮箱搜索",
+    "filter_label": "状态",
+    "filter_all": "全部",
+    "filter_active": "正常",
+    "filter_suspended": "已禁用",
     "suspended_badge": "已禁用",
     "unknown_status_badge": "状态未知",
     "actions_menu_aria": "更多操作",

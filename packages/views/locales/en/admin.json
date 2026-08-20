@@ -1,11 +1,18 @@
 {
   "page": {
-    "title": "System administration",
+    "title": "Accounts",
     "description": "Manage user accounts across the whole Multica deployment."
+  },
+  "sidebar": {
+    "console": "System administration"
   },
   "users": {
     "section_title": "Users · {{count}}",
     "search_placeholder": "Search by name or email",
+    "filter_label": "Status",
+    "filter_all": "All",
+    "filter_active": "Active",
+    "filter_suspended": "Suspended",
     "suspended_badge": "Suspended",
     "unknown_status_badge": "Unknown status",
     "actions_menu_aria": "More actions",

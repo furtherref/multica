@@ -7,6 +7,14 @@ import enCommon from "../locales/en/common.json";
 import enAdmin from "../locales/en/admin.json";
 
 const mockSetUserAccountStatus = vi.hoisted(() => vi.fn());
+// Captures which server-side status filter the page requests; canonical
+// status-param request/key behavior lives in packages/core/admin/queries.test.ts.
+const mockAdminUsersOptions = vi.hoisted(() =>
+  vi.fn((status: string) => ({
+    queryKey: ["admin", "users", status],
+    queryFn: vi.fn(),
+  })),
+);
 const mockInvalidateQueries = vi.hoisted(() => vi.fn());
 const mockToastSuccess = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
@@ -30,8 +38,15 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 
 vi.mock("@multica/core/admin/queries", () => ({
-  adminKeys: { users: () => ["admin", "users"] },
-  adminUsersOptions: () => ({ queryKey: ["admin", "users"], queryFn: vi.fn() }),
+  adminKeys: {
+    users: (status?: string) =>
+      status ? ["admin", "users", status] : ["admin", "users"],
+  },
+  adminUsersOptions: mockAdminUsersOptions,
+}));
+
+vi.mock("@multica/core/workspace/avatar-url", () => ({
+  resolvePublicFileUrl: (url: string | null | undefined) => url ?? null,
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -41,14 +56,22 @@ vi.mock("@multica/core/api", () => ({
 }));
 
 vi.mock("@multica/core/paths", () => ({
-  paths: { root: () => "/" },
+  paths: { root: () => "/", admin: () => "/admin" },
 }));
 
 vi.mock("@multica/core/auth", () => {
+  // Distinct display name from the "Alice Admin" row fixture (same id) so
+  // row-level getByText queries stay unambiguous next to the sidebar footer.
+  const authUser = {
+    id: "user-1",
+    name: "Root Operator",
+    email: "root@example.com",
+    avatar_url: null,
+  };
+  const state = { user: authUser };
   const useAuthStore = Object.assign(
-    (selector?: (state: { user: { id: string } }) => unknown) =>
-      selector ? selector({ user: { id: "user-1" } }) : { user: { id: "user-1" } },
-    { getState: () => ({ user: { id: "user-1" } }) },
+    (selector?: (s: typeof state) => unknown) => (selector ? selector(state) : state),
+    { getState: () => state },
   );
   return { useAuthStore };
 });
@@ -159,6 +182,38 @@ describe("AdminUsersPage", () => {
     const aliceRow = screen.getByTestId("admin-user-row-user-1");
     expect(within(aliceRow).getByText("You")).toBeTruthy();
     expect(within(aliceRow).queryByRole("button", { name: /more actions/i })).toBeNull();
+  });
+
+  it("fetches with status=active by default and switches the query when the filter changes", async () => {
+    const user = userEvent.setup();
+    render(<AdminUsersPage />, { wrapper: I18nWrapper });
+
+    expect(mockAdminUsersOptions).toHaveBeenCalledWith("active");
+    expect(mockAdminUsersOptions).not.toHaveBeenCalledWith("suspended");
+
+    await user.click(screen.getByRole("combobox", { name: "Status" }));
+    await user.click(await screen.findByRole("option", { name: "Suspended" }));
+
+    expect(mockAdminUsersOptions).toHaveBeenCalledWith("suspended");
+  });
+
+  it("renders the sidebar: non-interactive group label, active Accounts item, and current admin identity", () => {
+    render(<AdminUsersPage />, { wrapper: I18nWrapper });
+
+    // Group label is directory-level text, not a control.
+    expect(screen.getByText("System administration")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "System administration" }),
+    ).toBeNull();
+
+    // The single nav item is the current page, rendered active.
+    const nav = screen.getByRole("navigation", { name: "System administration" });
+    const item = within(nav).getByRole("button", { name: "Accounts" });
+    expect(item.getAttribute("aria-current")).toBe("page");
+    expect(item.getAttribute("data-active")).toBe("true");
+
+    // Sidebar footer shows the signed-in admin (from the auth store).
+    expect(screen.getByText("Root Operator")).toBeTruthy();
   });
 
   it("opens the confirm dialog for Suspend account and calls the API on confirm", async () => {

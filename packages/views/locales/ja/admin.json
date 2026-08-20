@@ -1,11 +1,18 @@
 {
   "page": {
-    "title": "システム管理",
+    "title": "アカウント管理",
     "description": "Multica デプロイ全体のユーザーアカウントを管理します。"
+  },
+  "sidebar": {
+    "console": "システム管理"
   },
   "users": {
     "section_title": "ユーザー · {{count}}",
     "search_placeholder": "名前またはメールアドレスで検索",
+    "filter_label": "ステータス",
+    "filter_all": "すべて",
+    "filter_active": "有効",
+    "filter_suspended": "利用停止中",
     "suspended_badge": "利用停止中",
     "unknown_status_badge": "不明な状態",
     "actions_menu_aria": "その他の操作",
