@@ -232,6 +232,38 @@ describe("WorkspaceRouteLayout workspace singleton lifecycle", () => {
     expect(state.currentSlug).toBeNull();
   });
 
+  it("keeps the singleton across a same-slug keyed remount (tab switch)", () => {
+    // Same-workspace tab switch: TabContent keys ActiveTabHost by tab id, so
+    // switching tabs unmounts and remounts this layout with the SAME slug.
+    // React runs the new tree's render first (whose singleton write dedupes
+    // to a no-op), then the outgoing layout's cleanup — whose
+    // `getCurrentSlug() === workspaceSlug` guard passes because the slug never
+    // changed — wiping the singleton and unmounting the sidebar.
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    qc.setQueryData(["workspace-by-slug"], state.workspace);
+    qc.setQueryData(["workspace-list"], state.wsList);
+    const tree = (hostKey: string) => (
+      <QueryClientProvider client={qc}>
+        <MemoryRouter key={hostKey} initialEntries={["/acme/issues"]}>
+          <Routes>
+            <Route path=":workspaceSlug/*" element={<WorkspaceRouteLayout />}>
+              <Route path="*" element={<div data-testid="outlet" />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    const { rerender } = render(tree("tab-1"));
+    expect(state.currentSlug).toBe("acme");
+
+    rerender(tree("tab-2"));
+
+    expect(state.currentSlug).toBe("acme");
+  });
+
   it("leaves the singleton alone when it already points at another workspace", () => {
     // Workspace switch: React renders the incoming layout (which adopts the
     // new slug) before running the outgoing layout's cleanup. An unguarded

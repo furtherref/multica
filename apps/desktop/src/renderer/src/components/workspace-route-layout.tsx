@@ -128,6 +128,21 @@ export function WorkspaceRouteLayout() {
     };
   }, [workspaceSlug]);
 
+  // Re-assert ownership after mount. A same-workspace tab switch remounts
+  // this layout under a new key (TabContent keys ActiveTabHost by tab id):
+  // the incoming layout's render-phase write dedupes to a no-op (slug
+  // unchanged), then the outgoing layout's cleanup above sees
+  // `getCurrentSlug() === workspaceSlug` — same slug, so the guard cannot
+  // tell "the new owner already adopted it" from "I am the last owner" —
+  // and wipes the singleton, unmounting the sidebar. Passive effect creates
+  // run after the deleted tree's destroys, so this write lands last and
+  // restores the slug; in every other ordering it dedupes to a no-op.
+  useEffect(() => {
+    if (!workspace || !workspaceSlug) return;
+    if (isWorkspaceDeletePending(workspace.id)) return;
+    setCurrentWorkspace(workspaceSlug, workspace.id);
+  }, [workspace, workspaceSlug]);
+
   if (isAuthLoading) return null;
   if (!user) return null;
   if (!workspaceSlug) return null;
