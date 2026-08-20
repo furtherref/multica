@@ -66,6 +66,18 @@ func (h *Handler) ListAllUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireSystemAdmin(w, r); !ok {
 		return
 	}
+	// ?status= narrows the listing by account_status. Default is "active" so
+	// the console's landing view hides suspended accounts unless asked for.
+	status := r.URL.Query().Get("status")
+	if status == "" {
+		status = auth.AccountStatusActive
+	}
+	switch status {
+	case auth.AccountStatusActive, auth.AccountStatusSuspended, "all":
+	default:
+		writeError(w, http.StatusBadRequest, "invalid status")
+		return
+	}
 	users, err := h.Queries.ListUsersWithStatus(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list users")
@@ -73,6 +85,9 @@ func (h *Handler) ListAllUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := make([]AdminUserResponse, 0, len(users))
 	for _, u := range users {
+		if status != "all" && u.AccountStatus != status {
+			continue
+		}
 		resp = append(resp, AdminUserResponse{
 			ID:            uuidToString(u.ID),
 			Name:          u.Name,

@@ -229,6 +229,7 @@ import {
   adminUserListSchema,
   adminUserSchema,
   EMPTY_ADMIN_USER,
+  type AdminAccountStatusFilter,
   type AdminUser,
 } from "../admin/schema";
 import {
@@ -759,8 +760,8 @@ export class ApiClient {
   // /api/admin/users/{id}/status). Reachable only when `getMe().is_system_admin
   // === true`; the server 403s (ordinary permission denial, not
   // ACCOUNT_SUSPENDED) for everyone else.
-  async getAdminUsers(): Promise<AdminUser[]> {
-    const raw = await this.fetch<unknown>("/api/admin/users");
+  async getAdminUsers(status: AdminAccountStatusFilter): Promise<AdminUser[]> {
+    const raw = await this.fetch<unknown>(`/api/admin/users?status=${status}`);
     return parseWithFallback(raw, adminUserListSchema, { users: [] }, {
       endpoint: "GET /api/admin/users",
     }).users ?? [];

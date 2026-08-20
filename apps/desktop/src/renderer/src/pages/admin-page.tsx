@@ -28,7 +28,12 @@ export function AdminPage() {
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <DragStrip />
-      <div className="flex-1 overflow-y-auto">
+      {/* The page owns its own sidebar + scrolling content split, so the
+          wrapper only hands it the remaining height below the drag strip.
+          Keeping <DragStrip /> as the first flex child also keeps the
+          sidebar's back button out of the top-48px drag region — no
+          WebkitAppRegion override needed. */}
+      <div className="min-h-0 flex-1">
         <AdminUsersPage />
       </div>
     </div>

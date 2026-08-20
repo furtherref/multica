@@ -28,6 +28,13 @@ export const adminUserListSchema = z.object({
 
 export type AdminUser = z.infer<typeof adminUserSchema>;
 
+/**
+ * Server-side listing filter for `GET /api/admin/users?status=`. The server
+ * defaults an absent param to "active"; the client always sends it
+ * explicitly so the query key and the request can never disagree.
+ */
+export type AdminAccountStatusFilter = "active" | "suspended" | "all";
+
 export const EMPTY_ADMIN_USER: AdminUser = {
   id: "",
   name: "",

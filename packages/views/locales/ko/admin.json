@@ -1,11 +1,18 @@
 {
   "page": {
-    "title": "시스템 관리",
+    "title": "계정 관리",
     "description": "Multica 배포 전체의 사용자 계정을 관리합니다."
+  },
+  "sidebar": {
+    "console": "시스템 관리"
   },
   "users": {
     "section_title": "사용자 · {{count}}",
     "search_placeholder": "이름 또는 이메일로 검색",
+    "filter_label": "상태",
+    "filter_all": "전체",
+    "filter_active": "정상",
+    "filter_suspended": "정지됨",
     "suspended_badge": "정지됨",
     "unknown_status_badge": "알 수 없는 상태",
     "actions_menu_aria": "추가 작업",
