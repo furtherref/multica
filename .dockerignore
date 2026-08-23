@@ -35,10 +35,15 @@ coverage
 /docs/
 *.md
 
-# Only the web workspace is used by Dockerfile.web. Default-exclude future
-# app workspaces so they do not silently enter the build context.
+# Only the web and docs workspaces are used by an image build. Default-exclude
+# future app workspaces so they do not silently enter the build context.
+#
+# apps/docs is fork-only (upstream ships no docs image): Dockerfile.docs builds
+# the self-hosted docs frontend from it, so the upstream default-exclude above
+# has to carve it back out or `COPY apps/docs/package.json` fails at build time.
 /apps/*
 !/apps/web/
+!/apps/docs/
 
 # Repository-only tooling
 /.github/
