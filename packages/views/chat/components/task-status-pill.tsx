@@ -66,6 +66,12 @@ export function TaskStatusPill({
         status={status}
         taskMessages={taskMessages}
         availability={availability}
+        // Read the reason only when the effective status is still the waiting
+        // one: streamed messages can promote a cached waiting task to
+        // "running" locally before the next server payload clears the text.
+        waitReason={
+          status === "waiting_local_directory" ? pendingTask.wait_reason : undefined
+        }
       />
       <span className="opacity-70 shrink-0 tabular-nums">
         · {formatElapsedSecs(elapsedSecs)}

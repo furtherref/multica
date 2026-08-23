@@ -11,17 +11,6 @@
     "cancelled": "Cancelled",
     "recent": "Recent"
   },
-  "pages": {
-    "inbox": "Inbox",
-    "my_issues": "My Issues",
-    "issues": "Issues",
-    "projects": "Projects",
-    "agents": "Agents",
-    "runtimes": "Runtimes",
-    "skills": "Skills",
-    "issue_templates": "Issue Templates",
-    "settings": "Settings"
-  },
   "commands": {
     "current_theme_aria": "Current theme",
     "new_issue": "New Issue",

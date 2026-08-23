@@ -325,6 +325,57 @@ describe("AgentTranscriptDialog", () => {
     expect(screen.getByText(/"command": "pnpm test"/)).toBeInTheDocument();
   });
 
+  // Regression, #7125: a run of short prose steps under a long agent name put
+  // the same semibold name above every one-line body, so the row's heaviest
+  // element was the one value that never changes. Identity belongs to the run,
+  // and the header already carries it.
+  it("states the agent once in the header, not on every prose row", () => {
+    renderWithI18n(
+      <AgentTranscriptDialog
+        open
+        onOpenChange={vi.fn()}
+        task={{ ...baseTask, agent_id: "agent-1" }}
+        items={[
+          { seq: 1, type: "text", content: "Cleanup done. Starting tests:" },
+          { seq: 2, type: "text", content: "Now adding the Feishu row:" },
+          { seq: 3, type: "text", content: "Now the version bump:" },
+        ]}
+        agentName="【Chores|Opus5】Multica Helper"
+      />,
+    );
+
+    expect(screen.getAllByTestId("rich-content")).toHaveLength(3);
+    expect(screen.getAllByText("【Chores|Opus5】Multica Helper")).toHaveLength(1);
+    expect(screen.getAllByTestId("actor-avatar")).toHaveLength(1);
+  });
+
+  // A facet is only readable if you can see what it selects. Tool facets always
+  // could — their rows print the tool name — but prose rows carried no kind
+  // mark at all, so "Agent" in the menu pointed at nothing.
+  it("anchors each filter facet to the glyph its rows carry", () => {
+    renderDialog([
+      { seq: 1, type: "text", content: "Committing now:" },
+      { seq: 2, type: "tool_use", tool: "Bash", input: { command: "git commit" } },
+    ]);
+
+    const agentFacet = screen.getByRole("menuitemcheckbox", { name: "Agent" });
+    expect(agentFacet.querySelector(".lucide-bot")).not.toBeNull();
+
+    const proseRow = screen.getByTestId("rich-content").closest(".group");
+    expect(proseRow?.querySelector(".lucide-bot")).not.toBeNull();
+  });
+
+  it("names a tool facet the way its rows do, keeping the prefix in the key", () => {
+    renderDialog([{ seq: 1, type: "tool_use", tool: "Bash", input: { command: "ls" } }]);
+
+    expect(screen.getByRole("menuitemcheckbox", { name: "Bash" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitemcheckbox", { name: "tool:Bash" })).toBeNull();
+
+    // The label changed; the persisted facet key did not.
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Bash" }));
+    expect(useTranscriptViewStore.getState().selectedFilterKeys).toEqual(["tool:Bash"]);
+  });
+
   it("folds a call and its result into one step instead of two rows", () => {
     renderDialog([
       { seq: 1, type: "tool_use", tool: "Bash", input: { command: "ls" } },
@@ -666,6 +717,64 @@ describe("AgentTranscriptDialog", () => {
 
     await user.click(await screen.findByRole("button", { name: "Run details" }));
     expect(await screen.findByText(expected)).toBeInTheDocument();
+  });
+});
+
+describe("AgentTranscriptDialog — work directory handoff", () => {
+  it("shows and copies the durable project directory after worktree cleanup", async () => {
+    renderDialog(items, {
+      task: {
+        ...baseTask,
+        work_dir: "/managed/task/worktree",
+        relative_work_dir: "workspace/task/worktree",
+        durable_work_dir: "/Users/dev/project",
+        relative_durable_work_dir: "project",
+      },
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Run details" }));
+    expect(screen.getByText("Project directory")).toBeInTheDocument();
+    expect(screen.getByText("project")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTitle("Copy project directory"));
+    expect(copyTextMock).toHaveBeenCalledWith("/Users/dev/project");
+  });
+
+  it("keeps a live task on its actual workdir", async () => {
+    renderDialog(items, {
+      task: {
+        ...liveTask,
+        work_dir: "/managed/task/worktree",
+        relative_work_dir: "workspace/task/worktree",
+        durable_work_dir: "/Users/dev/project",
+        relative_durable_work_dir: "project",
+      },
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Run details" }));
+    expect(screen.getByText("Workdir")).toBeInTheDocument();
+    expect(screen.getByText("workspace/task/worktree")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTitle("Copy working directory"));
+    expect(copyTextMock).toHaveBeenCalledWith("/managed/task/worktree");
+  });
+
+  it("keeps a failed-but-preserved task on its worktree", async () => {
+    renderDialog(items, {
+      task: {
+        ...baseTask,
+        status: "failed",
+        work_dir: "/managed/preserved/worktree",
+        relative_work_dir: "workspace/task/worktree",
+      },
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Run details" }));
+    expect(screen.getByText("Workdir")).toBeInTheDocument();
+    expect(screen.getByText("workspace/task/worktree")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTitle("Copy working directory"));
+    expect(copyTextMock).toHaveBeenCalledWith("/managed/preserved/worktree");
   });
 });
 

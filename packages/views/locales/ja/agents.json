@@ -551,7 +551,7 @@
     },
     "integrations": {
       "intro": "このエージェントを外部のチャットプラットフォームに接続し、普段使っているツールから直接やり取りできるようにします。",
-      "members_note": "エージェントを外部チャットプラットフォームに接続できるのはワークスペースのオーナーと管理者のみです。接続済みの Bot は「設定 → 連携」で確認できます。"
+      "members_note": "この接続を管理できるのはワークスペースのオーナーと管理者のみです。接続済みの Bot は「設定 → 連携」で確認できます。"
     },
     "activity": {
       "status": {
@@ -614,7 +614,7 @@
   "visibility": {
     "private": {
       "label": "個人",
-      "tooltip": "個人 · 本人とワークスペースの admin のみがこのエージェントを使用できます"
+      "tooltip": "個人 · オーナーとオーナーが許可した人のみがこのエージェントを実行できます"
     },
     "workspace": {
       "label": "ワークスペース",
@@ -710,10 +710,12 @@
     "details_provider": "プロバイダー",
     "details_mode": "モード",
     "details_workdir": "作業ディレクトリ",
+    "details_project_directory": "プロジェクトディレクトリ",
     "details_created": "作成",
     "details_started": "開始",
     "details_completed": "完了",
     "copy_workdir": "作業ディレクトリをコピー",
+    "copy_project_directory": "プロジェクトディレクトリをコピー",
     "close": "閉じる",
     "fact_created": "作成 {{time}}",
     "fact_took": "所要 {{duration}}",

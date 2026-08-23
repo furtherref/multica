@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { useIssueViewStore } from "./view-store";
-import { DEFAULT_VISIBLE_STATUSES } from "../config";
 import { setCurrentWorkspace } from "../../platform/workspace-storage";
 
 // Node 25 ships a partial `localStorage` shim under jsdom that's missing
@@ -34,31 +33,32 @@ afterEach(() => {
 });
 
 describe("useIssueViewStore hideStatus / showStatus", () => {
-  it("hideStatus from the default view never implicitly selects archive", () => {
-    // no active filter
+  // Hiding a column is display state (`hiddenStatusCategories`) and is kept
+  // apart from the status FILTER (MUL-6243). The fork depends on that
+  // separation: `archive` (status #39) is opt-in, and a board control that
+  // reseeded `statusFilters` from the full category list would enroll it
+  // without the user ever asking for archived work.
+  it("hideStatus records a hidden column without touching the status filter", () => {
     useIssueViewStore.getState().hideStatus("todo");
-    const filters = useIssueViewStore.getState().statusFilters;
-    expect(filters).not.toContain("archive");
-    expect(filters).toEqual(DEFAULT_VISIBLE_STATUSES.filter((s) => s !== "todo"));
-  });
-
-  it("hideStatus narrows an already-active filter set without reseeding", () => {
-    useIssueViewStore.setState({ statusFilters: ["todo", "in_progress", "archive"] });
-    useIssueViewStore.getState().hideStatus("todo");
-    expect(useIssueViewStore.getState().statusFilters).toEqual([
-      "in_progress",
-      "archive",
-    ]);
-  });
-
-  it("showStatus is a no-op when no filter is active (never seeds archive)", () => {
-    useIssueViewStore.getState().showStatus("archive");
+    expect(useIssueViewStore.getState().hiddenStatusCategories).toEqual(["todo"]);
     expect(useIssueViewStore.getState().statusFilters).toEqual([]);
   });
 
-  it("showStatus adds the status to an already-active filter set", () => {
-    useIssueViewStore.setState({ statusFilters: ["todo"] });
-    useIssueViewStore.getState().showStatus("archive");
-    expect(useIssueViewStore.getState().statusFilters).toEqual(["todo", "archive"]);
+  it("hideStatus leaves an already-active filter set alone", () => {
+    useIssueViewStore.setState({ statusFilters: ["todo", "in_progress", "archive"] });
+    useIssueViewStore.getState().hideStatus("todo");
+    expect(useIssueViewStore.getState().statusFilters).toEqual([
+      "todo",
+      "in_progress",
+      "archive",
+    ]);
+    expect(useIssueViewStore.getState().hiddenStatusCategories).toEqual(["todo"]);
+  });
+
+  it("showStatus un-hides a column and never seeds a status filter", () => {
+    useIssueViewStore.setState({ hiddenStatusCategories: ["todo", "done"] });
+    useIssueViewStore.getState().showStatus("todo");
+    expect(useIssueViewStore.getState().hiddenStatusCategories).toEqual(["done"]);
+    expect(useIssueViewStore.getState().statusFilters).toEqual([]);
   });
 });

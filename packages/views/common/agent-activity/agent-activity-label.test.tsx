@@ -27,6 +27,26 @@ describe("AgentActivityLabel", () => {
     expect(screen.getByText("Running a command")).toBeInTheDocument();
   });
 
+  it("names what a parked task is waiting on when the server sent a reason", () => {
+    wrap(
+      <AgentActivityLabel
+        status="waiting_local_directory"
+        taskMessages={[]}
+        waitReason="MUL-12"
+      />,
+    );
+    expect(screen.getByText("Waiting for MUL-12")).toBeInTheDocument();
+  });
+
+  it("falls back to the bare waiting label when no reason was sent", () => {
+    wrap(
+      <AgentActivityLabel status="waiting_local_directory" taskMessages={[]} />,
+    );
+    expect(
+      screen.getByText("Waiting for local directory"),
+    ).toBeInTheDocument();
+  });
+
   it("shows Thinking when running with no messages yet", () => {
     wrap(<AgentActivityLabel status="running" taskMessages={[]} />);
     expect(screen.getByText("Thinking")).toBeInTheDocument();

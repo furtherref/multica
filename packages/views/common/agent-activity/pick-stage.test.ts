@@ -24,6 +24,7 @@ describe("pickStageKeys", () => {
     expect(pickStageKeys("waiting_local_directory", [], "online")).toEqual({
       stageKey: "waiting_local_directory",
       static: true,
+      needsWaitReason: true,
     });
   });
 
@@ -32,10 +33,18 @@ describe("pickStageKeys", () => {
     // status is the more specific signal — surface it.
     expect(
       pickStageKeys("waiting_local_directory", [], "unstable"),
-    ).toEqual({ stageKey: "waiting_local_directory", static: true });
+    ).toEqual({
+      stageKey: "waiting_local_directory",
+      static: true,
+      needsWaitReason: true,
+    });
     expect(
       pickStageKeys("waiting_local_directory", [], "offline"),
-    ).toEqual({ stageKey: "waiting_local_directory", static: true });
+    ).toEqual({
+      stageKey: "waiting_local_directory",
+      static: true,
+      needsWaitReason: true,
+    });
   });
 
   it("returns thinking for running with no messages", () => {

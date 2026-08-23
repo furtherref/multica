@@ -1,6 +1,22 @@
-import type { IssueStatus } from "../../types";
+import type { IssueStatusCategory } from "../../types";
 
-export const STATUS_ORDER: IssueStatus[] = [
+// These are keyed on CATEGORY, not on status key. A workspace can define any
+// number of custom statuses, but every one of them belongs to exactly one of
+// the 7 categories below — so board columns, the presentation config and the
+// paginated fetch all keep a fixed shape. Resolve a status KEY to its category
+// with the workspace catalog (`useIssueStatuses`) before indexing these.
+// (MUL-6243)
+//
+// `archive` (fork status #39, migration 069) is the one key that is NOT a
+// catalog category: the server refuses it as one, so no custom status can ever
+// inherit it. It still resolves to a column and a label of its own, which is
+// what keeps an archived issue out of `todo`. Hence the split below —
+// STATUS_ORDER and STATUS_CONFIG cover it, ALL_STATUSES (the catalog
+// categories: what the settings UI offers and what a fetch fans out over)
+// does not.
+
+/** Every key that renders as its own column, `archive` included. */
+export const STATUS_ORDER: IssueStatusCategory[] = [
   "backlog",
   "todo",
   "in_progress",
@@ -11,7 +27,8 @@ export const STATUS_ORDER: IssueStatus[] = [
   "archive",
 ];
 
-export const ALL_STATUSES: IssueStatus[] = [
+/** The 7 catalog categories, in display order. */
+export const ALL_STATUSES: IssueStatusCategory[] = [
   "backlog",
   "todo",
   "in_progress",
@@ -19,11 +36,10 @@ export const ALL_STATUSES: IssueStatus[] = [
   "done",
   "blocked",
   "cancelled",
-  "archive",
 ];
 
 /** Statuses shown as board columns (excludes cancelled). */
-export const BOARD_STATUSES: IssueStatus[] = [
+export const BOARD_STATUSES: IssueStatusCategory[] = [
   "backlog",
   "todo",
   "in_progress",
@@ -33,14 +49,14 @@ export const BOARD_STATUSES: IssueStatus[] = [
 ];
 
 /**
- * Default-visible lifecycle statuses (MUL-4290 made `cancelled` one of
- * them). `archive` stays opt-in — it is only ever shown via an explicit
- * status filter.
+ * Default-visible lifecycle statuses (MUL-4290 made `cancelled` one of them) —
+ * the 7 catalog categories. `archive` stays opt-in: it is only ever shown via
+ * an explicit status filter.
  */
-export const DEFAULT_VISIBLE_STATUSES: IssueStatus[] = [...BOARD_STATUSES, "cancelled"];
+export const DEFAULT_VISIBLE_STATUSES: IssueStatusCategory[] = [...BOARD_STATUSES, "cancelled"];
 
 export const STATUS_CONFIG: Record<
-  IssueStatus,
+  IssueStatusCategory,
   {
     label: string;
     iconColor: string;

@@ -67,7 +67,12 @@ export function pickStageKeys(
   // Transient activity hint from a `task:activity` event (e.g. "reconnecting").
   // Highest-priority signal while running — overrides the message-derived stage.
   activity?: string,
-): { stageKey: StageKey; toolKey?: ToolKey; static?: boolean } {
+): {
+  stageKey: StageKey;
+  toolKey?: ToolKey;
+  static?: boolean;
+  needsWaitReason?: boolean;
+} {
   // A deferred chat task is an older turn waiting for its retry backoff, not
   // active model work. Keep this ahead of availability hints so the specific
   // retry state never degrades to a misleading queued/thinking label.
@@ -90,7 +95,14 @@ export function pickStageKeys(
   // lock; the renderer surfaces a dedicated label so the user understands
   // why a queued task isn't moving.
   if (status === "waiting_local_directory") {
-    return { stageKey: "waiting_local_directory", static: true };
+    // `needsWaitReason` lets the renderer name what the task is parked on when
+    // the server sent one — a sibling task rather than a hung agent. Older
+    // servers send no reason, so the bare label has to stay reachable.
+    return {
+      stageKey: "waiting_local_directory",
+      static: true,
+      needsWaitReason: true,
+    };
   }
   if (status === "queued") return { stageKey: "queued" };
   if (status === "dispatched") return { stageKey: "starting_up" };

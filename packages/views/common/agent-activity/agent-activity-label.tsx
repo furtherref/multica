@@ -16,6 +16,8 @@ interface Props {
   availability?: AgentAvailability | undefined;
   /** Transient hint from a `task:activity` event (e.g. "reconnecting"). */
   activity?: string;
+  /** What a parked task is waiting on, when the server named it. */
+  waitReason?: string;
   /** Suppress the built-in spinner when the caller renders its own. */
   hideSpinner?: boolean;
   className?: string;
@@ -31,14 +33,21 @@ export function AgentActivityLabel({
   taskMessages,
   availability,
   activity,
+  waitReason,
   hideSpinner,
   className,
 }: Props) {
   const { t } = useT("common");
   const decision = pickStageKeys(status, taskMessages, availability, activity);
+  // A parked task that names what it is parked on turns an unexplained wait
+  // into an actionable one: the user can see it is a sibling task, not a hung
+  // agent, and decide whether cancelling is worth it.
+  const reason = waitReason?.trim();
   const label = decision.toolKey
     ? t(($) => $.status_pill.tools[decision.toolKey!])
-    : t(($) => $.status_pill.stages[decision.stageKey]);
+    : decision.needsWaitReason && reason
+      ? t(($) => $.status_pill.stages.waiting_local_directory_reason, { reason })
+      : t(($) => $.status_pill.stages[decision.stageKey]);
   // toolKey labels are always "actively working"; only explicit stage
   // decisions carry the static flag (queued / waiting / offline).
   const isStatic = decision.toolKey ? false : decision.static === true;

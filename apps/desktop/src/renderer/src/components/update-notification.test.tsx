@@ -39,6 +39,7 @@ beforeEach(() => {
     showNotification: vi.fn(),
     setUnreadBadge: vi.fn(),
     onInboxOpen: vi.fn(() => vi.fn()),
+    onOpenSettings: vi.fn(() => vi.fn()),
     onNavigationGesture: vi.fn(() => vi.fn()),
     pickDirectory: vi.fn(() => Promise.resolve({ ok: false, reason: "cancelled" as const })),
     validateLocalDirectory: vi.fn(() => Promise.resolve({ ok: true })),
@@ -97,6 +98,27 @@ describe("UpdateNotification", () => {
     expect(
       screen.getByRole("button", { name: /restarting/i }),
     ).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "See changes" })).not.toBeInTheDocument();
+  });
+
+  // The prompt names a version but nothing about it; the changelog anchor is
+  // what lets someone decide whether to restart now or finish what they are
+  // doing first.
+  it("opens the downloaded version's changelog", async () => {
+    render(<UpdateNotification />);
+
+    act(() => {
+      callbacks.updateDownloaded?.({ version: "0.4.27" });
+    });
+
+    const changelogButton = await screen.findByRole("button", {
+      name: "See changelog",
+    });
+    act(() => {
+      changelogButton.click();
+    });
+
+    expect(window.desktopAPI.openExternal).toHaveBeenCalledWith(
+      "https://multica.furtherref.com/changelog#release-0-4-27",
+    );
   });
 });

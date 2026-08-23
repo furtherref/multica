@@ -1,4 +1,6 @@
-import { ALL_STATUSES } from "@multica/core/issues/config";
+// STATUS_ORDER, not ALL_STATUSES: this stand-in has to serve the `archive`
+// column (fork status #39) as well as the 7 catalog categories.
+import { STATUS_ORDER } from "@multica/core/issues/config";
 import type {
   Issue,
   IssueTableGroupDescriptor,
@@ -32,6 +34,21 @@ export interface WorkingTaskFixture {
 export interface WorkingAgentsFixture {
   rows: () => readonly Issue[];
   agents: () => readonly WorkingTaskFixture[];
+}
+
+/**
+ * Group-key axis for a status grouping. Board / list / swimlane surfaces page by
+ * CATEGORY (`status_category:<category>`); the table still groups by concrete
+ * status key. This fixture holds only built-in statuses, where a key IS its own
+ * category, so the two axes select the same rows — only the key shape differs.
+ * (MUL-6243)
+ */
+function statusAxis(group: { kind: string }): string {
+  return group.kind === "status_category" ? "status_category" : "status";
+}
+
+function secondaryAxis(group: { kind: string; secondary?: string }): string {
+  return group.secondary === "status_category" ? "status_category" : "status";
 }
 
 function legacyParamsForStatus(
@@ -88,7 +105,7 @@ async function allRows(
   query: IssueTableQuerySpec,
 ) {
   const rows = await Promise.all(
-    ALL_STATUSES.map((status) =>
+    STATUS_ORDER.map((status) =>
       rowsForStatus(
         listIssues,
         { ...query, filters: { ...query.filters, statuses: undefined } },
@@ -217,11 +234,11 @@ export function statusTableMethodsFromLegacy(
           groups: Array.from(grouped.values(), ({ descriptor, issues }) => ({
             ...descriptor,
             count: issues.length,
-            secondary_groups: ALL_STATUSES.flatMap((status) => {
+            secondary_groups: STATUS_ORDER.flatMap((status) => {
               const count = issues.filter((issue) => issue.status === status).length;
               return count
                 ? [{
-                    key: `compound:${descriptor.key}:status:${status}`,
+                    key: `compound:${descriptor.key}:${secondaryAxis(request.group)}:${status}`,
                     value: { kind: "status" as const, status },
                     count,
                   }]
@@ -232,7 +249,7 @@ export function statusTableMethodsFromLegacy(
         };
       }
       const groups = await Promise.all(
-        ALL_STATUSES.map(async (status) => ({
+        STATUS_ORDER.map(async (status) => ({
           status,
           issues: await rowsForStatus(listIssues, request.query, status),
         })),
@@ -242,7 +259,7 @@ export function statusTableMethodsFromLegacy(
         query_fingerprint: "test",
         total: nonEmpty.reduce((sum, group) => sum + group.issues.length, 0),
         groups: nonEmpty.map(({ status, issues }) => ({
-          key: `status:${status}`,
+          key: `${statusAxis(request.group)}:${status}`,
           value: { kind: "status" as const, status },
           count: issues.length,
         })),
@@ -252,11 +269,10 @@ export function statusTableMethodsFromLegacy(
     listIssueTableRows: async (request: IssueTableRowsRequest) => {
       if (request.group.kind === "compound") {
         const primary = request.group.primary;
-        const marker = request.group_key?.lastIndexOf(":status:") ?? -1;
+        const axis = `:${secondaryAxis(request.group)}:`;
+        const marker = request.group_key?.lastIndexOf(axis) ?? -1;
         const status =
-          marker >= 0
-            ? request.group_key?.slice(marker + ":status:".length)
-            : undefined;
+          marker >= 0 ? request.group_key?.slice(marker + axis.length) : undefined;
         const primaryKey =
           marker >= 0
             ? request.group_key?.slice("compound:".length, marker)
@@ -284,8 +300,8 @@ export function statusTableMethodsFromLegacy(
           next_cursor: null,
         };
       }
-      const rawStatus = request.group_key?.replace(/^status:/, "");
-      const status = ALL_STATUSES.find((value) => value === rawStatus);
+      const rawStatus = request.group_key?.replace(/^status(_category)?:/, "");
+      const status = STATUS_ORDER.find((value) => value === rawStatus);
       const issues = status
         ? await rowsForStatus(listIssues, request.query, status)
         : [];
@@ -308,7 +324,7 @@ export function statusTableMethodsFromLegacy(
       // endpoint is never called.
       const groups = request.facets.some((facet) => facet.kind === "status")
         ? await Promise.all(
-            ALL_STATUSES.map(async (status) => ({
+            STATUS_ORDER.map(async (status) => ({
               status,
               issues: await rowsForStatus(
                 listIssues,

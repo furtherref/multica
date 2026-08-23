@@ -64,6 +64,9 @@ const (
 	// retired work refuses new runs until the issue is restored. Reveals
 	// nothing about any target: the caller can already see the issue.
 	ReasonIssueArchived ReasonCode = "issue_archived"
+	// ReasonQuotaExceeded is a policy-neutral refusal for an exhausted
+	// Cloud-provided autopilot interval.
+	ReasonQuotaExceeded ReasonCode = "quota_exceeded"
 	// ReasonInternalError: an unexpected server error prevented a clean decision.
 	ReasonInternalError ReasonCode = "internal_error"
 )

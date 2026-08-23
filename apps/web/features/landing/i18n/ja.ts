@@ -118,7 +118,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
           {
             title: "初回起動時に自動検出",
             description:
-              "Multica は Antigravity、Claude Code、CodeBuddy、Codex、Copilot、Cursor、DeepSeek Harness、DevEco Code、Grok、Hermes、Kimi、Kiro CLI、Oh-My-Pi、OpenClaw、OpenCode、Pi、Qoder、Qoder CN、Qwen Code、QwenPaw、Reasonix、Trae CLI という22種類の対応ツールをスキャンし、見つかったものをそれぞれランタイムとして登録します。",
+              "Multica は Antigravity、Claude Code、CodeBuddy、Codex、Copilot、Cursor、DeepSeek Harness、DevEco Code、Dim、Grok、Hermes、Kimi、Kiro CLI、Oh-My-Pi、OpenClaw、OpenCode、Pi、Qoder、Qoder CN、Qwen Code、QwenPaw、Reasonix、Trae CLI という23種類の対応ツールをスキャンし、見つかったものをそれぞれランタイムとして登録します。",
           },
         ],
       },
@@ -139,7 +139,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
         {
           title: "CLI をインストールしてマシンを接続",
           description:
-            "multica setup を実行すると、OAuth の手順を案内し、デーモンを起動し、22種類の対応コーディングツール(Antigravity、Claude Code、CodeBuddy、Codex、Copilot、Cursor、DeepSeek Harness、DevEco Code、Grok、Hermes、Kimi、Kiro CLI、Oh-My-Pi、OpenClaw、OpenCode、Pi、Qoder、Qoder CN、Qwen Code、QwenPaw、Reasonix、Trae CLI)をスキャンします。すでにインストール済みのものは、自動的にランタイムとして登録されます。",
+            "multica setup を実行すると、OAuth の手順を案内し、デーモンを起動し、23種類の対応コーディングツール(Antigravity、Claude Code、CodeBuddy、Codex、Copilot、Cursor、DeepSeek Harness、DevEco Code、Dim、Grok、Hermes、Kimi、Kiro CLI、Oh-My-Pi、OpenClaw、OpenCode、Pi、Qoder、Qoder CN、Qwen Code、QwenPaw、Reasonix、Trae CLI)をスキャンします。すでにインストール済みのものは、自動的にランタイムとして登録されます。",
         },
         {
           title: "最初のエージェントを作成",
@@ -193,7 +193,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
         {
           question: "Multica はどのコーディングエージェントに対応していますか?",
           answer:
-            "Multica は、Antigravity、Claude Code、CodeBuddy、Codex、Copilot、Cursor、DeepSeek Harness、DevEco Code、Grok、Hermes、Kimi、Kiro CLI、Oh-My-Pi、OpenClaw、OpenCode、Pi、Qoder、Qoder CN、Qwen Code、QwenPaw、Reasonix、Trae CLI の22種類のコーディングツールに標準対応しています。デーモンが、すでにインストール済みの CLI を自動検出し、それぞれをランタイムとして登録します。オープンソースなので、独自のバックエンドを追加することもできます。",
+            "Multica は、Antigravity、Claude Code、CodeBuddy、Codex、Copilot、Cursor、DeepSeek Harness、DevEco Code、Dim、Grok、Hermes、Kimi、Kiro CLI、Oh-My-Pi、OpenClaw、OpenCode、Pi、Qoder、Qoder CN、Qwen Code、QwenPaw、Reasonix、Trae CLI の23種類のコーディングツールに標準対応しています。デーモンが、すでにインストール済みの CLI を自動検出し、それぞれをランタイムとして登録します。オープンソースなので、独自のバックエンドを追加することもできます。",
         },
         {
           question: "セルフホストが必須ですか、それともクラウド版もありますか?",
@@ -268,6 +268,111 @@ export function createJaDict(allowSignup: boolean): LandingDict {
       },
       entries: [
         {
+          version: "0.4.32",
+          date: "2026-08-21",
+          title: "DingTalk グループ、プロジェクト表示、よりスムーズな協働",
+          changes: [],
+          features: [
+            "DingTalk ボットをグループでメンションすると、そのグループが担当エージェントの下に表示されます。",
+            "ボードとテーブルをプロジェクトごとにまとめ、関連する Issue を一緒に見られます。",
+          ],
+          improvements: [
+            "長時間のエージェント実行が、よりスムーズに進みます。",
+            "セルフホスト版は短時間のデータベース障害から自動で復旧します。",
+            "Telegram の案内と返信が英語で表示されます。",
+          ],
+          fixes: [
+            "タスクを再実行しても、進行中の作業は中断されません。",
+            "同時実行のタスクが、互いの作業スペースを上書きしません。",
+            "OpenClaw、Pi、OpenCode で設定済みのカスタムプロバイダーを使えます。",
+            "ワークスペースを切り替えても、リアルタイム更新とメンションが途切れません。",
+            "通常の CLI 出力に、Autopilot の Webhook 認証情報が表示されません。",
+            "無関係なコーディング作業の完了を待たず、エージェントとチャットできます。",
+          ],
+        },
+        {
+          version: "0.4.31",
+          date: "2026-08-20",
+          title: "バックログ移動前の実行確認、Webhook イベントフィルター、Windows ビルド修正",
+          changes: [],
+          improvements: [
+            "Web のヘルプメニューからデスクトップ版をすぐに見つけられます。",
+            "エージェント担当の Issue をバックログから動かす前に、実行を確認できます。",
+            "Webhook のイベントフィルターを追加・削除しやすくなりました。",
+            "/ の入力時に完全一致するスキルが先に表示されます。",
+          ],
+          fixes: [
+            "Windows の CLI ビルドで正しい実行ファイル名が生成されます。",
+            "短い接続切れの後も、エージェントのスキルを読み込めます。",
+            "自動化の実行失敗で内部エラーの詳細が表示されなくなりました。",
+            "負荷が高いワークスペースでもエージェントの更新を安定して受け取れます。",
+          ],
+        },
+        {
+          version: "0.4.30",
+          date: "2026-08-19",
+          title: "安全な Issue 編集、未設定プロパティの絞り込み、明確なエージェント表示",
+          changes: [],
+          features: [
+            "各チャット セッションを担当するエージェントが分かります。",
+            "ワークスペース管理者は連携済みの DingTalk ID を確認できます。",
+            "値が未設定のカスタム プロパティで Issue を絞り込めます。",
+            "編集中に Issue やコメントが変わっても、保存前に両方の内容を比べられます。",
+          ],
+          improvements: [
+            "コマンド パレットから、すべてのワークスペース ページを開けます。",
+            "チャット セッションの再開が速くなりました。",
+            "Issue のアクティビティ時刻が、意味のある更新を反映します。",
+          ],
+          fixes: [
+            "プライベート エージェントを実行できるのは所有者だけです。",
+            "同時実行中も、エージェントの作業場所が混ざりません。",
+            "プロバイダーのコマンドログに認証情報やプロンプトが出ません。",
+            "コメント送信後に誤って失敗と表示されません。",
+            "依存関係のセキュリティ脆弱性を修正しました。",
+          ],
+        },
+        {
+          version: "0.4.29",
+          date: "2026-08-18",
+          title: "MiniMax Code、実行記録の改善、Hermes エージェントの動作修正",
+          changes: [],
+          features: [
+            "MiniMax Code でエージェントを実行できます。",
+            "Cmd/Ctrl+, で設定をデスクトップの新しいタブに開けます。",
+          ],
+          improvements: [
+            "Hermes エージェントのツール実行中も、実行記録にすぐ表示されます。",
+            "実行記録から重複したエージェント名がなくなり、読みやすくなりました。",
+          ],
+          fixes: [
+            "短い接続切れのあとも、エージェントのタスクが続行されます。",
+            "日次・週次のコスト グラフにキャッシュ読み取り料金が含まれます。",
+            "Feishu で直接送ったファイルと音声がエージェントに届きます。",
+            "委任したタスクが失敗すると、元の調整エージェントに戻ります。",
+            "ダウンロードには最新の完全なリリースだけが表示されます。",
+          ],
+        },
+        {
+          version: "0.4.28",
+          date: "2026-08-17",
+          title:
+            "メンバーのカスタム フィールド、スキルの一括更新、分かりやすいアップデートのお知らせ",
+          changes: [],
+          features: [
+            "カスタム フィールドにワークスペースのメンバーを、1 人でも複数でも入れられます。",
+            "選んだスキルを、元のソースからまとめて一度に更新できます。",
+          ],
+          improvements: [
+            "デスクトップのアップデートのお知らせから、そのバージョンの変更履歴を開けます。",
+            "担当者を指定するところで、メンバーのメール アドレスも使えます。",
+          ],
+          fixes: [
+            "デスクトップで新しいタブを開いても、いまのワークスペースが失われません。",
+            "メンバーの絞り込みが、数だけでなく名前とアバターで表示されます。",
+          ],
+        },
+        {
           version: "0.4.27",
           date: "2026-08-17",
           title:
@@ -339,6 +444,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
             "ローカル フォルダーの並列モード、DingTalk のグループ振り分け、スキルの更新",
           changes: [],
           features: [
+            "エージェントを Telegram に接続し、DM、グループのメンション、フォーラム トピックで対話できます。",
             "ローカル フォルダーでタスクを並列に実行し、それぞれがブランチで成果を返します。",
             "1 つの DingTalk ボットで、グループごとに別のエージェントを割り当てられます。",
             "インポートしたスキルを、元のソースからワンクリックで更新できます。",

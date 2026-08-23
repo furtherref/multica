@@ -94,14 +94,14 @@ func TestSkillsSectionOmittedWithoutSkills(t *testing.T) {
 // pointer from the assignment workflow into the Skills protocol. A bare
 // "Follow your Skills" buried among nine steps was the wording that got
 // ignored; it must be replaced with an explicit "read and comply before
-// writing code" pointer, and only when the agent actually has skills.
+// touching code" pointer, and only when the agent actually has skills.
 func TestAssignmentWorkflowPointsToSkillProtocol(t *testing.T) {
 	t.Parallel()
 	withSkills := buildMetaSkillContent("codex", TaskContextForEnv{
 		IssueID:     "11111111-2222-3333-4444-555555555555",
 		AgentSkills: []SkillContextForEnv{{Name: "Backend Standards", Description: "Java", Content: "x"}},
 	})
-	if !strings.Contains(withSkills, "Before writing any code, complete the Skills protocol") {
+	if !strings.Contains(withSkills, "complete the Skills protocol in the `## Skills` section below") {
 		t.Error("assignment workflow must point at the Skills protocol when skills exist")
 	}
 	if strings.Contains(withSkills, "Follow your Skills and Agent Identity") {
@@ -147,13 +147,14 @@ func TestSkillIndexReachesTheBriefNotTheContextFile(t *testing.T) {
 }
 
 // TestCommentTriggeredWorkflowPointsToSkillProtocol locks the Skills-protocol
-// pointer onto the comment-triggered path too. This is the path the original
+// pointer onto a comment-triggered brief. This is the path the original
 // regression actually travelled: the rework that added the test and the code
 // review that missed the missing Javadoc were both comment/mention-triggered.
 // The shared ## Skills block covers it, but a buried protocol with no early
-// inline pointer is exactly the wording that got ignored on the assignment
-// path — the comment path needs the same prominent pointer, and it must call
-// out code review / rework explicitly.
+// inline pointer is exactly the wording that got ignored — so step 3 carries
+// the pointer, and it must call out code review / rework explicitly rather
+// than only "writing code". MUL-6417 collapsed the reply/ownership modes into
+// one workflow, so this now guards the single step every trigger runs.
 func TestCommentTriggeredWorkflowPointsToSkillProtocol(t *testing.T) {
 	t.Parallel()
 	withSkills := buildMetaSkillContent("codex", TaskContextForEnv{

@@ -85,6 +85,7 @@ type Querier interface {
 	GetIssueStatusEntryByKey(ctx context.Context, arg db.GetIssueStatusEntryByKeyParams) (db.IssueStatus, error)
 	ListIssueStatusEntries(ctx context.Context, arg db.ListIssueStatusEntriesParams) ([]db.IssueStatus, error)
 	SeedIssueStatusEntries(ctx context.Context, workspaceID pgtype.UUID) error
+	ListIssueStatusKeysByCategories(ctx context.Context, arg db.ListIssueStatusKeysByCategoriesParams) ([]string, error)
 }
 
 // Canonical returns the 7 built-in status keys in display order.
@@ -316,4 +317,87 @@ func (r *Resolver) Effective(ctx context.Context, q Querier, status string) stri
 		return status
 	}
 	return category
+}
+
+// ExpandCategories turns a set of categories into the status keys that belong
+// to them, for use as an INDEXED `status = ANY(...)` predicate.
+//
+// This exists instead of filtering on issue_effective_status(workspace, status):
+// wrapping the column in a function makes the (workspace_id, status) index
+// unusable, turning a two-page index read into a full workspace scan. Expanding
+// first keeps the original access path — and for a workspace with no custom
+// statuses each category expands to exactly its own key, so the query is
+// byte-for-byte the one that ran before this feature.
+//
+// Archived statuses are included: archiving stops FUTURE assignment but leaves
+// existing issues in place, and those issues must still appear in their
+// category's column.
+//
+// An unseeded workspace yields no rows; the categories themselves are returned
+// in that case, which is correct because a built-in key IS its own category.
+func ExpandCategories(ctx context.Context, q Querier, workspaceID pgtype.UUID, categories []string) ([]string, error) {
+	valid := make([]string, 0, len(categories))
+	for _, c := range categories {
+		if IsCategory(c) {
+			valid = append(valid, c)
+		}
+	}
+	if len(valid) == 0 {
+		return nil, nil
+	}
+	keys, err := q.ListIssueStatusKeysByCategories(ctx, db.ListIssueStatusKeysByCategoriesParams{
+		WorkspaceID: workspaceID,
+		Categories:  valid,
+	})
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(keys)+len(valid))
+	out := make([]string, 0, len(keys)+len(valid))
+	for _, k := range keys {
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	// A category always contains at least its own canonical key, even if the
+	// catalog row is missing (unseeded workspace, mid-rollout).
+	for _, c := range valid {
+		if !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// CustomKeyCategories returns the workspace's CUSTOM status keys mapped to the
+// category each belongs to. Built-ins are deliberately absent: a built-in key IS
+// its own category, so a caller mapping key -> category only needs the
+// exceptions.
+//
+// Callers use this to build a static `CASE i.status WHEN ... ELSE i.status END`
+// scalar expression for GROUP BY. That keeps category grouping a plain column
+// rewrite rather than a per-row function call or a join, and for a workspace
+// with no custom statuses the map is empty and the CASE collapses to `i.status`
+// — byte-for-byte the expression that ran before this feature.
+//
+// Archived statuses are included, for the same reason ExpandCategories includes
+// them: issues left on one must still group into their category.
+func CustomKeyCategories(ctx context.Context, q Querier, workspaceID pgtype.UUID) (map[string]string, error) {
+	entries, err := q.ListIssueStatusEntries(ctx, db.ListIssueStatusEntriesParams{
+		WorkspaceID:     workspaceID,
+		IncludeArchived: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if IsBuiltIn(e.Key) || !IsCategory(e.Category) {
+			continue
+		}
+		out[e.Key] = e.Category
+	}
+	return out, nil
 }

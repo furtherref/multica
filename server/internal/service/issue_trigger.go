@@ -104,6 +104,13 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		canAccess = allowAllAgents
 	}
 
+	// The status source also requires LEAVING the backlog category, not merely
+	// changing the status key. Before custom statuses a key change out of
+	// `backlog` was always a category change, so the two were the same
+	// condition; now `backlog` → a custom status in the `backlog` category is a
+	// move within the parking lot, and starting a run on it would break the one
+	// promise backlog makes. (MUL-6463)
+	//
 	// Both sides of the transition are normalized to the canonical status they
 	// inherit, so a custom status in the `backlog` category parks exactly like
 	// Backlog and a custom status in the `todo` category starts a run exactly
@@ -124,7 +131,9 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		}
 		source = RunSourceAssign
 	case in.StatusChanged && prevStatus == "backlog" &&
-		currentStatus != "done" && currentStatus != "cancelled" && currentStatus != "archive":
+		currentStatus != "backlog" &&
+		currentStatus != "done" && currentStatus != "cancelled" &&
+		currentStatus != "archive":
 		if probe.IsSelfLoop != nil && probe.IsSelfLoop() {
 			return IssueRunTrigger{}, false
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueguard"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -312,14 +313,37 @@ func TestClaimSkipsTasksOnArchivedIssue(t *testing.T) {
 	taskID := insertQueuedIssueTask(t, agentID, issueID)
 
 	ctx := context.Background()
+	// ClaimAgentTask also gates on the task's runtime being online and freshly
+	// seen (MUL-5651). Satisfy that here, or the archive assertion below would
+	// pass for the wrong reason — no rows because the runtime looked stale.
+	runtimeID := handlerTestRuntimeID(t)
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id = $1
+	`, runtimeID); err != nil {
+		t.Fatalf("mark runtime online: %v", err)
+	}
+	claim := func() (db.AgentTaskQueue, error) {
+		return db.New(testPool).ClaimAgentTask(ctx, db.ClaimAgentTaskParams{
+			AgentID:          parseUUID(agentID),
+			RuntimeID:        parseUUID(runtimeID),
+			PrepareLeaseSecs: 60,
+			RuntimeStaleSecs: service.RuntimeClaimFreshnessSeconds,
+		})
+	}
+	// Claimable before the archive: proves the no-rows below is the archive
+	// predicate talking, not a fixture that could never have been claimed.
+	if _, err := claim(); err != nil {
+		t.Fatalf("claim before archive: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_task_queue SET status = 'queued', dispatched_at = NULL, prepare_lease_expires_at = NULL WHERE id = $1
+	`, taskID); err != nil {
+		t.Fatalf("requeue task: %v", err)
+	}
 	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'archive' WHERE id = $1`, issueID); err != nil {
 		t.Fatalf("archive issue: %v", err)
 	}
-	q := db.New(testPool)
-	if _, err := q.ClaimAgentTask(ctx, db.ClaimAgentTaskParams{
-		AgentID:          parseUUID(agentID),
-		PrepareLeaseSecs: 60,
-	}); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := claim(); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("claim must skip the archived issue's task, got err=%v", err)
 	}
 
@@ -330,10 +354,7 @@ func TestClaimSkipsTasksOnArchivedIssue(t *testing.T) {
 	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'todo' WHERE id = $1`, issueID); err != nil {
 		t.Fatalf("restore issue: %v", err)
 	}
-	claimed, err := q.ClaimAgentTask(ctx, db.ClaimAgentTaskParams{
-		AgentID:          parseUUID(agentID),
-		PrepareLeaseSecs: 60,
-	})
+	claimed, err := claim()
 	if err != nil {
 		t.Fatalf("claim after restore: %v", err)
 	}
@@ -387,7 +408,7 @@ func TestFailTaskSuppressesRetryOnArchivedIssue(t *testing.T) {
 	// retryEligible fires and wantRetry is true — CreateRetryTask's archive
 	// predicate (WHERE ... issue.status != 'archive') must then suppress the
 	// clone via ErrNoRows without failing the fail commit.
-	if _, err := testHandler.TaskService.FailTask(context.Background(), parseUUID(taskID), "boom", "", "", "", "timeout", false, ""); err != nil {
+	if _, err := testHandler.TaskService.FailTask(context.Background(), parseUUID(taskID), "boom", "", "", "", "timeout", false, "", ""); err != nil {
 		t.Fatalf("FailTask: %v", err)
 	}
 
@@ -421,7 +442,7 @@ func TestFailTaskCreatesRetryOnNonArchivedIssue(t *testing.T) {
 	// archive step: "timeout" is retryable and insertRunningIssueTask leaves
 	// attempt=1 < max_attempts=2, so retryEligible/wantRetry should fire and
 	// CreateRetryTask should clone a second row.
-	if _, err := testHandler.TaskService.FailTask(context.Background(), parseUUID(taskID), "boom", "", "", "", "timeout", false, ""); err != nil {
+	if _, err := testHandler.TaskService.FailTask(context.Background(), parseUUID(taskID), "boom", "", "", "", "timeout", false, "", ""); err != nil {
 		t.Fatalf("FailTask: %v", err)
 	}
 
@@ -628,19 +649,41 @@ func TestReclaimSkipsTasksOnArchivedIssue(t *testing.T) {
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
 
 	ctx := context.Background()
-	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'archive' WHERE id = $1`, issueID); err != nil {
-		t.Fatalf("archive issue: %v", err)
-	}
 	var runtimeID string
 	if err := testPool.QueryRow(ctx, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
 		t.Fatalf("load runtime id: %v", err)
 	}
+	// Reclaim also gates on the runtime being online and freshly seen
+	// (MUL-5651). Satisfy that, or the archive assertion below would pass for
+	// the wrong reason — no rows because the runtime looked stale.
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id = $1
+	`, runtimeID); err != nil {
+		t.Fatalf("mark runtime online: %v", err)
+	}
 	q := db.New(testPool)
-	if _, err := q.ReclaimStaleDispatchedTaskForRuntime(ctx, db.ReclaimStaleDispatchedTaskForRuntimeParams{
-		RuntimeID:         parseUUID(runtimeID),
-		ClaimRecoverySecs: 60,
-		PrepareLeaseSecs:  60,
-	}); !errors.Is(err, pgx.ErrNoRows) {
+	reclaim := func() (db.AgentTaskQueue, error) {
+		return q.ReclaimStaleDispatchedTaskForRuntime(ctx, db.ReclaimStaleDispatchedTaskForRuntimeParams{
+			RuntimeID:         parseUUID(runtimeID),
+			ClaimRecoverySecs: 60,
+			PrepareLeaseSecs:  60,
+			RuntimeStaleSecs:  service.RuntimeClaimFreshnessSeconds,
+		})
+	}
+	// Reclaimable before the archive: proves the no-rows below is the archive
+	// predicate talking, not a fixture that was never eligible.
+	if _, err := reclaim(); err != nil {
+		t.Fatalf("reclaim before archive: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_task_queue SET dispatched_at = now() - interval '1 hour', prepare_lease_expires_at = NULL WHERE id = $1
+	`, taskID); err != nil {
+		t.Fatalf("restage stale dispatch: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'archive' WHERE id = $1`, issueID); err != nil {
+		t.Fatalf("archive issue: %v", err)
+	}
+	if _, err := reclaim(); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("reclaim must skip the archived issue's task, got err=%v", err)
 	}
 }
