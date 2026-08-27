@@ -48,6 +48,7 @@ describe("WSClient", () => {
     expect(url.searchParams.get("workspace_slug")).toBe("acme");
     expect(url.searchParams.get("client_platform")).toBe("desktop");
     expect(url.searchParams.get("client_version")).toBe("1.2.3");
+    expect(url.searchParams.get("task_scopes")).toBe("1");
     expect(url.searchParams.get("client_os")).toBe("macos");
     // Token must never appear in the URL — it is delivered as the first
     // WS message in token mode.

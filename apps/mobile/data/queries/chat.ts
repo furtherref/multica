@@ -16,6 +16,7 @@
  * use-chat-session-realtime.ts).
  */
 import { queryOptions } from "@tanstack/react-query";
+import type { TaskMessagePayload } from "@multica/core/types";
 import { api } from "@/data/api";
 import { isTaskMessageTaskId } from "./task-message-id";
 
@@ -68,4 +69,13 @@ export const taskMessagesOptions = (taskId: string | null | undefined) =>
     queryFn: ({ signal }) => api.listTaskMessages(taskId!, { signal }),
     enabled: isTaskMessageTaskId(taskId),
     staleTime: Infinity,
+    structuralSharing: (previous, incoming) => {
+      const existing = (previous ?? []) as TaskMessagePayload[];
+      const next = incoming as TaskMessagePayload[];
+      const known = new Set(existing.map((message) => message.seq));
+      const fresh = next.filter((message) => !known.has(message.seq));
+      return fresh.length === 0
+        ? existing
+        : [...existing, ...fresh].sort((left, right) => left.seq - right.seq);
+    },
   });

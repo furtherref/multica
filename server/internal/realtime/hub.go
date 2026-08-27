@@ -47,7 +47,15 @@ type ScopeAuthorizer interface {
 // to auto-subscribe a new connection. Resolution happens before registration
 // and never while the Hub lock is held.
 type VisibleAgentResolver interface {
-	VisibleAgentIDs(ctx context.Context, userID, workspaceID string) ([]string, error)
+	VisibleAgentScopes(ctx context.Context, userID, workspaceID string) (AgentScopeVisibility, error)
+}
+
+// AgentScopeVisibility separates workspace-visible user Agents from private
+// creator-owned system carriers used by Agent Builder Chat. System carriers
+// may receive user_agent events but must never widen workspace_agent fanout.
+type AgentScopeVisibility struct {
+	WorkspaceAgentIDs []string
+	UserAgentIDs      []string
 }
 
 var allowedWSOrigins atomic.Value // holds []string
@@ -234,10 +242,14 @@ type Client struct {
 	send        chan []byte
 	userID      string
 	workspaceID string
-	// visibleAgentIDs is resolved before registration and is immutable for the
-	// life of this connection. Permission changes disconnect the connection so
-	// a reconnect obtains a fresh snapshot.
-	visibleAgentIDs []string
+	// Agent scope snapshots are resolved before registration and immutable for
+	// the life of this connection. Permission changes disconnect the connection
+	// so a reconnect obtains a fresh snapshot.
+	workspaceAgentIDs []string
+	userAgentIDs      []string
+	// supportsTaskScopes is an additive WebSocket capability. Older installed
+	// desktop clients omit it and join filtered compatibility rooms instead.
+	supportsTaskScopes bool
 	// authorizationVersion fences the connection-time visibility snapshot
 	// against a concurrent permission mutation before registration.
 	authorizationVersion uint64
@@ -303,6 +315,12 @@ type Hub struct {
 	// invalidated. A client resolved against an older version is rejected by
 	// the registration loop, closing the resolve-to-register race.
 	authorizationVersions map[string]uint64
+	// Authorization control frames use a Hub-level dedup cache because they act
+	// on rooms, not on an individual Client whose normal event cache could
+	// absorb the local/Redis loopback duplicate.
+	controlDedupMu sync.Mutex
+	controlSeenIDs map[string]struct{}
+	controlSeen    []string
 
 	// accountChecker verifies a user's CURRENT status before a suspension
 	// control frame is acted on (guards against relay REPLAYS of old suspend
@@ -342,14 +360,14 @@ func (h *Hub) SetVisibleAgentResolver(r VisibleAgentResolver) {
 	h.resolver = r
 }
 
-func (h *Hub) resolveVisibleAgentIDs(ctx context.Context, userID, workspaceID string) ([]string, error) {
+func (h *Hub) resolveVisibleAgentScopes(ctx context.Context, userID, workspaceID string) (AgentScopeVisibility, error) {
 	h.mu.RLock()
 	resolver := h.resolver
 	h.mu.RUnlock()
 	if resolver == nil {
-		return nil, nil
+		return AgentScopeVisibility{}, nil
 	}
-	return resolver.VisibleAgentIDs(ctx, userID, workspaceID)
+	return resolver.VisibleAgentScopes(ctx, userID, workspaceID)
 }
 
 func (h *Hub) workspaceAuthorizationVersion(workspaceID string) uint64 {
@@ -391,10 +409,19 @@ func (h *Hub) Run() {
 			if client.userID != "" {
 				h.subscribe(client, ScopeUser, client.userID)
 			}
-			for _, agentID := range client.visibleAgentIDs {
+			for _, agentID := range client.workspaceAgentIDs {
 				h.subscribe(client, ScopeWorkspaceAgent, WorkspaceAgentScopeID(client.workspaceID, agentID))
-				if client.userID != "" {
-					h.subscribe(client, ScopeUserAgent, UserAgentScopeID(client.userID, agentID))
+				if !client.supportsTaskScopes {
+					h.subscribe(client, ScopeLegacyWorkspaceAgent, WorkspaceAgentScopeID(client.workspaceID, agentID))
+				}
+			}
+			for _, agentID := range client.userAgentIDs {
+				if client.userID == "" {
+					continue
+				}
+				h.subscribe(client, ScopeUserAgent, UserAgentScopeID(client.userID, agentID))
+				if !client.supportsTaskScopes {
+					h.subscribe(client, ScopeLegacyUserAgent, UserAgentScopeID(client.userID, agentID))
 				}
 			}
 			slog.Info("ws client connected", "workspace_id", client.workspaceID, "user_id", client.userID, "total_clients", total)
@@ -564,6 +591,15 @@ func (h *Hub) BroadcastToScopeDedup(scopeType, scopeID string, message []byte, e
 		return
 	}
 	if scopeType == ScopeWorkspaceAuthorization {
+		if !h.markControlSeen(eventID) {
+			return
+		}
+		if isAuthorizationExpandedControlFrame(message) {
+			// Visibility resolution can touch the database once per connected user.
+			// Keep it off both the HTTP mutation path and the Redis relay consumer.
+			go h.ExpandWorkspaceAuthorization(scopeID)
+			return
+		}
 		h.DisconnectWorkspace(scopeID)
 		return
 	}
@@ -592,6 +628,42 @@ func (h *Hub) BroadcastToScopeDedup(scopeType, scopeID string, message []byte, e
 	if len(slow) > 0 {
 		h.evictSlow(slow)
 	}
+}
+
+func (h *Hub) markControlSeen(eventID string) bool {
+	if eventID == "" {
+		return true
+	}
+	h.controlDedupMu.Lock()
+	defer h.controlDedupMu.Unlock()
+	if h.controlSeenIDs == nil {
+		h.controlSeenIDs = make(map[string]struct{}, dedupCapacity)
+	}
+	if _, exists := h.controlSeenIDs[eventID]; exists {
+		return false
+	}
+	h.controlSeenIDs[eventID] = struct{}{}
+	h.controlSeen = append(h.controlSeen, eventID)
+	if len(h.controlSeen) > dedupCapacity {
+		drop := h.controlSeen[0]
+		h.controlSeen = h.controlSeen[1:]
+		delete(h.controlSeenIDs, drop)
+	}
+	return true
+}
+
+// isAuthorizationExpandedControlFrame recognizes the control frame after the
+// Redis broadcaster has injected event_id and potentially reordered JSON keys.
+// Unknown or malformed authorization frames remain fail-closed and therefore
+// follow the disconnect path in BroadcastToScopeDedup.
+func isAuthorizationExpandedControlFrame(message []byte) bool {
+	if len(message) > 256 || !bytes.Contains(message, []byte(`"authorization:expanded"`)) {
+		return false
+	}
+	var probe struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(message, &probe) == nil && probe.Type == "authorization:expanded"
 }
 
 // fanoutAll delivers message to every connected client. If excludeWorkspace
@@ -789,6 +861,46 @@ func (h *Hub) DisconnectWorkspace(workspaceID string) {
 	h.mu.Unlock()
 	for _, client := range targets {
 		h.removeClient(client)
+	}
+}
+
+// ExpandWorkspaceAuthorization resolves each connected user's latest Agent
+// visibility and joins only missing rooms. It never removes a room, so callers
+// must use it only for additive mutations such as Agent creation. Resolution
+// and room subscription happen without holding the Hub lock across database
+// I/O; narrowing mutations use DisconnectWorkspace instead.
+func (h *Hub) ExpandWorkspaceAuthorization(workspaceID string) {
+	h.mu.RLock()
+	clientsByUser := make(map[string][]*Client)
+	for client := range h.clients {
+		if client.workspaceID == workspaceID && client.userID != "" {
+			clientsByUser[client.userID] = append(clientsByUser[client.userID], client)
+		}
+	}
+	h.mu.RUnlock()
+
+	for userID, clients := range clientsByUser {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		visibility, err := h.resolveVisibleAgentScopes(ctx, userID, workspaceID)
+		cancel()
+		if err != nil {
+			slog.Warn("ws: failed to expand Agent authorization", "workspace_id", workspaceID, "user_id", userID, "error", err)
+			continue
+		}
+		for _, client := range clients {
+			for _, agentID := range visibility.WorkspaceAgentIDs {
+				h.subscribe(client, ScopeWorkspaceAgent, WorkspaceAgentScopeID(workspaceID, agentID))
+				if !client.supportsTaskScopes {
+					h.subscribe(client, ScopeLegacyWorkspaceAgent, WorkspaceAgentScopeID(workspaceID, agentID))
+				}
+			}
+			for _, agentID := range visibility.UserAgentIDs {
+				h.subscribe(client, ScopeUserAgent, UserAgentScopeID(userID, agentID))
+				if !client.supportsTaskScopes {
+					h.subscribe(client, ScopeLegacyUserAgent, UserAgentScopeID(userID, agentID))
+				}
+			}
+		}
 	}
 }
 
@@ -1118,7 +1230,7 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, ac AccountC
 	}
 
 	authorizationVersion := hub.workspaceAuthorizationVersion(workspaceID)
-	visibleAgentIDs, err := hub.resolveVisibleAgentIDs(r.Context(), userID, workspaceID)
+	visibleAgentScopes, err := hub.resolveVisibleAgentScopes(r.Context(), userID, workspaceID)
 	if err != nil {
 		slog.Error("ws: failed to resolve visible Agents", "workspace_id", workspaceID, "user_id", userID, "error", err)
 		writeWSAuthErrorAndClose(conn, []byte(`{"error":"authorization lookup failed"}`), "workspace_id", workspaceID, "user_id", userID)
@@ -1149,12 +1261,14 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, ac AccountC
 	clientPlatform := r.URL.Query().Get("client_platform")
 	clientVersion := r.URL.Query().Get("client_version")
 	clientOS := r.URL.Query().Get("client_os")
+	supportsTaskScopes := r.URL.Query().Get("task_scopes") == "1"
 	slog.Info("websocket connected",
 		"user_id", userID,
 		"workspace_id", workspaceID,
 		"client_platform", clientPlatform,
 		"client_version", clientVersion,
 		"client_os", clientOS,
+		"task_scopes", supportsTaskScopes,
 	)
 
 	client := &Client{
@@ -1163,7 +1277,9 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, ac AccountC
 		send:                 make(chan []byte, 256),
 		userID:               userID,
 		workspaceID:          workspaceID,
-		visibleAgentIDs:      visibleAgentIDs,
+		workspaceAgentIDs:    visibleAgentScopes.WorkspaceAgentIDs,
+		userAgentIDs:         visibleAgentScopes.UserAgentIDs,
+		supportsTaskScopes:   supportsTaskScopes,
 		authorizationVersion: authorizationVersion,
 	}
 	hub.register <- client

@@ -241,6 +241,7 @@ export class WSClient {
     url.searchParams.set("workspace_slug", this.opts.workspaceSlug);
     url.searchParams.set("client_platform", "mobile");
     url.searchParams.set("client_os", "ios");
+    url.searchParams.set("task_scopes", "1");
     if (this.opts.clientVersion) {
       url.searchParams.set("client_version", this.opts.clientVersion);
     }

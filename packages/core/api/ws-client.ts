@@ -106,6 +106,9 @@ export class WSClient {
       url.searchParams.set("client_version", this.identity.version);
     if (this.identity?.os)
       url.searchParams.set("client_os", this.identity.os);
+    // Additive capability marker: old installed desktop builds omit it and the
+    // server keeps them in authorization-filtered compatibility rooms.
+    url.searchParams.set("task_scopes", "1");
 
     this.ws = new WebSocket(url.toString());
 

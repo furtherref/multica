@@ -67,6 +67,7 @@ describe("WSClient application heartbeat", () => {
   it("reconnects a stale OPEN socket through the jittered backoff path", () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
     const { client, socket } = connectAuthenticatedClient();
+    expect(new URL(socket.url).searchParams.get("task_scopes")).toBe("1");
 
     expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
       { type: "auth", payload: { token: "token" } },

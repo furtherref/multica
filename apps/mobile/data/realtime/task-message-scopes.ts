@@ -17,7 +17,7 @@ interface ObservableQuery {
 export function bindTaskMessageScopes(queryClient: QueryClient, ws: WSClient) {
   const releases = new Map<string, () => void>();
 
-  const syncQuery = (query: ObservableQuery) => {
+  const syncQuery = (query: ObservableQuery, reconcile = false) => {
     const [prefix, taskId, ...rest] = query.queryKey;
     if (
       prefix !== "task-messages" ||
@@ -36,11 +36,24 @@ export function bindTaskMessageScopes(queryClient: QueryClient, ws: WSClient) {
       release();
       releases.delete(taskId);
     }
+    if (active && reconcile) {
+      void queryClient.refetchQueries({
+        queryKey: ["task-messages", taskId],
+        exact: true,
+        type: "active",
+      });
+    }
   };
 
   const cache = queryClient.getQueryCache();
-  for (const query of cache.getAll()) syncQuery(query);
-  const unsubscribe = cache.subscribe((event) => syncQuery(event.query));
+  for (const query of cache.getAll())
+    syncQuery(query, query.getObserversCount() > 0);
+  const unsubscribe = cache.subscribe((event) =>
+    syncQuery(
+      event.query,
+      event.type === "observerAdded" && event.query.getObserversCount() === 1,
+    ),
+  );
   const unsubscribeMessages = ws.on("task:message", (payload) => {
     if (!releases.has(payload.task_id)) return;
     queryClient.setQueryData<TaskMessagePayload[]>(
@@ -51,10 +64,20 @@ export function bindTaskMessageScopes(queryClient: QueryClient, ws: WSClient) {
       },
     );
   });
+  const unsubscribeReconnect = ws.onReconnect(() => {
+    for (const taskId of releases.keys()) {
+      void queryClient.refetchQueries({
+        queryKey: ["task-messages", taskId],
+        exact: true,
+        type: "active",
+      });
+    }
+  });
 
   return () => {
     unsubscribe();
     unsubscribeMessages();
+    unsubscribeReconnect();
     for (const release of releases.values()) release();
     releases.clear();
   };

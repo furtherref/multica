@@ -54,6 +54,27 @@ func (f *fakeBroadcaster) Broadcast(message []byte) {
 	f.broadcastCalled++
 }
 
+func TestRegisterListeners_InternalAuthorizationExpansionNeverBroadcasts(t *testing.T) {
+	bus := events.New()
+	fb := &fakeBroadcaster{}
+	registerListeners(bus, fb)
+
+	bus.Publish(events.Event{
+		Type:        events.EventWorkspaceAuthorizationExpanded,
+		WorkspaceID: "ws-1",
+	})
+
+	if len(fb.scopeCalls) != 1 {
+		t.Fatalf("authorization expansion scope calls = %+v, want one", fb.scopeCalls)
+	}
+	if got := fb.scopeCalls[0]; got.scopeType != realtime.ScopeWorkspaceAuthorization || got.scopeID != "ws-1" {
+		t.Fatalf("authorization expansion scope = %s:%s, want %s:ws-1", got.scopeType, got.scopeID, realtime.ScopeWorkspaceAuthorization)
+	}
+	if len(fb.workspaceCalls) != 0 {
+		t.Fatalf("internal authorization expansion leaked to workspace clients: %+v", fb.workspaceCalls)
+	}
+}
+
 func TestRegisterListeners_TaskContentUsesTaskScope(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -74,19 +95,48 @@ func TestRegisterListeners_TaskContentUsesTaskScope(t *testing.T) {
 				Type:        tc.eventType,
 				WorkspaceID: "ws-1",
 				TaskID:      tc.taskID,
+				AgentID:     "agent-1",
 				Payload:     map[string]any{"task_id": tc.taskID},
 			})
 
-			if len(fb.scopeCalls) != 1 {
-				t.Fatalf("BroadcastToScope calls = %d, want 1", len(fb.scopeCalls))
+			if len(fb.scopeCalls) != 2 {
+				t.Fatalf("BroadcastToScope calls = %d, want task scope plus legacy compatibility scope", len(fb.scopeCalls))
 			}
 			if fb.scopeCalls[0].scopeType != "task" || fb.scopeCalls[0].scopeID != tc.taskID {
 				t.Fatalf("task event scope = %s:%s, want task:%s", fb.scopeCalls[0].scopeType, fb.scopeCalls[0].scopeID, tc.taskID)
+			}
+			wantLegacyID := realtime.WorkspaceAgentScopeID("ws-1", "agent-1")
+			if got := fb.scopeCalls[1]; got.scopeType != realtime.ScopeLegacyWorkspaceAgent || got.scopeID != wantLegacyID {
+				t.Fatalf("legacy task event scope = %s:%s, want %s:%s", got.scopeType, got.scopeID, realtime.ScopeLegacyWorkspaceAgent, wantLegacyID)
 			}
 			if len(fb.workspaceCalls) != 0 {
 				t.Fatalf("task content leaked to %d workspace broadcast(s)", len(fb.workspaceCalls))
 			}
 		})
+	}
+}
+
+func TestRegisterListeners_ChatTaskContentUsesCreatorLegacyScope(t *testing.T) {
+	bus := events.New()
+	fb := &fakeBroadcaster{}
+	registerListeners(bus, fb)
+
+	bus.Publish(events.Event{
+		Type:            protocol.EventTaskMessage,
+		WorkspaceID:     "ws-1",
+		TaskID:          "task-1",
+		AgentID:         "agent-1",
+		ChatSessionID:   "chat-1",
+		RecipientUserID: "creator-1",
+		Payload:         map[string]any{"task_id": "task-1", "content": "private"},
+	})
+
+	if len(fb.scopeCalls) != 2 {
+		t.Fatalf("scope calls = %+v, want task scope plus legacy creator scope", fb.scopeCalls)
+	}
+	wantLegacyID := realtime.UserAgentScopeID("creator-1", "agent-1")
+	if got := fb.scopeCalls[1]; got.scopeType != realtime.ScopeLegacyUserAgent || got.scopeID != wantLegacyID {
+		t.Fatalf("legacy chat task scope = %s:%s, want %s:%s", got.scopeType, got.scopeID, realtime.ScopeLegacyUserAgent, wantLegacyID)
 	}
 }
 
@@ -225,7 +275,6 @@ func TestRegisterListeners_VisibilityChangesInvalidateWorkspaceAuthorization(t *
 		name  string
 		event events.Event
 	}{
-		{name: "Agent created", event: events.Event{Type: protocol.EventAgentCreated, WorkspaceID: "ws-1"}},
 		{name: "Agent archived", event: events.Event{Type: protocol.EventAgentArchived, WorkspaceID: "ws-1"}},
 		{name: "Agent restored", event: events.Event{Type: protocol.EventAgentRestored, WorkspaceID: "ws-1"}},
 		{name: "member role updated", event: events.Event{Type: protocol.EventMemberUpdated, WorkspaceID: "ws-1"}},
@@ -248,5 +297,33 @@ func TestRegisterListeners_VisibilityChangesInvalidateWorkspaceAuthorization(t *
 				t.Fatalf("authorization invalidation was not published: %+v", fb.scopeCalls)
 			}
 		})
+	}
+}
+
+func TestRegisterListeners_AgentCreatedDoesNotDisconnectWorkspace(t *testing.T) {
+	bus := events.New()
+	fb := &fakeBroadcaster{}
+	registerListeners(bus, fb)
+	bus.Publish(events.Event{Type: protocol.EventAgentCreated, WorkspaceID: "ws-1"})
+
+	var expansion bool
+	for _, call := range fb.scopeCalls {
+		if call.scopeType == realtime.ScopeWorkspaceAuthorization && string(call.msg) == string(realtime.AuthorizationExpandedFrame()) {
+			expansion = true
+		}
+	}
+	if !expansion {
+		t.Fatalf("Agent creation did not request in-place authorization expansion: %+v", fb.scopeCalls)
+	}
+}
+
+func TestRegisterListeners_UnknownWorkspaceEventFailsClosed(t *testing.T) {
+	bus := events.New()
+	fb := &fakeBroadcaster{}
+	registerListeners(bus, fb)
+	bus.Publish(events.Event{Type: "future:unclassified", WorkspaceID: "ws-1", Payload: map[string]any{"secret": "no"}})
+
+	if len(fb.scopeCalls) != 0 || len(fb.workspaceCalls) != 0 || len(fb.userCalls) != 0 || fb.broadcastCalled != 0 {
+		t.Fatalf("unclassified workspace event was delivered: scopes=%+v workspaces=%+v users=%+v global=%d", fb.scopeCalls, fb.workspaceCalls, fb.userCalls, fb.broadcastCalled)
 	}
 }

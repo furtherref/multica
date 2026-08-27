@@ -11,6 +11,7 @@ describe("bindTaskMessageScopes", () => {
     const releaseScope = vi.fn(() => order.push("unsubscribe"));
     const ws = {
       on: vi.fn(() => () => {}),
+      onReconnect: vi.fn(() => () => {}),
       subscribeScope: vi.fn(() => {
         order.push("subscribe");
         return releaseScope;
@@ -44,9 +45,63 @@ describe("bindTaskMessageScopes", () => {
     unbind();
   });
 
+  it("refetches a fresh cached transcript when it is reopened", async () => {
+    let reconnect: (() => void) | undefined;
+    const ws = {
+      on: vi.fn(() => () => {}),
+      onReconnect: vi.fn((handler: () => void) => {
+        reconnect = handler;
+        return () => {};
+      }),
+      subscribeScope: vi.fn(() => () => {}),
+    } as unknown as WSClient;
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    const unbind = bindTaskMessageScopes(queryClient, ws);
+    const queryFn = vi
+      .fn()
+      .mockResolvedValueOnce([{ task_id: TASK_ID, seq: 1, type: "text" }])
+      .mockResolvedValueOnce([
+        { task_id: TASK_ID, seq: 1, type: "text" },
+        { task_id: TASK_ID, seq: 2, type: "text" },
+      ]);
+    const options = {
+      queryKey: ["task-messages", TASK_ID] as const,
+      queryFn,
+      staleTime: Infinity,
+    };
+
+    const first = new QueryObserver(queryClient, options);
+    const closeFirst = first.subscribe(() => {});
+    await vi.waitFor(() => expect(queryFn).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(
+        queryClient.getQueryData<unknown[]>(options.queryKey),
+      ).toHaveLength(1),
+    );
+    closeFirst();
+
+    const reopened = new QueryObserver(queryClient, options);
+    const closeReopened = reopened.subscribe(() => {});
+    await vi.waitFor(() => expect(queryFn).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(
+        queryClient.getQueryData<unknown[]>(options.queryKey),
+      ).toHaveLength(2),
+    );
+
+    reconnect?.();
+    await vi.waitFor(() => expect(queryFn).toHaveBeenCalledTimes(3));
+
+    closeReopened();
+    unbind();
+  });
+
   it("ignores malformed and non-task query keys", () => {
     const ws = {
       on: vi.fn(() => () => {}),
+      onReconnect: vi.fn(() => () => {}),
       subscribeScope: vi.fn(() => () => {}),
     } as unknown as WSClient;
     const queryClient = new QueryClient();
@@ -83,6 +138,7 @@ describe("bindTaskMessageScopes", () => {
     }) => void) | undefined;
     const ws = {
       subscribeScope: vi.fn(() => () => {}),
+      onReconnect: vi.fn(() => () => {}),
       on: vi.fn((event: string, handler: typeof onTaskMessage) => {
         if (event === "task:message") onTaskMessage = handler;
         return () => {};

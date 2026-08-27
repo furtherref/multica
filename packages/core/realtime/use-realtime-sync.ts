@@ -756,7 +756,13 @@ export function useRealtimeSync(
     if (!ws) return;
 
     const releases = new Map<string, () => void>();
-    const syncQuery = (query: { queryKey: readonly unknown[]; getObserversCount: () => number }) => {
+    const syncQuery = (
+      query: {
+        queryKey: readonly unknown[];
+        getObserversCount: () => number;
+      },
+      reconcile = false,
+    ) => {
       const [prefix, taskId, ...rest] = query.queryKey;
       if (
         prefix !== "task-messages" ||
@@ -775,11 +781,27 @@ export function useRealtimeSync(
         release();
         releases.delete(taskId);
       }
+      if (active && reconcile) {
+        // staleTime is Infinity, so reopening an existing cache would otherwise
+        // skip HTTP reconciliation and permanently miss frames sent while closed.
+        // The scope is joined above before this forced catch-up request starts.
+        void qc.refetchQueries({
+          queryKey: ["task-messages", taskId],
+          exact: true,
+          type: "active",
+        });
+      }
     };
 
     const cache = qc.getQueryCache();
-    for (const query of cache.getAll()) syncQuery(query);
-    const unsubscribe = cache.subscribe((event) => syncQuery(event.query));
+    for (const query of cache.getAll())
+      syncQuery(query, query.getObserversCount() > 0);
+    const unsubscribe = cache.subscribe((event) =>
+      syncQuery(
+        event.query,
+        event.type === "observerAdded" && event.query.getObserversCount() === 1,
+      ),
+    );
 
     return () => {
       unsubscribe();

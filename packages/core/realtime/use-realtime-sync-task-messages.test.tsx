@@ -131,6 +131,34 @@ describe("useRealtimeSync — task:message fanout guards (MUL-6396)", () => {
     expect(releaseScope).toHaveBeenCalledTimes(1);
   });
 
+  it("refetches an Infinity-stale transcript every time it is reopened", async () => {
+    listTaskMessages.mockResolvedValueOnce([
+      msg(HELD_TASK, 1, { content: "first" }),
+    ]);
+    mount();
+
+    const first = new QueryObserver(qc, taskMessagesOptions(HELD_TASK));
+    const closeFirst = first.subscribe(() => {});
+    await vi.waitFor(() => expect(listTaskMessages).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(cached(qc, HELD_TASK)?.map((m) => m.seq)).toEqual([1]),
+    );
+    closeFirst();
+
+    listTaskMessages.mockResolvedValueOnce([
+      msg(HELD_TASK, 1, { content: "first" }),
+      msg(HELD_TASK, 2, { content: "missed while closed" }),
+    ]);
+    const reopened = new QueryObserver(qc, taskMessagesOptions(HELD_TASK));
+    const closeReopened = reopened.subscribe(() => {});
+
+    await vi.waitFor(() => expect(listTaskMessages).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(cached(qc, HELD_TASK)?.map((m) => m.seq)).toEqual([1, 2]),
+    );
+    closeReopened();
+  });
+
   /** Simulates a mounted view rendering this task's timeline. */
   function holdTimeline(taskId: string) {
     const observer = new QueryObserver(qc, taskMessagesOptions(taskId));

@@ -38,6 +38,47 @@ var internalOnlyPayloadKeys = map[string][]string{
 	protocol.EventIssueUpdated: {"prev_description", "prev_title"},
 }
 
+// workspaceRealtimeEvents is the positive routing registry for ordinary
+// workspace broadcasts. Adding a protocol constant is not enough to put it on
+// the wire: the event must be classified here, preventing future producers
+// from silently falling through to broad workspace fanout.
+var workspaceRealtimeEvents = map[string]bool{
+	protocol.EventIssueCreated: true, protocol.EventIssueUpdated: true, protocol.EventIssueDeleted: true,
+	protocol.EventIssueMetadataChanged: true, protocol.EventIssueAttachmentsChanged: true,
+	protocol.EventCommentCreated: true, protocol.EventCommentUpdated: true, protocol.EventCommentDeleted: true,
+	protocol.EventCommentResolved: true, protocol.EventCommentUnresolved: true,
+	protocol.EventReactionAdded: true, protocol.EventReactionRemoved: true,
+	protocol.EventIssueReactionAdded: true, protocol.EventIssueReactionRemoved: true,
+	protocol.EventAgentStatus: true, protocol.EventAgentCreated: true, protocol.EventAgentArchived: true, protocol.EventAgentRestored: true,
+	protocol.EventInboxUnread:      true,
+	protocol.EventWorkspaceUpdated: true, protocol.EventWorkspaceDeleted: true,
+	protocol.EventMemberAdded: true, protocol.EventMemberUpdated: true, protocol.EventMemberRemoved: true,
+	protocol.EventSubscriberAdded: true, protocol.EventSubscriberRemoved: true,
+	protocol.EventActivityCreated: true,
+	protocol.EventSkillCreated:    true, protocol.EventSkillUpdated: true, protocol.EventSkillDeleted: true,
+	protocol.EventIssueTemplateCreated: true, protocol.EventIssueTemplateUpdated: true, protocol.EventIssueTemplateDeleted: true,
+	protocol.EventProjectCreated: true, protocol.EventProjectUpdated: true, protocol.EventProjectDeleted: true,
+	protocol.EventProjectResourceCreated: true, protocol.EventProjectResourceUpdated: true, protocol.EventProjectResourceDeleted: true,
+	protocol.EventLabelCreated: true, protocol.EventLabelUpdated: true, protocol.EventLabelDeleted: true,
+	protocol.EventIssueLabelsChanged: true,
+	protocol.EventPropertyCreated:    true, protocol.EventPropertyUpdated: true, protocol.EventIssuePropertiesChanged: true,
+	protocol.EventIssueStatusChanged: true,
+	protocol.EventPinCreated:         true, protocol.EventPinDeleted: true, protocol.EventPinReordered: true,
+	protocol.EventInvitationAccepted: true, protocol.EventInvitationDeclined: true,
+	protocol.EventAutopilotCreated: true, protocol.EventAutopilotUpdated: true, protocol.EventAutopilotDeleted: true,
+	protocol.EventAutopilotRunStart: true, protocol.EventAutopilotRunDone: true,
+	protocol.EventSquadCreated: true, protocol.EventSquadUpdated: true, protocol.EventSquadDeleted: true,
+	protocol.EventGitHubInstallationCreated: true, protocol.EventGitHubInstallationDeleted: true,
+	protocol.EventPullRequestLinked: true, protocol.EventPullRequestUpdated: true, protocol.EventPullRequestUnlinked: true,
+	protocol.EventVCSConnectionCreated: true, protocol.EventVCSConnectionDeleted: true,
+	protocol.EventLarkInstallationCreated: true, protocol.EventLarkInstallationRevoked: true,
+	protocol.EventSlackInstallationCreated: true, protocol.EventSlackInstallationRevoked: true,
+	protocol.EventDingTalkInstallationCreated: true, protocol.EventDingTalkInstallationRevoked: true,
+	protocol.EventDingTalkAccountBindingUpdated: true,
+	protocol.EventWecomInstallationCreated:      true, protocol.EventWecomInstallationRevoked: true,
+	protocol.EventTelegramInstallationCreated: true, protocol.EventTelegramInstallationRevoked: true,
+}
+
 // publicRealtimePayloadKeys is the external contract registry for task and
 // Chat events. These event families routinely carry routing metadata and
 // in-process fields that must not reach a browser. A positive allowlist keeps a
@@ -158,10 +199,10 @@ func projectOutbound(eventType string, payload any) any {
 // without touching any of the event listeners below. This is Phase 0 of the
 // horizontal-scaling plan tracked in MUL-1138.
 func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
-	// Connection authorization is immutable. Mutations that can change an
-	// actor's visible-Agent set close workspace connections on every node via
-	// the relay-backed internal authorization scope; reconnect resolves a fresh
-	// set before registration.
+	// Connection authorization starts from a resolved snapshot. Additive Agent
+	// creation expands rooms in place; mutations that can narrow visibility
+	// close workspace connections on every node via the relay-backed internal
+	// authorization scope so reconnect resolves a fresh set before registration.
 	invalidateWorkspaceAuthorization := func(e events.Event) {
 		if e.WorkspaceID == "" {
 			return
@@ -169,7 +210,6 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 		b.BroadcastToScope(realtime.ScopeWorkspaceAuthorization, e.WorkspaceID, realtime.AuthorizationChangedFrame())
 	}
 	for _, eventType := range []string{
-		protocol.EventAgentCreated,
 		protocol.EventAgentArchived,
 		protocol.EventAgentRestored,
 		protocol.EventMemberUpdated,
@@ -177,6 +217,14 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 	} {
 		bus.Subscribe(eventType, invalidateWorkspaceAuthorization)
 	}
+	expandWorkspaceAuthorization := func(e events.Event) {
+		if e.WorkspaceID == "" {
+			return
+		}
+		b.BroadcastToScope(realtime.ScopeWorkspaceAuthorization, e.WorkspaceID, realtime.AuthorizationExpandedFrame())
+	}
+	bus.Subscribe(protocol.EventAgentCreated, expandWorkspaceAuthorization)
+	bus.Subscribe(events.EventWorkspaceAuthorizationExpanded, expandWorkspaceAuthorization)
 	bus.Subscribe(protocol.EventAgentStatus, func(e events.Event) {
 		if e.AuthorizationChanged {
 			invalidateWorkspaceAuthorization(e)
@@ -311,6 +359,9 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 
 	// SubscribeAll handles workspace-broadcast for non-personal events.
 	bus.SubscribeAll(func(e events.Event) {
+		if e.Type == events.EventWorkspaceAuthorizationExpanded {
+			return
+		}
 		// Skip personal events — they are handled by type-specific listeners above.
 		if personalEvents[e.Type] {
 			return
@@ -342,6 +393,18 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 			}
 			realtime.M.RecordEvent(e.Type)
 			b.BroadcastToScope(realtime.ScopeTask, e.TaskID, data)
+			// Installed desktop clients released before task scopes still need
+			// live transcripts. Dual-route only through authorization-filtered
+			// legacy Agent rooms; never restore workspace-wide content fanout.
+			if e.AgentID != "" {
+				if e.ChatSessionID != "" {
+					if e.RecipientUserID != "" {
+						b.BroadcastToScope(realtime.ScopeLegacyUserAgent, realtime.UserAgentScopeID(e.RecipientUserID, e.AgentID), data)
+					}
+				} else if e.WorkspaceID != "" {
+					b.BroadcastToScope(realtime.ScopeLegacyWorkspaceAgent, realtime.WorkspaceAgentScopeID(e.WorkspaceID, e.AgentID), data)
+				}
+			}
 			return
 		}
 
@@ -385,12 +448,15 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 		// Every recognized task event has returned through an authorized scope.
 		// Unknown task contracts are dropped by projectOutbound above.
 
-		if e.WorkspaceID != "" {
+		if e.WorkspaceID != "" && workspaceRealtimeEvents[e.Type] {
 			realtime.M.RecordEvent(e.Type)
 			b.BroadcastToWorkspace(e.WorkspaceID, data)
 		} else if strings.HasPrefix(e.Type, "daemon:") {
 			realtime.M.RecordEvent(e.Type)
 			b.Broadcast(data)
+		} else if e.WorkspaceID != "" {
+			realtime.M.MessagesDroppedTotal.Add(1)
+			slog.Warn("dropping unclassified workspace realtime event", "event_type", e.Type)
 		}
 		// Otherwise drop — no global broadcast for non-daemon events without a workspace.
 	})

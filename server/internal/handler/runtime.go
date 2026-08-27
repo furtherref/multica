@@ -778,6 +778,7 @@ type runtimeTeardownResult struct {
 	UnboundAgents    []db.Agent
 	CancelledTasks   []db.AgentTaskQueue
 	PausedAutopilots []db.Autopilot
+	ChatCreators     map[string]string
 }
 
 // unbindRuntimeForDelete is the teardown every runtime-delete path runs inside
@@ -841,6 +842,19 @@ func unbindRuntimeForDelete(ctx context.Context, qtx *db.Queries, runtimeID pgty
 		return out, fmt.Errorf("cancel tasks: %w", err)
 	}
 	out.CancelledTasks = cancelled
+	out.ChatCreators = make(map[string]string)
+	for _, task := range cancelled {
+		if !task.ChatSessionID.Valid {
+			continue
+		}
+		sessionID := uuidToString(task.ChatSessionID)
+		if _, known := out.ChatCreators[sessionID]; known {
+			continue
+		}
+		if session, err := qtx.GetChatSession(ctx, task.ChatSessionID); err == nil {
+			out.ChatCreators[sessionID] = uuidToString(session.CreatorID)
+		}
+	}
 
 	undrained, err := qtx.CountUndrainedTasksByRuntimeOrAgent(ctx, db.CountUndrainedTasksByRuntimeOrAgentParams{
 		RuntimeIds: []pgtype.UUID{runtimeID},
@@ -892,7 +906,7 @@ func (h *Handler) publishRuntimeTeardown(ctx context.Context, res runtimeTeardow
 		// The teardown deletes the runtime's system agents, and a system agent's
 		// chat sessions go with it, so the workspace of a cancelled chat task is
 		// no longer resolvable from the task row. It is this workspace.
-		h.TaskService.BroadcastCancelledTasks(ctx, wsID, res.CancelledTasks)
+		h.TaskService.BroadcastCancelledTasks(ctx, wsID, res.CancelledTasks, res.ChatCreators)
 	}
 	for _, a := range res.UnboundAgents {
 		// agent:status is the generic "this agent changed" broadcast the agent

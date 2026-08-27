@@ -87,6 +87,18 @@ WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.status = 'active'
   )
 ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, COALESCE(lm.created_at, cs.updated_at) DESC;
 
+-- name: ListSystemChatAgentIDsByCreator :many
+-- Agent Builder conversations use private system Agents that intentionally do
+-- not appear in the public user-Agent list. Their creator still needs the
+-- user_agent room for private Chat and task lifecycle events. Keep this query
+-- system-only so it cannot widen workspace-visible user-Agent authorization.
+SELECT DISTINCT cs.agent_id
+FROM chat_session cs
+JOIN agent a ON a.id = cs.agent_id
+WHERE cs.workspace_id = $1
+  AND cs.creator_id = $2
+  AND a.kind = 'system';
+
 -- name: ListAllChatSessionsByCreator :many
 -- Unlike ListChatSessionsByCreator this returns archived sessions too (for the
 -- "Archived" view), so unread must be forced to 0 for archived rows: archiving

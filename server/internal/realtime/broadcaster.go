@@ -13,6 +13,11 @@ const (
 	// to the authenticated member at connection setup.
 	ScopeWorkspaceAgent = "workspace_agent"
 	ScopeUserAgent      = "user_agent"
+	// Legacy Agent scopes are joined only by clients that predate explicit
+	// task-scope subscriptions. They preserve installed-desktop transcript
+	// streaming without reopening workspace-wide task-content fanout.
+	ScopeLegacyWorkspaceAgent = "legacy_workspace_agent"
+	ScopeLegacyUserAgent      = "legacy_user_agent"
 	// ScopeWorkspaceAuthorization is an internal cross-node control scope.
 	// Clients join it implicitly but frames are intercepted by the Hub and are
 	// never delivered to their send channels.
@@ -40,6 +45,13 @@ func UserAgentScopeID(userID, agentID string) string {
 // never decodes this JSON on its hot path.
 func AuthorizationChangedFrame() []byte {
 	return []byte(`{"type":"authorization:changed"}`)
+}
+
+// AuthorizationExpandedFrame asks each node to resolve fresh Agent visibility
+// and add only newly-visible rooms in place. It is safe only for mutations
+// that cannot revoke access; narrowing mutations continue to disconnect.
+func AuthorizationExpandedFrame() []byte {
+	return []byte(`{"type":"authorization:expanded"}`)
 }
 
 // DaemonControlScopeID is the FIXED scope id daemon control frames (runtime

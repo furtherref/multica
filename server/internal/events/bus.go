@@ -5,6 +5,11 @@ import (
 	"sync"
 )
 
+// EventWorkspaceAuthorizationExpanded is an internal control event. It asks
+// realtime nodes to add newly-visible authorization rooms in place and must
+// never be serialized to clients.
+const EventWorkspaceAuthorizationExpanded = "internal:workspace_authorization_expanded"
+
 // Event represents a domain event published by handlers or services.
 type Event struct {
 	Type        string // e.g. "issue:created", "inbox:new"
