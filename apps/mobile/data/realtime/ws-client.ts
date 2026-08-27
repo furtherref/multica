@@ -34,6 +34,13 @@ import type {
  *  need a `as XxxPayload` cast. */
 type EventHandler = (payload: unknown, actorId?: string) => void;
 type AnyHandler = (msg: WSMessage) => void;
+type RealtimeScope = "task" | "chat";
+
+interface ActiveScope {
+  scope: RealtimeScope;
+  id: string;
+  refs: number;
+}
 
 interface Logger {
   info: (...args: unknown[]) => void;
@@ -89,6 +96,8 @@ export class WSClient {
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
   private awaitingPong = false;
   private hasConnectedBefore = false;
+  private authenticated = false;
+  private readonly activeScopes = new Map<string, ActiveScope>();
 
   private readonly handlers = new Map<WSEventType, Set<EventHandler>>();
   private readonly anyHandlers = new Set<AnyHandler>();
@@ -118,6 +127,8 @@ export class WSClient {
     this.teardownSocket();
     this.reconnectAttempt = 0;
     this.hasConnectedBefore = false;
+    this.authenticated = false;
+    this.activeScopes.clear();
   }
 
   /** Active → paused. Used by the provider when AppState=background.
@@ -184,6 +195,36 @@ export class WSClient {
     this.onReconnectCallbacks.add(cb);
     return () => {
       this.onReconnectCallbacks.delete(cb);
+    };
+  }
+
+  /** Keep a server-side delivery scope alive while at least one mobile
+   *  query surface observes it. Scopes survive pause/reconnect and are
+   *  replayed immediately after auth, before cache catch-up callbacks. */
+  subscribeScope(scope: RealtimeScope, id: string) {
+    const key = `${scope}:${id}`;
+    const current = this.activeScopes.get(key);
+    if (current) {
+      this.activeScopes.set(key, { ...current, refs: current.refs + 1 });
+    } else {
+      this.activeScopes.set(key, { scope, id, refs: 1 });
+      if (this.authenticated) this.sendScopeFrame("subscribe", scope, id);
+    }
+
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+
+      const active = this.activeScopes.get(key);
+      if (!active) return;
+      if (active.refs > 1) {
+        this.activeScopes.set(key, { ...active, refs: active.refs - 1 });
+        return;
+      }
+
+      this.activeScopes.delete(key);
+      if (this.authenticated) this.sendScopeFrame("unsubscribe", scope, id);
     };
   }
 
@@ -262,6 +303,7 @@ export class WSClient {
       if (!wasOurs) return;
 
       this.ws = null;
+      this.authenticated = false;
       this.clearHeartbeat();
       this.logger.warn("[ws] socket closed");
       if (this.state === "active") this.scheduleReconnect();
@@ -270,7 +312,9 @@ export class WSClient {
 
   private onAuthenticated() {
     this.reconnectAttempt = 0;
+    this.authenticated = true;
     this.logger.info("[ws] authenticated");
+    this.replayScopes();
     this.startHeartbeat();
     if (this.hasConnectedBefore) {
       for (const cb of this.onReconnectCallbacks) {
@@ -282,6 +326,21 @@ export class WSClient {
       }
     }
     this.hasConnectedBefore = true;
+  }
+
+  private replayScopes() {
+    for (const { scope, id } of this.activeScopes.values()) {
+      this.sendScopeFrame("subscribe", scope, id);
+    }
+  }
+
+  private sendScopeFrame(
+    type: "subscribe" | "unsubscribe",
+    scope: RealtimeScope,
+    id: string,
+  ) {
+    if (!this.authenticated || this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ type, payload: { scope, id } }));
   }
 
   private scheduleReconnect() {
@@ -379,6 +438,7 @@ export class WSClient {
 
   private teardownSocket() {
     this.clearHeartbeat();
+    this.authenticated = false;
     if (!this.ws) return;
     const ws = this.ws;
     // Detach BEFORE close — onclose firing after teardown would re-enter

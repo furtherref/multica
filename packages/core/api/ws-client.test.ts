@@ -6,6 +6,7 @@ import type { WSMessage } from "../types/events";
 // query string.  We don't simulate the full WS lifecycle here — only the
 // upgrade URL construction, which is what carries client identity.
 class FakeWebSocket {
+  static OPEN = 1;
   static lastUrl: string | null = null;
   static lastInstance: FakeWebSocket | null = null;
   // Fields read by WSClient.connect()/disconnect(), all no-op here.
@@ -14,12 +15,15 @@ class FakeWebSocket {
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
   readyState = 0;
+  sent: string[] = [];
   constructor(url: string) {
     FakeWebSocket.lastUrl = url;
     FakeWebSocket.lastInstance = this;
   }
   close() {}
-  send() {}
+  send(message: string) {
+    this.sent.push(message);
+  }
 }
 
 describe("WSClient", () => {
@@ -203,6 +207,69 @@ describe("WSClient", () => {
       "user-123",
       "user",
     );
+  });
+
+  describe("scope subscriptions", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    });
+
+    function openCookieSocket(ws: WSClient): FakeWebSocket {
+      ws.connect();
+      const socket = FakeWebSocket.lastInstance!;
+      socket.readyState = 1;
+      socket.onopen?.();
+      return socket;
+    }
+
+    it("subscribes once per active scope and unsubscribes after the last release", () => {
+      const ws = new WSClient("ws://example.test/ws", { cookieAuth: true });
+      const releaseFirst = ws.subscribeScope("task", "task-1");
+      const releaseSecond = ws.subscribeScope("task", "task-1");
+
+      const socket = openCookieSocket(ws);
+      expect(socket.sent.map((raw) => JSON.parse(raw))).toEqual([
+        { type: "subscribe", payload: { scope: "task", id: "task-1" } },
+      ]);
+
+      releaseFirst();
+      expect(socket.sent).toHaveLength(1);
+
+      releaseSecond();
+      expect(socket.sent.map((raw) => JSON.parse(raw))).toEqual([
+        { type: "subscribe", payload: { scope: "task", id: "task-1" } },
+        { type: "unsubscribe", payload: { scope: "task", id: "task-1" } },
+      ]);
+    });
+
+    it("replays active scopes before reconnect callbacks", () => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, "random").mockReturnValue(0.5);
+      const ws = new WSClient("ws://example.test/ws", { cookieAuth: true });
+      const order: string[] = [];
+      ws.subscribeScope("task", "task-1");
+      ws.onReconnect(() => order.push("reconnect"));
+
+      const first = openCookieSocket(ws);
+      expect(first.sent).toHaveLength(1);
+      first.onclose?.();
+      vi.runOnlyPendingTimers();
+
+      const second = FakeWebSocket.lastInstance!;
+      second.readyState = 1;
+      const originalSend = second.send.bind(second);
+      second.send = (message: string) => {
+        order.push("subscribe");
+        originalSend(message);
+      };
+      second.onopen?.();
+
+      expect(order).toEqual(["subscribe", "reconnect"]);
+      expect(second.sent.map((raw) => JSON.parse(raw))).toEqual([
+        { type: "subscribe", payload: { scope: "task", id: "task-1" } },
+      ]);
+    });
   });
 
   // ── Reconnect backoff tests ────────────────────────────────────────

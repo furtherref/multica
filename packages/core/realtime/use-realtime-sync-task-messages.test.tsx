@@ -38,6 +38,7 @@ function createMockWs(handlers: Handlers): WSClient {
     }),
     onAny: vi.fn(() => () => {}),
     onReconnect: vi.fn(() => () => {}),
+    subscribeScope: vi.fn(() => () => {}),
   } as unknown as WSClient;
 }
 
@@ -76,11 +77,13 @@ describe("useRealtimeSync — task:message fanout guards (MUL-6396)", () => {
   let qc: QueryClient;
   let handlers: Handlers;
   let listTaskMessages: ReturnType<typeof vi.fn>;
+  let ws: WSClient;
 
   beforeEach(() => {
     vi.useFakeTimers();
     qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     handlers = new Map();
+    ws = createMockWs(handlers);
     listTaskMessages = vi.fn(async () => [] as TaskMessagePayload[]);
     setApiInstance({ listTaskMessages } as unknown as ApiClient);
   });
@@ -91,13 +94,42 @@ describe("useRealtimeSync — task:message fanout guards (MUL-6396)", () => {
   });
 
   function mount() {
-    renderHook(() => useRealtimeSync(createMockWs(handlers), createStores()), {
+    renderHook(() => useRealtimeSync(ws, createStores()), {
       wrapper: createWrapper(qc),
     });
     const handler = handlers.get("task:message");
     if (!handler) throw new Error("task:message handler was not registered");
     return handler;
   }
+
+  it("subscribes before the transcript fetch and releases when the last observer leaves", async () => {
+    const order: string[] = [];
+    const releaseScope = vi.fn(() => order.push("unsubscribe"));
+    vi.mocked(ws.subscribeScope).mockImplementation(() => {
+      order.push("subscribe");
+      return releaseScope;
+    });
+    listTaskMessages.mockImplementation(async () => {
+      order.push("fetch");
+      return [];
+    });
+    mount();
+
+    const first = new QueryObserver(qc, taskMessagesOptions(HELD_TASK));
+    const releaseFirst = first.subscribe(() => {});
+    const second = new QueryObserver(qc, taskMessagesOptions(HELD_TASK));
+    const releaseSecond = second.subscribe(() => {});
+
+    await vi.waitFor(() => expect(listTaskMessages).toHaveBeenCalledTimes(1));
+    expect(order[0]).toBe("subscribe");
+    expect(order).toContain("fetch");
+    expect(ws.subscribeScope).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    expect(releaseScope).not.toHaveBeenCalled();
+    releaseSecond();
+    expect(releaseScope).toHaveBeenCalledTimes(1);
+  });
 
   /** Simulates a mounted view rendering this task's timeline. */
   function holdTimeline(taskId: string) {

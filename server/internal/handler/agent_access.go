@@ -202,6 +202,13 @@ func memberAllowedToViewAgent(agent db.Agent, targets []db.AgentInvocationTarget
 	return memberHitsInvocationTargets(targets, userID)
 }
 
+// MemberAllowedToViewAgent exposes the canonical pure Agent-view decision to
+// non-HTTP authorization boundaries such as realtime scope subscription.
+// Keeping the predicate shared prevents REST and WebSocket visibility drift.
+func MemberAllowedToViewAgent(agent db.Agent, targets []db.AgentInvocationTarget, userID, role string) bool {
+	return memberAllowedToViewAgent(agent, targets, userID, role)
+}
+
 // invokeOriginatorFromRequest resolves the top-of-chain human user id for an
 // invocation initiated over HTTP. Members are their own originator; agent
 // actors inherit the originator from the task named by the X-Task-ID header

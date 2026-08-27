@@ -53,24 +53,15 @@ func (f *fakeBroadcaster) Broadcast(message []byte) {
 	f.broadcastCalled++
 }
 
-// TestRegisterListeners_TaskChatGoToWorkspace pins the must-fix #1 contract
-// from the PR #1429 review: until the WS client supports scope-subscribe and
-// reconnect-replay, high-frequency task/chat events MUST keep going through
-// workspace fanout. Routing them via BroadcastToScope("task"|"chat", ...)
-// with no client-side subscriber would silently drop every chat / task
-// message and break the live timeline + chat unread badges.
-func TestRegisterListeners_TaskChatGoToWorkspace(t *testing.T) {
+func TestRegisterListeners_TaskContentUsesTaskScope(t *testing.T) {
 	cases := []struct {
 		name      string
 		eventType string
 		taskID    string
-		chatID    string
 	}{
-		{"task:message with TaskID", protocol.EventTaskMessage, "task-1", ""},
-		{"task:progress with TaskID", protocol.EventTaskProgress, "task-2", ""},
-		{"chat:message with ChatSessionID", protocol.EventChatMessage, "", "chat-1"},
-		{"chat:done with ChatSessionID", protocol.EventChatDone, "", "chat-2"},
-		{"chat:session_read with ChatSessionID", protocol.EventChatSessionRead, "", "chat-3"},
+		{"task:message", protocol.EventTaskMessage, "task-1"},
+		{"task:progress", protocol.EventTaskProgress, "task-2"},
+		{"task:activity", protocol.EventTaskActivity, "task-3"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -79,22 +70,73 @@ func TestRegisterListeners_TaskChatGoToWorkspace(t *testing.T) {
 			registerListeners(bus, fb)
 
 			bus.Publish(events.Event{
-				Type:          tc.eventType,
-				WorkspaceID:   "ws-1",
-				TaskID:        tc.taskID,
-				ChatSessionID: tc.chatID,
-				Payload:       map[string]any{"hello": "world"},
+				Type:        tc.eventType,
+				WorkspaceID: "ws-1",
+				TaskID:      tc.taskID,
+				Payload:     map[string]any{"task_id": tc.taskID},
 			})
 
-			if len(fb.scopeCalls) != 0 {
-				t.Fatalf("expected no BroadcastToScope calls (must-fix #1: keep workspace fanout until client lands), got %+v", fb.scopeCalls)
+			if len(fb.scopeCalls) != 1 {
+				t.Fatalf("BroadcastToScope calls = %d, want 1", len(fb.scopeCalls))
 			}
-			if len(fb.workspaceCalls) != 1 {
-				t.Fatalf("expected exactly 1 BroadcastToWorkspace call, got %d", len(fb.workspaceCalls))
+			if fb.scopeCalls[0].scopeType != "task" || fb.scopeCalls[0].scopeID != tc.taskID {
+				t.Fatalf("task event scope = %s:%s, want task:%s", fb.scopeCalls[0].scopeType, fb.scopeCalls[0].scopeID, tc.taskID)
 			}
-			if fb.workspaceCalls[0].workspaceID != "ws-1" {
-				t.Fatalf("expected workspace ws-1, got %q", fb.workspaceCalls[0].workspaceID)
+			if len(fb.workspaceCalls) != 0 {
+				t.Fatalf("task content leaked to %d workspace broadcast(s)", len(fb.workspaceCalls))
 			}
 		})
+	}
+}
+
+func TestRegisterListeners_TaskContentWithoutTrustedTaskIDDrops(t *testing.T) {
+	bus := events.New()
+	fb := &fakeBroadcaster{}
+	registerListeners(bus, fb)
+
+	bus.Publish(events.Event{
+		Type:        protocol.EventTaskMessage,
+		WorkspaceID: "ws-1",
+		Payload:     map[string]any{"task_id": "payload-only", "content": "secret"},
+	})
+
+	if len(fb.scopeCalls) != 0 || len(fb.workspaceCalls) != 0 {
+		t.Fatalf("task content without trusted routing metadata was delivered: scopes=%+v workspaces=%+v", fb.scopeCalls, fb.workspaceCalls)
+	}
+}
+
+func TestRegisterListeners_ChatContentUsesTrustedRecipient(t *testing.T) {
+	bus := events.New()
+	fb := &fakeBroadcaster{}
+	registerListeners(bus, fb)
+
+	bus.Publish(events.Event{
+		Type:            protocol.EventChatDone,
+		WorkspaceID:     "ws-1",
+		RecipientUserID: "creator-1",
+		Payload:         map[string]any{"chat_session_id": "chat-1", "content": "private reply"},
+	})
+
+	if len(fb.userCalls) != 1 || fb.userCalls[0].userID != "creator-1" {
+		t.Fatalf("chat event recipient calls = %+v, want creator-1", fb.userCalls)
+	}
+	if len(fb.workspaceCalls) != 0 || len(fb.scopeCalls) != 0 {
+		t.Fatalf("chat content escaped creator routing: workspaces=%+v scopes=%+v", fb.workspaceCalls, fb.scopeCalls)
+	}
+}
+
+func TestRegisterListeners_ChatContentWithoutTrustedRecipientDrops(t *testing.T) {
+	bus := events.New()
+	fb := &fakeBroadcaster{}
+	registerListeners(bus, fb)
+
+	bus.Publish(events.Event{
+		Type:        protocol.EventChatMessage,
+		WorkspaceID: "ws-1",
+		Payload:     map[string]any{"chat_session_id": "chat-1", "content": "private prompt"},
+	})
+
+	if len(fb.userCalls) != 0 || len(fb.workspaceCalls) != 0 || len(fb.scopeCalls) != 0 {
+		t.Fatalf("chat content without trusted recipient was delivered: users=%+v workspaces=%+v scopes=%+v", fb.userCalls, fb.workspaceCalls, fb.scopeCalls)
 	}
 }

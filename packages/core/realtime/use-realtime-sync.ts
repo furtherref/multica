@@ -60,6 +60,7 @@ import {
 import type { Workspace } from "../types/workspace";
 import {
   chatKeys,
+  isTaskMessageTaskId,
   isTaskMessageTimelineHeld,
   mergeTaskMessagesBySeq,
   sortChatSessions,
@@ -746,6 +747,47 @@ export function useRealtimeSync(
   const hasOnboardedRef = useRef(hasOnboarded);
   hasOnboardedRef.current = hasOnboarded;
 
+  // A task transcript is a private resource scope, not a workspace broadcast.
+  // Query observers define the exact live lifetime: subscribe synchronously on
+  // observerAdded (before React Query starts the fetch), keep one ref-counted
+  // wire subscription across duplicate surfaces, and release it after the last
+  // observer leaves. WSClient replays active scopes before reconnect callbacks.
+  useEffect(() => {
+    if (!ws) return;
+
+    const releases = new Map<string, () => void>();
+    const syncQuery = (query: { queryKey: readonly unknown[]; getObserversCount: () => number }) => {
+      const [prefix, taskId, ...rest] = query.queryKey;
+      if (
+        prefix !== "task-messages" ||
+        rest.length > 0 ||
+        typeof taskId !== "string" ||
+        !isTaskMessageTaskId(taskId)
+      ) {
+        return;
+      }
+
+      const active = query.getObserversCount() > 0;
+      const release = releases.get(taskId);
+      if (active && !release) {
+        releases.set(taskId, ws.subscribeScope("task", taskId));
+      } else if (!active && release) {
+        release();
+        releases.delete(taskId);
+      }
+    };
+
+    const cache = qc.getQueryCache();
+    for (const query of cache.getAll()) syncQuery(query);
+    const unsubscribe = cache.subscribe((event) => syncQuery(event.query));
+
+    return () => {
+      unsubscribe();
+      for (const release of releases.values()) release();
+      releases.clear();
+    };
+  }, [ws, qc]);
+
   // Main sync: onAny -> refreshMap with debounce
   useEffect(() => {
     if (!ws) return;
@@ -1334,10 +1376,10 @@ export function useRealtimeSync(
     // task:completed / task:failed invalidate messages + pending-task so the
     // DB remains authoritative.
 
-    // Two guards stand between the workspace-wide message firehose and the
-    // renderer (MUL-6396). `task:message` is broadcast to EVERY client for
-    // EVERY run in the workspace, but only the handful of runs a user actually
-    // opens is ever rendered:
+    // Two guards stand between the authorized task scope and the renderer
+    // (MUL-6396). Only actively observed transcripts are subscribed, and the
+    // cache gate below independently prevents a late frame from rebuilding a
+    // timeline after its final surface closes:
     //
     // 1. Frames are kept only for a task this client already holds a timeline
     //    entry for — opened at some point, and not yet garbage-collected. The

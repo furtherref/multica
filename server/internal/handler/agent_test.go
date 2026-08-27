@@ -106,6 +106,9 @@ func TestListWorkspaceAgentTaskSnapshot(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("ListWorkspaceAgentTaskSnapshot: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 
 	var tasks []AgentTaskResponse
 	if err := json.NewDecoder(w.Body).Decode(&tasks); err != nil {
@@ -976,6 +979,9 @@ func TestListAgents_ResponseHasNoCustomEnv(t *testing.T) {
 	req := newRequest("GET", "/agents", nil)
 	w := httptest.NewRecorder()
 	testHandler.ListAgents(w, req)
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}

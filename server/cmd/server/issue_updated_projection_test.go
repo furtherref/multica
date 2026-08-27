@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"maps"
 	"strings"
 	"testing"
 
@@ -150,26 +151,144 @@ func TestProjectOutbound_DoesNotMutateProducerPayload(t *testing.T) {
 	}
 }
 
-func TestProjectOutbound_TaskFailedKeepsErrorInternal(t *testing.T) {
+func TestProjectOutbound_TaskFailedUsesExactPublicContract(t *testing.T) {
 	original := map[string]any{
-		"task_id":        "task-1",
-		"failure_reason": "timeout",
-		"retry_pending":  false,
-		"error":          "task timed out",
+		"task_id":         "task-1",
+		"issue_id":        "issue-1",
+		"status":          "failed",
+		"chat_session_id": "chat-1",
+		"agent_id":        "agent-1",
+		"failure_reason":  "timeout",
+		"retry_pending":   false,
+		"error":           "task timed out",
 	}
 
 	projected, ok := projectOutbound(protocol.EventTaskFailed, original).(map[string]any)
 	if !ok {
 		t.Fatal("task:failed projection did not return a map")
 	}
-	if _, present := projected["error"]; present {
-		t.Fatal("task:failed error reached the workspace realtime payload")
+	want := map[string]any{
+		"task_id":         "task-1",
+		"issue_id":        "issue-1",
+		"status":          "failed",
+		"chat_session_id": "chat-1",
 	}
-	if projected["failure_reason"] != "timeout" || projected["retry_pending"] != false {
-		t.Fatalf("safe task failure metadata was lost: %#v", projected)
+	if !maps.Equal(projected, want) {
+		t.Fatalf("task:failed public payload = %#v, want %#v", projected, want)
 	}
 	if original["error"] != "task timed out" {
 		t.Fatal("task:failed projection mutated the in-process payload")
+	}
+}
+
+func TestProjectOutbound_TaskDispatchDropsPersistedContext(t *testing.T) {
+	original := map[string]any{
+		"task_id":         "task-1",
+		"issue_id":        "issue-1",
+		"runtime_id":      "runtime-1",
+		"chat_session_id": "chat-1",
+		"agent_id":        "agent-1",
+		"prompt":          "private prompt",
+		"requester_id":    "member-1",
+		"attachment_ids":  []string{"attachment-1"},
+	}
+
+	projected, ok := projectOutbound(protocol.EventTaskDispatch, original).(map[string]any)
+	if !ok {
+		t.Fatal("task:dispatch projection did not return a map")
+	}
+	want := map[string]any{
+		"task_id":         "task-1",
+		"issue_id":        "issue-1",
+		"runtime_id":      "runtime-1",
+		"chat_session_id": "chat-1",
+	}
+	if !maps.Equal(projected, want) {
+		t.Fatalf("task:dispatch public payload = %#v, want %#v", projected, want)
+	}
+	if original["prompt"] != "private prompt" {
+		t.Fatal("task:dispatch projection mutated the in-process payload")
+	}
+}
+
+func TestProjectOutbound_TaskWaitingLocalDirectoryKeepsSanitizedReason(t *testing.T) {
+	original := map[string]any{
+		"task_id":         "task-1",
+		"issue_id":        "issue-1",
+		"status":          "waiting_local_directory",
+		"chat_session_id": "chat-1",
+		"wait_reason":     "project-a is busy",
+		"agent_id":        "agent-1",
+		"unexpected":      "must not reach clients",
+	}
+
+	projected, ok := projectOutbound(protocol.EventTaskWaitingLocalDirectory, original).(map[string]any)
+	if !ok {
+		t.Fatal("task:waiting_local_directory projection did not return a map")
+	}
+	want := map[string]any{
+		"task_id":         "task-1",
+		"issue_id":        "issue-1",
+		"status":          "waiting_local_directory",
+		"chat_session_id": "chat-1",
+		"wait_reason":     "project-a is busy",
+	}
+	if !maps.Equal(projected, want) {
+		t.Fatalf("task:waiting_local_directory public payload = %#v, want %#v", projected, want)
+	}
+}
+
+func TestProjectOutbound_ContentEventsUseExactContracts(t *testing.T) {
+	t.Run("task message", func(t *testing.T) {
+		original := map[string]any{
+			"task_id": "task-1", "issue_id": "issue-1", "seq": 3,
+			"type": "tool_use", "tool": "Read", "input": map[string]any{"path": "x"},
+			"agent_id": "agent-1", "unexpected": "drop-me",
+		}
+		projected, ok := projectOutbound(protocol.EventTaskMessage, original).(map[string]any)
+		if !ok {
+			t.Fatal("task:message projection did not return a map")
+		}
+		if _, present := projected["agent_id"]; present {
+			t.Fatal("task:message leaked routing-only agent_id")
+		}
+		if _, present := projected["unexpected"]; present {
+			t.Fatal("task:message leaked an unregistered field")
+		}
+		if projected["input"] == nil || projected["seq"] != 3 {
+			t.Fatalf("task:message lost public transcript fields: %#v", projected)
+		}
+	})
+
+	t.Run("chat message", func(t *testing.T) {
+		original := map[string]any{
+			"chat_session_id": "chat-1", "message_id": "message-1",
+			"role": "user", "content": "hello", "created_at": "now",
+			"creator_id": "member-1", "unexpected": "drop-me",
+		}
+		projected, ok := projectOutbound(protocol.EventChatMessage, original).(map[string]any)
+		if !ok {
+			t.Fatal("chat:message projection did not return a map")
+		}
+		if _, present := projected["creator_id"]; present {
+			t.Fatal("chat:message leaked routing-only creator_id")
+		}
+		if _, present := projected["unexpected"]; present {
+			t.Fatal("chat:message leaked an unregistered field")
+		}
+		if projected["content"] != "hello" {
+			t.Fatalf("chat:message lost public content: %#v", projected)
+		}
+	})
+}
+
+func TestProjectOutbound_UnknownTaskAndChatEventsFailClosed(t *testing.T) {
+	for _, eventType := range []string{"task:future_event", "chat:future_event"} {
+		t.Run(eventType, func(t *testing.T) {
+			if got := projectOutbound(eventType, map[string]any{"secret": "value"}); got != nil {
+				t.Fatalf("unknown external event projection = %#v, want nil", got)
+			}
+		})
 	}
 }
 

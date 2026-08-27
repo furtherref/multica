@@ -19,6 +19,9 @@ type Event struct {
 	// without re-deserializing Payload. See MUL-1138 phase 1.
 	TaskID        string
 	ChatSessionID string
+	// RecipientUserID is trusted creator-routing metadata for private direct
+	// Chat events. It is never copied from the public payload.
+	RecipientUserID string
 }
 
 // Handler is a function that processes an event.

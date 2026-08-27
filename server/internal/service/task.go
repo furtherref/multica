@@ -3064,16 +3064,18 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 
 func (s *TaskService) broadcastChatCancelFinalized(ctx context.Context, task db.AgentTaskQueue, payload protocol.ChatCancelFinalizedPayload) {
 	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
-	if workspaceID == "" {
+	recipientUserID := s.chatTaskCreatorID(ctx, task)
+	if workspaceID == "" || recipientUserID == "" {
 		return
 	}
 	s.Bus.Publish(events.Event{
-		Type:          protocol.EventChatCancelFinalized,
-		WorkspaceID:   workspaceID,
-		ActorType:     "system",
-		ActorID:       "",
-		ChatSessionID: util.UUIDToString(task.ChatSessionID),
-		Payload:       payload,
+		Type:            protocol.EventChatCancelFinalized,
+		WorkspaceID:     workspaceID,
+		ActorType:       "system",
+		ActorID:         "",
+		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		RecipientUserID: recipientUserID,
+		Payload:         payload,
 	})
 }
 
@@ -6359,7 +6361,8 @@ func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentT
 
 func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQueue, msg *db.ChatMessage, quickActionsPending bool) {
 	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
-	if workspaceID == "" {
+	recipientUserID := s.chatTaskCreatorID(ctx, task)
+	if workspaceID == "" || recipientUserID == "" {
 		return
 	}
 	payload := protocol.ChatDonePayload{
@@ -6382,13 +6385,25 @@ func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQu
 		}
 	}
 	s.Bus.Publish(events.Event{
-		Type:          protocol.EventChatDone,
-		WorkspaceID:   workspaceID,
-		ActorType:     "system",
-		ActorID:       "",
-		ChatSessionID: util.UUIDToString(task.ChatSessionID),
-		Payload:       payload,
+		Type:            protocol.EventChatDone,
+		WorkspaceID:     workspaceID,
+		ActorType:       "system",
+		ActorID:         "",
+		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		RecipientUserID: recipientUserID,
+		Payload:         payload,
 	})
+}
+
+func (s *TaskService) chatTaskCreatorID(ctx context.Context, task db.AgentTaskQueue) string {
+	if !task.ChatSessionID.Valid {
+		return ""
+	}
+	session, err := s.Queries.GetChatSession(ctx, task.ChatSessionID)
+	if err != nil {
+		return ""
+	}
+	return util.UUIDToString(session.CreatorID)
 }
 
 // broadcastIssueUpdated publishes the issue:updated event the frontend's

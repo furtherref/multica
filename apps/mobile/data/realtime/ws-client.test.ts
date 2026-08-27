@@ -90,4 +90,64 @@ describe("WSClient application heartbeat", () => {
     expect(MockWebSocket.instances).toHaveLength(1);
     client.disconnect();
   });
+
+  it("reference-counts scope subscriptions and unsubscribes after the last release", () => {
+    const client = new WSClient({
+      url: "wss://example.test/ws",
+      token: "token",
+      workspaceSlug: "workspace",
+    });
+    const releaseFirst = client.subscribeScope("task", "task-1");
+    const releaseSecond = client.subscribeScope("task", "task-1");
+
+    client.connect();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.receive({ type: "auth_ack" });
+
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: "auth", payload: { token: "token" } },
+      { type: "subscribe", payload: { scope: "task", id: "task-1" } },
+      { type: "ping" },
+    ]);
+
+    releaseFirst();
+    expect(socket.sent).toHaveLength(3);
+
+    releaseSecond();
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      type: "unsubscribe",
+      payload: { scope: "task", id: "task-1" },
+    });
+    client.disconnect();
+  });
+
+  it("replays active scopes before reconnect catch-up callbacks", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const { client, socket } = connectAuthenticatedClient();
+    const release = client.subscribeScope("task", "task-1");
+    const callback = vi.fn(() => {
+      const reconnectedSocket = MockWebSocket.instances[1];
+      expect(JSON.parse(reconnectedSocket.sent.at(-1)!)).toEqual({
+        type: "subscribe",
+        payload: { scope: "task", id: "task-1" },
+      });
+    });
+    client.onReconnect(callback);
+
+    socket.close();
+    vi.advanceTimersByTime(0);
+    const reconnectedSocket = MockWebSocket.instances[1];
+    reconnectedSocket.open();
+    reconnectedSocket.receive({ type: "auth_ack" });
+
+    expect(callback).toHaveBeenCalledOnce();
+    expect(reconnectedSocket.sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: "auth", payload: { token: "token" } },
+      { type: "subscribe", payload: { scope: "task", id: "task-1" } },
+      { type: "ping" },
+    ]);
+    release();
+    client.disconnect();
+  });
 });

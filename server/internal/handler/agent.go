@@ -920,6 +920,10 @@ func computeTaskKind(t db.AgentTaskQueue) string {
 }
 
 func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
+	// The legacy list includes runtime/MCP configuration and other
+	// authorization-sensitive detail. It must never be stored by browsers or
+	// shared intermediaries; sanitized projections get their own validators.
+	w.Header().Set("Cache-Control", "no-store")
 	workspaceID := h.resolveWorkspaceID(r)
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
@@ -2700,6 +2704,9 @@ func (h *Handler) GetWorkspaceAgentActivity30d(w http.ResponseWriter, r *http.Re
 // The outcome half is deliberately still served here so shipped desktop builds
 // keep working; MUL-5436 tracks moving it to a dedicated lazy endpoint.
 func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.Request) {
+	// This legacy snapshot carries result/error/work-directory detail. Keep it
+	// explicitly non-cacheable until clients migrate to the presence projection.
+	w.Header().Set("Cache-Control", "no-store")
 	workspaceID := h.resolveWorkspaceID(r)
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {

@@ -17,6 +17,9 @@
  */
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "@/data/api";
+import { isTaskMessageTaskId } from "./task-message-id";
+
+export { isTaskMessageTaskId } from "./task-message-id";
 
 export const chatKeys = {
   all: (wsId: string | null) => ["chat", wsId] as const,
@@ -34,19 +37,6 @@ export const chatKeys = {
    *  can render the same trace without refetching. */
   taskMessages: (taskId: string) => ["task-messages", taskId] as const,
 };
-
-// UUID gate mirrors `packages/core/chat/queries.ts`: optimistic task ids
-// (`optimistic-…`) are not real backend rows, so the query must be
-// disabled until we have a server-issued UUID. Returning the cache for
-// an optimistic id would 404 the API.
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export function isTaskMessageTaskId(
-  taskId: string | null | undefined,
-): taskId is string {
-  return typeof taskId === "string" && UUID_PATTERN.test(taskId);
-}
 
 export const chatSessionsOptions = (wsId: string | null) =>
   queryOptions({
