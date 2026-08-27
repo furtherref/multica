@@ -3074,6 +3074,7 @@ func (s *TaskService) broadcastChatCancelFinalized(ctx context.Context, task db.
 		ActorType:       "system",
 		ActorID:         "",
 		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		AgentID:         util.UUIDToString(task.AgentID),
 		RecipientUserID: recipientUserID,
 		Payload:         payload,
 	})
@@ -6249,11 +6250,16 @@ func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTa
 		return
 	}
 	s.Bus.Publish(events.Event{
-		Type:        protocol.EventTaskDispatch,
-		WorkspaceID: workspaceID,
-		ActorType:   "system",
-		ActorID:     "",
-		Payload:     payload,
+		Type:            protocol.EventTaskDispatch,
+		WorkspaceID:     workspaceID,
+		ActorType:       "system",
+		ActorID:         "",
+		TaskID:          util.UUIDToString(task.ID),
+		AgentID:         util.UUIDToString(task.AgentID),
+		IssueID:         util.UUIDToString(task.IssueID),
+		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		RecipientUserID: s.chatTaskCreatorID(ctx, task),
+		Payload:         payload,
 	})
 }
 
@@ -6274,6 +6280,8 @@ func taskEvent(eventType, workspaceID string, task db.AgentTaskQueue, extra ...m
 		ActorType:   "system",
 		ActorID:     "",
 		TaskID:      util.UUIDToString(task.ID),
+		AgentID:     util.UUIDToString(task.AgentID),
+		IssueID:     util.UUIDToString(task.IssueID),
 		Payload:     payload,
 	}
 	if task.ChatSessionID.Valid {
@@ -6298,7 +6306,14 @@ func (s *TaskService) publishTaskEvent(eventType, workspaceID string, task db.Ag
 
 func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, task db.AgentTaskQueue, extra ...map[string]any) {
 	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
-	s.publishTaskEvent(eventType, workspaceID, task, extra...)
+	if workspaceID == "" {
+		return
+	}
+	e := taskEvent(eventType, workspaceID, task, extra...)
+	if task.ChatSessionID.Valid {
+		e.RecipientUserID = s.chatTaskCreatorID(ctx, task)
+	}
+	s.Bus.Publish(e)
 }
 
 // taskFailedFields adds the terminal failure context required by channel
@@ -6322,8 +6337,7 @@ func (s *TaskService) publishTaskFailedEvent(workspaceID string, task db.AgentTa
 }
 
 func (s *TaskService) broadcastTaskFailedEvent(ctx context.Context, task db.AgentTaskQueue, errMsg, failureReason string, retryPending bool) {
-	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
-	s.publishTaskFailedEvent(workspaceID, task, errMsg, failureReason, retryPending)
+	s.broadcastTaskEvent(ctx, protocol.EventTaskFailed, task, taskFailedFields(errMsg, failureReason, retryPending))
 }
 
 // ResolveTaskWorkspaceID determines the workspace ID for a task.
@@ -6390,6 +6404,7 @@ func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQu
 		ActorType:       "system",
 		ActorID:         "",
 		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		AgentID:         util.UUIDToString(task.AgentID),
 		RecipientUserID: recipientUserID,
 		Payload:         payload,
 	})

@@ -620,11 +620,19 @@ func broadcastFailedTasks(ctx context.Context, queries *db.Queries, taskSvc *ser
 			WorkspaceID: workspaceID,
 			ActorType:   "system",
 			TaskID:      util.UUIDToString(t.ID),
+			AgentID:     util.UUIDToString(t.AgentID),
+			IssueID:     util.UUIDToString(t.IssueID),
 			Payload:     payload,
 		}
 		if t.ChatSessionID.Valid {
 			e.ChatSessionID = util.UUIDToString(t.ChatSessionID)
 			payload["chat_session_id"] = e.ChatSessionID
+			if session, err := queries.GetChatSession(ctx, t.ChatSessionID); err == nil {
+				e.RecipientUserID = util.UUIDToString(session.CreatorID)
+				if workspaceID == "" {
+					e.WorkspaceID = util.UUIDToString(session.WorkspaceID)
+				}
+			}
 		}
 		bus.Publish(e)
 		affectedAgents[util.UUIDToString(t.AgentID)] = t.AgentID

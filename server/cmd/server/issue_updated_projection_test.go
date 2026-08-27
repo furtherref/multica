@@ -311,20 +311,21 @@ func TestTaskFailedBroadcast_DeliversErrorOnlyInProcess(t *testing.T) {
 	bus.Publish(events.Event{
 		Type:        protocol.EventTaskFailed,
 		WorkspaceID: "workspace-1",
+		AgentID:     "agent-1",
 		Payload:     payload,
 	})
 
 	if inProcessError != "task timed out" {
 		t.Fatalf("in-process channel listener error = %q, want task timed out", inProcessError)
 	}
-	if len(fb.workspaceCalls) != 1 {
-		t.Fatalf("workspace broadcasts = %d, want 1", len(fb.workspaceCalls))
+	if len(fb.scopeCalls) != 1 {
+		t.Fatalf("visibility-scope broadcasts = %d, want 1", len(fb.scopeCalls))
 	}
 	var frame struct {
 		Payload map[string]any `json:"payload"`
 	}
-	if err := json.Unmarshal(fb.workspaceCalls[0].msg, &frame); err != nil {
-		t.Fatalf("unmarshal workspace frame: %v", err)
+	if err := json.Unmarshal(fb.scopeCalls[0].msg, &frame); err != nil {
+		t.Fatalf("unmarshal visibility-scope frame: %v", err)
 	}
 	if _, present := frame.Payload["error"]; present {
 		t.Fatal("channel-only failure error reached the workspace broadcast")

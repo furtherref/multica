@@ -59,6 +59,22 @@ func (f *fakeScopeQuerier) GetMemberByUserAndWorkspace(_ context.Context, p db.G
 func (f *fakeScopeQuerier) ListAgentInvocationTargets(_ context.Context, agentID pgtype.UUID) ([]db.AgentInvocationTarget, error) {
 	return f.targets[agentID.Bytes], nil
 }
+func (f *fakeScopeQuerier) ListAllAgents(_ context.Context, workspaceID pgtype.UUID) ([]db.Agent, error) {
+	agents := make([]db.Agent, 0, len(f.agents))
+	for _, agent := range f.agents {
+		if agent.WorkspaceID == workspaceID && agent.Kind == "user" {
+			agents = append(agents, agent)
+		}
+	}
+	return agents, nil
+}
+func (f *fakeScopeQuerier) ListAgentInvocationTargetsByAgentIDs(_ context.Context, agentIDs []pgtype.UUID) ([]db.AgentInvocationTarget, error) {
+	var targets []db.AgentInvocationTarget
+	for _, agentID := range agentIDs {
+		targets = append(targets, f.targets[agentID.Bytes]...)
+	}
+	return targets, nil
+}
 
 func mustUUID(t *testing.T) (string, pgtype.UUID) {
 	t.Helper()
@@ -67,6 +83,42 @@ func mustUUID(t *testing.T) (string, pgtype.UUID) {
 		t.Fatal(err)
 	}
 	return u.String(), pgtype.UUID{Bytes: u, Valid: true}
+}
+
+func TestScopeAuthorizer_VisibleAgentIDsUsesCanonicalVisibility(t *testing.T) {
+	wsStr, wsUUID := mustUUID(t)
+	userStr, userUUID := mustUUID(t)
+	otherStr, otherUUID := mustUUID(t)
+	visibleStr, visibleUUID := mustUUID(t)
+	privateStr, privateUUID := mustUUID(t)
+	ownedStr, ownedUUID := mustUUID(t)
+
+	q := &fakeScopeQuerier{
+		agents: map[[16]byte]db.Agent{
+			visibleUUID.Bytes: {ID: visibleUUID, WorkspaceID: wsUUID, OwnerID: otherUUID, Kind: "user", PermissionMode: "public_to"},
+			privateUUID.Bytes: {ID: privateUUID, WorkspaceID: wsUUID, OwnerID: otherUUID, Kind: "user", PermissionMode: "private"},
+			ownedUUID.Bytes:   {ID: ownedUUID, WorkspaceID: wsUUID, OwnerID: userUUID, Kind: "user", PermissionMode: "private"},
+		},
+		members: map[memberLookupKey]db.Member{
+			{userID: userUUID.Bytes, workspaceID: wsUUID.Bytes}: {UserID: userUUID, WorkspaceID: wsUUID, Role: "member"},
+		},
+		targets: map[[16]byte][]db.AgentInvocationTarget{
+			visibleUUID.Bytes: {{AgentID: visibleUUID, TargetType: "member", TargetID: userUUID}},
+		},
+	}
+
+	ids, err := newScopeAuthorizer(q).VisibleAgentIDs(context.Background(), userStr, wsStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		got[id] = true
+	}
+	if !got[visibleStr] || !got[ownedStr] || got[privateStr] {
+		t.Fatalf("visible Agent IDs = %v, want allowed %s and owned %s but not private %s", ids, visibleStr, ownedStr, privateStr)
+	}
+	_ = otherStr
 }
 
 // TestScopeAuthorizer_ChatRequiresCreator pins must-fix #2 from PR #1429:

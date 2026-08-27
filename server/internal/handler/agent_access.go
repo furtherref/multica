@@ -373,6 +373,46 @@ func (h *Handler) taskFromRequestHeader(r *http.Request) (db.AgentTaskQueue, boo
 	return task, true
 }
 
+// AgentVisibilityQuerier is the shared query boundary for resolving the Agent
+// population visible to a member. Both HTTP snapshots and realtime connection
+// setup use ResolveMemberVisibleAgentIDs so their filters cannot drift.
+type AgentVisibilityQuerier interface {
+	ListAllAgents(ctx context.Context, workspaceID pgtype.UUID) ([]db.Agent, error)
+	ListAgentInvocationTargetsByAgentIDs(ctx context.Context, agentIDs []pgtype.UUID) ([]db.AgentInvocationTarget, error)
+}
+
+// ResolveMemberVisibleAgentIDs resolves the canonical member-visible Agent set
+// with one Agent query and one batched target query.
+func ResolveMemberVisibleAgentIDs(ctx context.Context, q AgentVisibilityQuerier, workspaceID pgtype.UUID, userID, role string) (map[string]struct{}, error) {
+	agents, err := q.ListAllAgents(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]pgtype.UUID, 0, len(agents))
+	for _, agent := range agents {
+		ids = append(ids, agent.ID)
+	}
+	targetsByAgent := make(map[string][]db.AgentInvocationTarget, len(agents))
+	if len(ids) > 0 {
+		targets, err := q.ListAgentInvocationTargetsByAgentIDs(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		for _, target := range targets {
+			agentID := uuidToString(target.AgentID)
+			targetsByAgent[agentID] = append(targetsByAgent[agentID], target)
+		}
+	}
+	allowed := make(map[string]struct{}, len(agents))
+	for _, agent := range agents {
+		agentID := uuidToString(agent.ID)
+		if memberAllowedToViewAgent(agent, targetsByAgent[agentID], userID, role) {
+			allowed[agentID] = struct{}{}
+		}
+	}
+	return allowed, nil
+}
+
 // accessibleAgentIDs returns the set of agent IDs in the workspace the actor
 // is allowed to see, for use by workspace-wide aggregation endpoints
 // (run counts, activity histograms, task snapshots) that need to filter out
@@ -383,22 +423,17 @@ func (h *Handler) accessibleAgentIDs(ctx context.Context, workspaceID, actorType
 	if err != nil {
 		return nil, false
 	}
+	if actorType == "member" {
+		allowed, err := ResolveMemberVisibleAgentIDs(ctx, h.Queries, wsUUID, actorID, role)
+		return allowed, err == nil
+	}
 	agents, err := h.Queries.ListAllAgents(ctx, wsUUID)
 	if err != nil {
 		return nil, false
 	}
-	targetsByAgent, ok := h.loadInvocationTargetsByAgent(ctx, agents)
-	if !ok {
-		return nil, false
-	}
 	allowed := make(map[string]struct{}, len(agents))
-	for _, a := range agents {
-		if actorType == "member" {
-			if !memberAllowedToViewAgent(a, targetsByAgent[uuidToString(a.ID)], actorID, role) {
-				continue
-			}
-		}
-		allowed[uuidToString(a.ID)] = struct{}{}
+	for _, agent := range agents {
+		allowed[uuidToString(agent.ID)] = struct{}{}
 	}
 	return allowed, true
 }

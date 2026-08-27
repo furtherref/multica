@@ -761,7 +761,7 @@ func (h *Handler) publishTask(eventType, workspaceID, actorType, actorID, taskID
 
 // publishChat is publish() plus a ChatSessionID hint so the realtime layer
 // can route the event to the per-chat-session scope.
-func (h *Handler) publishChat(eventType, workspaceID, actorType, actorID, chatSessionID string, payload any) {
+func (h *Handler) publishChat(eventType, workspaceID, actorType, actorID, chatSessionID, agentID string, payload any) {
 	recipientUserID := ""
 	if actorType == "member" {
 		recipientUserID = actorID
@@ -772,6 +772,7 @@ func (h *Handler) publishChat(eventType, workspaceID, actorType, actorID, chatSe
 		ActorType:       actorType,
 		ActorID:         actorID,
 		ChatSessionID:   chatSessionID,
+		AgentID:         agentID,
 		RecipientUserID: recipientUserID,
 		Payload:         payload,
 	})

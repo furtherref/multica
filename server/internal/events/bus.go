@@ -19,6 +19,13 @@ type Event struct {
 	// without re-deserializing Payload. See MUL-1138 phase 1.
 	TaskID        string
 	ChatSessionID string
+	// AgentID and IssueID are trusted routing metadata. They must be populated
+	// from typed domain objects, never recovered from the public payload.
+	AgentID string
+	IssueID string
+	// AuthorizationChanged marks a domain mutation that invalidates immutable
+	// connection authorization metadata. It is routing metadata only.
+	AuthorizationChanged bool
 	// RecipientUserID is trusted creator-routing metadata for private direct
 	// Chat events. It is never copied from the public payload.
 	RecipientUserID string

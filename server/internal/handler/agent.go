@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/attribution"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
@@ -1821,15 +1822,17 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	_, hasTargets := rawFields["invocation_targets"]
 	permissionTouched := hasPermissionMode || hasTargets || req.Visibility != nil
 	replacePermissionTargets := false
+	authorizationChanged := false
 	var resolvedPerm resolvedPermission
 	if permissionTouched {
 		isAgentOwner := uuidToString(existing.OwnerID) == requestUserID(r)
+		changed, permErr := h.permissionInputChangesAgent(r.Context(), existing, req, hasPermissionMode, hasTargets)
+		if permErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to evaluate invocation permission change")
+			return
+		}
+		authorizationChanged = changed
 		if !isAgentOwner {
-			changed, permErr := h.permissionInputChangesAgent(r.Context(), existing, req, hasPermissionMode, hasTargets)
-			if permErr != nil {
-				writeError(w, http.StatusInternalServerError, "failed to evaluate invocation permission change")
-				return
-			}
 			if changed {
 				writeError(w, http.StatusForbidden, "only the agent owner can change access (permission_mode / invocation_targets)")
 				return
@@ -2110,7 +2113,14 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	slog.Info("agent updated", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", uuidToString(updated.WorkspaceID))...)
 	userID := requestUserID(r)
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(updated.WorkspaceID))
-	h.publish(protocol.EventAgentStatus, uuidToString(updated.WorkspaceID), actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
+	h.Bus.Publish(events.Event{
+		Type:                 protocol.EventAgentStatus,
+		WorkspaceID:          uuidToString(updated.WorkspaceID),
+		ActorType:            actorType,
+		ActorID:              actorID,
+		AuthorizationChanged: authorizationChanged,
+		Payload:              map[string]any{"agent": broadcastAgentResponse(resp)},
+	})
 	redactAgentResponseForActor(&resp, actorType)
 	// Workspace admins / non-owner members pass canManageAgent for legitimate
 	// admin actions (e.g. bulk reassigning agents off a leaving member's

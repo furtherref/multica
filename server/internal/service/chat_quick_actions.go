@@ -288,6 +288,7 @@ func (s *TaskService) SupplementChatQuickActions(ctx context.Context, task db.Ag
 		ActorType:       "system",
 		ActorID:         "",
 		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		AgentID:         util.UUIDToString(task.AgentID),
 		RecipientUserID: recipientUserID,
 		Payload:         payload,
 	})

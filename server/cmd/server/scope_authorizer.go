@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -117,6 +118,40 @@ func (a *dbScopeAuthorizer) AuthorizeScope(ctx context.Context, userID, workspac
 	default:
 		return false, nil
 	}
+}
+
+// VisibleAgentIDs returns the same Agent population exposed by the REST list
+// boundary. It batch-loads invocation targets once at connection setup; the
+// Hub then uses the immutable result without database I/O on event fanout.
+func (a *dbScopeAuthorizer) VisibleAgentIDs(ctx context.Context, userID, workspaceID string) ([]string, error) {
+	q, ok := a.q.(handler.AgentVisibilityQuerier)
+	if !ok {
+		return nil, errors.New("visible Agent query support is not configured")
+	}
+	wsUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	userUUID, err := util.ParseUUID(userID)
+	if err != nil {
+		return nil, err
+	}
+	member, err := a.q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+		UserID: userUUID, WorkspaceID: wsUUID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	allowed, err := handler.ResolveMemberVisibleAgentIDs(ctx, q, wsUUID, userID, member.Role)
+	if err != nil {
+		return nil, err
+	}
+	visible := make([]string, 0, len(allowed))
+	for id := range allowed {
+		visible = append(visible, id)
+	}
+	sort.Strings(visible)
+	return visible, nil
 }
 
 func (a *dbScopeAuthorizer) canViewTaskAgent(ctx context.Context, userID string, workspaceID, agentID pgtype.UUID) (bool, error) {

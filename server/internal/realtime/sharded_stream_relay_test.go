@@ -111,6 +111,70 @@ func TestShardedStreamRelayDeliverMessageUsesEnvelopeScope(t *testing.T) {
 	}
 }
 
+func TestShardedStreamRelayAuthorizationScopeDisconnectsWorkspace(t *testing.T) {
+	hub := NewHub()
+	attachRealtimeTestClient(hub, ScopeWorkspaceAuthorization, "workspace-1")
+	relay := NewShardedStreamRelay(hub, nil, nil, ShardedStreamRelayConfig{})
+
+	relay.deliverMessage(redis.XMessage{Values: envelopeRedisValues(envelope{
+		EventID:     "auth-event-1",
+		Scope:       ScopeWorkspaceAuthorization,
+		ScopeID:     "workspace-1",
+		PayloadJSON: string(AuthorizationChangedFrame()),
+	})})
+
+	if got := totalClients(hub); got != 0 {
+		t.Fatalf("clients after relayed authorization invalidation = %d, want 0", got)
+	}
+}
+
+func TestShardedStreamRelayVisibilityScopesDoNotCrossAuthorizationBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		scopeType      string
+		authorizedID   string
+		unauthorizedID string
+	}{
+		{
+			name:           "workspace Agent visibility",
+			scopeType:      ScopeWorkspaceAgent,
+			authorizedID:   WorkspaceAgentScopeID("workspace-1", "agent-visible"),
+			unauthorizedID: WorkspaceAgentScopeID("workspace-1", "agent-hidden"),
+		},
+		{
+			name:           "direct Chat creator and Agent visibility",
+			scopeType:      ScopeUserAgent,
+			authorizedID:   UserAgentScopeID("creator-1", "agent-visible"),
+			unauthorizedID: UserAgentScopeID("creator-2", "agent-visible"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := NewHub()
+			authorized := attachRealtimeTestClient(hub, tc.scopeType, tc.authorizedID)
+			unauthorized := attachRealtimeTestClient(hub, tc.scopeType, tc.unauthorizedID)
+			relay := NewShardedStreamRelay(hub, nil, nil, ShardedStreamRelayConfig{})
+
+			relay.deliverMessage(redis.XMessage{Values: envelopeRedisValues(envelope{
+				EventID:     "visibility-event-1",
+				Scope:       tc.scopeType,
+				ScopeID:     tc.authorizedID,
+				PayloadJSON: `{"type":"task:running"}`,
+			})})
+
+			select {
+			case <-authorized.send:
+			case <-time.After(time.Second):
+				t.Fatal("authorized connection did not receive relayed frame")
+			}
+			select {
+			case frame := <-unauthorized.send:
+				t.Fatalf("unauthorized connection received relayed frame: %s", frame)
+			case <-time.After(20 * time.Millisecond):
+			}
+		})
+	}
+}
+
 func TestShardedStreamRelayReplayStartIDIsBounded(t *testing.T) {
 	grace := 5 * time.Minute
 	relay := NewShardedStreamRelay(NewHub(), nil, nil, ShardedStreamRelayConfig{

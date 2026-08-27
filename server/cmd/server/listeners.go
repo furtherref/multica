@@ -76,6 +76,21 @@ func isTaskScopedRealtimeEvent(eventType string) bool {
 	}
 }
 
+func isTaskLifecycleRealtimeEvent(eventType string) bool {
+	switch eventType {
+	case protocol.EventTaskQueued,
+		protocol.EventTaskDispatch,
+		protocol.EventTaskRunning,
+		protocol.EventTaskWaitingLocalDirectory,
+		protocol.EventTaskCompleted,
+		protocol.EventTaskFailed,
+		protocol.EventTaskCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
 func payloadMap(payload any) (map[string]any, bool) {
 	if m, ok := payload.(map[string]any); ok {
 		return m, true
@@ -143,6 +158,31 @@ func projectOutbound(eventType string, payload any) any {
 // without touching any of the event listeners below. This is Phase 0 of the
 // horizontal-scaling plan tracked in MUL-1138.
 func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
+	// Connection authorization is immutable. Mutations that can change an
+	// actor's visible-Agent set close workspace connections on every node via
+	// the relay-backed internal authorization scope; reconnect resolves a fresh
+	// set before registration.
+	invalidateWorkspaceAuthorization := func(e events.Event) {
+		if e.WorkspaceID == "" {
+			return
+		}
+		b.BroadcastToScope(realtime.ScopeWorkspaceAuthorization, e.WorkspaceID, realtime.AuthorizationChangedFrame())
+	}
+	for _, eventType := range []string{
+		protocol.EventAgentCreated,
+		protocol.EventAgentArchived,
+		protocol.EventAgentRestored,
+		protocol.EventMemberUpdated,
+		protocol.EventMemberRemoved,
+	} {
+		bus.Subscribe(eventType, invalidateWorkspaceAuthorization)
+	}
+	bus.Subscribe(protocol.EventAgentStatus, func(e events.Event) {
+		if e.AuthorizationChanged {
+			invalidateWorkspaceAuthorization(e)
+		}
+	})
+
 	// Personal events should NOT be broadcast to the whole workspace.
 	personalEvents := map[string]bool{
 		protocol.EventInboxNew:           true,
@@ -305,20 +345,45 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 			return
 		}
 
-		if strings.HasPrefix(e.Type, "chat:") {
-			if e.RecipientUserID == "" {
+		if isTaskLifecycleRealtimeEvent(e.Type) {
+			if e.AgentID == "" {
 				realtime.M.MessagesDroppedTotal.Add(1)
-				slog.Warn("dropping creator-owned chat event without trusted recipient", "event_type", e.Type)
+				slog.Warn("dropping task lifecycle event without trusted Agent id", "event_type", e.Type)
+				return
+			}
+			if e.ChatSessionID != "" {
+				if e.RecipientUserID == "" {
+					realtime.M.MessagesDroppedTotal.Add(1)
+					slog.Warn("dropping creator-owned task lifecycle event without trusted recipient", "event_type", e.Type)
+					return
+				}
+				realtime.M.RecordEvent(e.Type)
+				b.BroadcastToScope(realtime.ScopeUserAgent, realtime.UserAgentScopeID(e.RecipientUserID, e.AgentID), data)
+				return
+			}
+			if e.WorkspaceID == "" {
+				realtime.M.MessagesDroppedTotal.Add(1)
+				slog.Warn("dropping task lifecycle event without trusted workspace id", "event_type", e.Type)
 				return
 			}
 			realtime.M.RecordEvent(e.Type)
-			b.SendToUser(e.RecipientUserID, data)
+			b.BroadcastToScope(realtime.ScopeWorkspaceAgent, realtime.WorkspaceAgentScopeID(e.WorkspaceID, e.AgentID), data)
 			return
 		}
 
-		// Task transcript/progress/activity events have already returned above
-		// through the authorized task scope; no content-bearing task event may
-		// fall through to this generic workspace path.
+		if strings.HasPrefix(e.Type, "chat:") {
+			if e.RecipientUserID == "" || e.AgentID == "" {
+				realtime.M.MessagesDroppedTotal.Add(1)
+				slog.Warn("dropping creator-owned chat event without trusted authorization metadata", "event_type", e.Type)
+				return
+			}
+			realtime.M.RecordEvent(e.Type)
+			b.BroadcastToScope(realtime.ScopeUserAgent, realtime.UserAgentScopeID(e.RecipientUserID, e.AgentID), data)
+			return
+		}
+
+		// Every recognized task event has returned through an authorized scope.
+		// Unknown task contracts are dropped by projectOutbound above.
 
 		if e.WorkspaceID != "" {
 			realtime.M.RecordEvent(e.Type)

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -113,15 +114,20 @@ func TestRegisterListeners_ChatContentUsesTrustedRecipient(t *testing.T) {
 	bus.Publish(events.Event{
 		Type:            protocol.EventChatDone,
 		WorkspaceID:     "ws-1",
+		AgentID:         "agent-1",
 		RecipientUserID: "creator-1",
 		Payload:         map[string]any{"chat_session_id": "chat-1", "content": "private reply"},
 	})
 
-	if len(fb.userCalls) != 1 || fb.userCalls[0].userID != "creator-1" {
-		t.Fatalf("chat event recipient calls = %+v, want creator-1", fb.userCalls)
+	if len(fb.scopeCalls) != 1 {
+		t.Fatalf("chat visibility-scope calls = %+v, want one", fb.scopeCalls)
 	}
-	if len(fb.workspaceCalls) != 0 || len(fb.scopeCalls) != 0 {
-		t.Fatalf("chat content escaped creator routing: workspaces=%+v scopes=%+v", fb.workspaceCalls, fb.scopeCalls)
+	wantID := realtime.UserAgentScopeID("creator-1", "agent-1")
+	if got := fb.scopeCalls[0]; got.scopeType != realtime.ScopeUserAgent || got.scopeID != wantID {
+		t.Fatalf("chat scope = %s:%s, want %s:%s", got.scopeType, got.scopeID, realtime.ScopeUserAgent, wantID)
+	}
+	if len(fb.workspaceCalls) != 0 || len(fb.userCalls) != 0 {
+		t.Fatalf("chat content escaped creator-Agent routing: workspaces=%+v users=%+v", fb.workspaceCalls, fb.userCalls)
 	}
 }
 
@@ -133,10 +139,114 @@ func TestRegisterListeners_ChatContentWithoutTrustedRecipientDrops(t *testing.T)
 	bus.Publish(events.Event{
 		Type:        protocol.EventChatMessage,
 		WorkspaceID: "ws-1",
+		AgentID:     "agent-1",
 		Payload:     map[string]any{"chat_session_id": "chat-1", "content": "private prompt"},
 	})
 
 	if len(fb.userCalls) != 0 || len(fb.workspaceCalls) != 0 || len(fb.scopeCalls) != 0 {
 		t.Fatalf("chat content without trusted recipient was delivered: users=%+v workspaces=%+v scopes=%+v", fb.userCalls, fb.workspaceCalls, fb.scopeCalls)
+	}
+}
+
+func TestRegisterListeners_TaskLifecycleUsesVisibilityScope(t *testing.T) {
+	t.Run("issue task uses workspace-agent scope", func(t *testing.T) {
+		bus := events.New()
+		fb := &fakeBroadcaster{}
+		registerListeners(bus, fb)
+
+		bus.Publish(events.Event{
+			Type:        protocol.EventTaskRunning,
+			WorkspaceID: "ws-1",
+			AgentID:     "agent-1",
+			IssueID:     "issue-1",
+			TaskID:      "task-1",
+			Payload:     map[string]any{"task_id": "task-1", "issue_id": "issue-1", "status": "running"},
+		})
+
+		if len(fb.scopeCalls) != 1 {
+			t.Fatalf("scope calls = %d, want 1", len(fb.scopeCalls))
+		}
+		wantID := realtime.WorkspaceAgentScopeID("ws-1", "agent-1")
+		if got := fb.scopeCalls[0]; got.scopeType != realtime.ScopeWorkspaceAgent || got.scopeID != wantID {
+			t.Fatalf("lifecycle scope = %s:%s, want %s:%s", got.scopeType, got.scopeID, realtime.ScopeWorkspaceAgent, wantID)
+		}
+		if len(fb.workspaceCalls) != 0 {
+			t.Fatalf("lifecycle leaked to workspace: %+v", fb.workspaceCalls)
+		}
+	})
+
+	t.Run("direct chat task uses creator-agent scope", func(t *testing.T) {
+		bus := events.New()
+		fb := &fakeBroadcaster{}
+		registerListeners(bus, fb)
+
+		bus.Publish(events.Event{
+			Type:            protocol.EventTaskQueued,
+			WorkspaceID:     "ws-1",
+			AgentID:         "agent-1",
+			TaskID:          "task-1",
+			ChatSessionID:   "chat-1",
+			RecipientUserID: "creator-1",
+			Payload:         map[string]any{"task_id": "task-1", "chat_session_id": "chat-1", "status": "queued"},
+		})
+
+		if len(fb.scopeCalls) != 1 {
+			t.Fatalf("scope calls = %d, want 1", len(fb.scopeCalls))
+		}
+		wantID := realtime.UserAgentScopeID("creator-1", "agent-1")
+		if got := fb.scopeCalls[0]; got.scopeType != realtime.ScopeUserAgent || got.scopeID != wantID {
+			t.Fatalf("chat lifecycle scope = %s:%s, want %s:%s", got.scopeType, got.scopeID, realtime.ScopeUserAgent, wantID)
+		}
+		if len(fb.workspaceCalls) != 0 || len(fb.userCalls) != 0 {
+			t.Fatalf("chat lifecycle escaped user-agent routing: workspaces=%+v users=%+v", fb.workspaceCalls, fb.userCalls)
+		}
+	})
+}
+
+func TestRegisterListeners_TaskLifecycleWithoutTrustedAgentIDDrops(t *testing.T) {
+	bus := events.New()
+	fb := &fakeBroadcaster{}
+	registerListeners(bus, fb)
+
+	bus.Publish(events.Event{
+		Type:        protocol.EventTaskCompleted,
+		WorkspaceID: "ws-1",
+		TaskID:      "task-1",
+		Payload:     map[string]any{"task_id": "task-1", "status": "completed"},
+	})
+
+	if len(fb.scopeCalls) != 0 || len(fb.workspaceCalls) != 0 || len(fb.userCalls) != 0 {
+		t.Fatalf("lifecycle without trusted Agent id was delivered: scopes=%+v workspaces=%+v users=%+v", fb.scopeCalls, fb.workspaceCalls, fb.userCalls)
+	}
+}
+
+func TestRegisterListeners_VisibilityChangesInvalidateWorkspaceAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		event events.Event
+	}{
+		{name: "Agent created", event: events.Event{Type: protocol.EventAgentCreated, WorkspaceID: "ws-1"}},
+		{name: "Agent archived", event: events.Event{Type: protocol.EventAgentArchived, WorkspaceID: "ws-1"}},
+		{name: "Agent restored", event: events.Event{Type: protocol.EventAgentRestored, WorkspaceID: "ws-1"}},
+		{name: "member role updated", event: events.Event{Type: protocol.EventMemberUpdated, WorkspaceID: "ws-1"}},
+		{name: "member removed", event: events.Event{Type: protocol.EventMemberRemoved, WorkspaceID: "ws-1"}},
+		{name: "Agent permission updated", event: events.Event{Type: protocol.EventAgentStatus, WorkspaceID: "ws-1", AuthorizationChanged: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := events.New()
+			fb := &fakeBroadcaster{}
+			registerListeners(bus, fb)
+			bus.Publish(tc.event)
+
+			var found bool
+			for _, call := range fb.scopeCalls {
+				if call.scopeType == realtime.ScopeWorkspaceAuthorization && call.scopeID == "ws-1" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("authorization invalidation was not published: %+v", fb.scopeCalls)
+			}
+		})
 	}
 }

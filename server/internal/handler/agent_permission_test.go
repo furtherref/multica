@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // createPermissionTestMember inserts a fresh workspace member and returns its
@@ -645,6 +647,14 @@ func TestUpdateAgent_AccessChangeIsOwnerOnly(t *testing.T) {
 	// Agent owned by testUserID, public_to workspace (createHandlerTestAgent).
 	agentID := createHandlerTestAgent(t, "owner-only-access-agent", nil)
 	adminID := createPermissionTestAdmin(t, "perm-access-admin@multica.test")
+	var authorizationChanges []bool
+	testHandler.Bus.Subscribe(protocol.EventAgentStatus, func(e events.Event) {
+		payload, _ := e.Payload.(map[string]any)
+		agent, _ := payload["agent"].(AgentResponse)
+		if agent.ID == agentID {
+			authorizationChanges = append(authorizationChanges, e.AuthorizationChanged)
+		}
+	})
 
 	put := func(actorID string, body map[string]any) int {
 		rec := httptest.NewRecorder()
@@ -679,6 +689,11 @@ func TestUpdateAgent_AccessChangeIsOwnerOnly(t *testing.T) {
 	if code := put(adminID, map[string]any{"description": "renamed by admin"}); code != http.StatusOK {
 		t.Errorf("admin editing other fields: expected 200, got %d", code)
 	}
+	for _, changed := range authorizationChanges {
+		if changed {
+			t.Fatal("no-op or non-permission update invalidated authorization")
+		}
+	}
 
 	// The owner CAN change access.
 	if code := put(testUserID, map[string]any{"permission_mode": "private"}); code != http.StatusOK {
@@ -686,6 +701,9 @@ func TestUpdateAgent_AccessChangeIsOwnerOnly(t *testing.T) {
 	}
 	if n := invocationTargetCount(t, agentID); n != 0 {
 		t.Errorf("owner set private: expected 0 targets, got %d", n)
+	}
+	if len(authorizationChanges) == 0 || !authorizationChanges[len(authorizationChanges)-1] {
+		t.Fatalf("permission change flags = %v, want final true", authorizationChanges)
 	}
 }
 

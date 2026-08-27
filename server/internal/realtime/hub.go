@@ -43,6 +43,13 @@ type ScopeAuthorizer interface {
 	AuthorizeScope(ctx context.Context, userID, workspaceID, scopeType, scopeID string) (bool, error)
 }
 
+// VisibleAgentResolver resolves the immutable Agent visibility snapshot used
+// to auto-subscribe a new connection. Resolution happens before registration
+// and never while the Hub lock is held.
+type VisibleAgentResolver interface {
+	VisibleAgentIDs(ctx context.Context, userID, workspaceID string) ([]string, error)
+}
+
 var allowedWSOrigins atomic.Value // holds []string
 var trustedProxies atomic.Value   // holds []netip.Prefix
 
@@ -227,6 +234,13 @@ type Client struct {
 	send        chan []byte
 	userID      string
 	workspaceID string
+	// visibleAgentIDs is resolved before registration and is immutable for the
+	// life of this connection. Permission changes disconnect the connection so
+	// a reconnect obtains a fresh snapshot.
+	visibleAgentIDs []string
+	// authorizationVersion fences the connection-time visibility snapshot
+	// against a concurrent permission mutation before registration.
+	authorizationVersion uint64
 
 	// subscriptions is guarded by hub.mu. Tracks the scopes this client is
 	// currently in. Used to clean up rooms on disconnect.
@@ -284,6 +298,11 @@ type Hub struct {
 	mu         sync.RWMutex
 
 	authorizer ScopeAuthorizer
+	resolver   VisibleAgentResolver
+	// authorizationVersions is incremented before workspace connections are
+	// invalidated. A client resolved against an older version is rejected by
+	// the registration loop, closing the resolve-to-register race.
+	authorizationVersions map[string]uint64
 
 	// accountChecker verifies a user's CURRENT status before a suspension
 	// control frame is acted on (guards against relay REPLAYS of old suspend
@@ -299,11 +318,12 @@ type Hub struct {
 // NewHub creates a new Hub instance.
 func NewHub() *Hub {
 	return &Hub{
-		rooms:      make(map[scopeKey]map[*Client]bool),
-		clients:    make(map[*Client]bool),
-		broadcast:  make(chan []byte),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
+		rooms:                 make(map[scopeKey]map[*Client]bool),
+		clients:               make(map[*Client]bool),
+		broadcast:             make(chan []byte),
+		register:              make(chan *Client),
+		unregister:            make(chan *Client),
+		authorizationVersions: make(map[string]uint64),
 	}
 }
 
@@ -312,6 +332,30 @@ func (h *Hub) SetAuthorizer(a ScopeAuthorizer) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.authorizer = a
+}
+
+// SetVisibleAgentResolver wires connection-time Agent visibility resolution.
+// Safe to call before Run.
+func (h *Hub) SetVisibleAgentResolver(r VisibleAgentResolver) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.resolver = r
+}
+
+func (h *Hub) resolveVisibleAgentIDs(ctx context.Context, userID, workspaceID string) ([]string, error) {
+	h.mu.RLock()
+	resolver := h.resolver
+	h.mu.RUnlock()
+	if resolver == nil {
+		return nil, nil
+	}
+	return resolver.VisibleAgentIDs(ctx, userID, workspaceID)
+}
+
+func (h *Hub) workspaceAuthorizationVersion(workspaceID string) uint64 {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.authorizationVersions[workspaceID]
 }
 
 // SetSubscriptionCallbacks registers callbacks fired when a scope on this
@@ -330,6 +374,12 @@ func (h *Hub) Run() {
 		select {
 		case client := <-h.register:
 			h.mu.Lock()
+			if h.authorizationVersions[client.workspaceID] != client.authorizationVersion {
+				h.mu.Unlock()
+				close(client.send)
+				slog.Info("ws client authorization snapshot invalidated before registration", "workspace_id", client.workspaceID, "user_id", client.userID)
+				continue
+			}
 			h.clients[client] = true
 			total := len(h.clients)
 			h.mu.Unlock()
@@ -337,8 +387,15 @@ func (h *Hub) Run() {
 			M.ActiveConnections.Add(1)
 			// Auto-subscribe to the workspace and user scopes.
 			h.subscribe(client, ScopeWorkspace, client.workspaceID)
+			h.subscribe(client, ScopeWorkspaceAuthorization, client.workspaceID)
 			if client.userID != "" {
 				h.subscribe(client, ScopeUser, client.userID)
+			}
+			for _, agentID := range client.visibleAgentIDs {
+				h.subscribe(client, ScopeWorkspaceAgent, WorkspaceAgentScopeID(client.workspaceID, agentID))
+				if client.userID != "" {
+					h.subscribe(client, ScopeUserAgent, UserAgentScopeID(client.userID, agentID))
+				}
 			}
 			slog.Info("ws client connected", "workspace_id", client.workspaceID, "user_id", client.userID, "total_clients", total)
 
@@ -504,6 +561,10 @@ func (h *Hub) BroadcastToScope(scopeType, scopeID string, message []byte) {
 // deduplicate the local fast path of DualWriteBroadcaster).
 func (h *Hub) BroadcastToScopeDedup(scopeType, scopeID string, message []byte, eventID string) {
 	if scopeType == "" || scopeID == "" {
+		return
+	}
+	if scopeType == ScopeWorkspaceAuthorization {
+		h.DisconnectWorkspace(scopeID)
 		return
 	}
 	key := sk(scopeType, scopeID)
@@ -709,6 +770,25 @@ func (h *Hub) DisconnectUser(userID string) {
 	h.mu.RUnlock()
 	if len(targets) > 0 {
 		h.evictSlow(targets)
+	}
+}
+
+// DisconnectWorkspace closes every connection in a workspace. Authorization
+// mutations use this conservative invalidation so reconnect resolves a fresh
+// immutable visible-Agent set. Selection is in-memory and no Hub lock is held
+// while clients are removed.
+func (h *Hub) DisconnectWorkspace(workspaceID string) {
+	h.mu.Lock()
+	h.authorizationVersions[workspaceID]++
+	targets := make([]*Client, 0)
+	for client := range h.clients {
+		if client.workspaceID == workspaceID {
+			targets = append(targets, client)
+		}
+	}
+	h.mu.Unlock()
+	for _, client := range targets {
+		h.removeClient(client)
 	}
 }
 
@@ -980,6 +1060,7 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, ac AccountC
 	}
 
 	var userID string
+	usedTokenAuth := false
 	if cookie, err := r.Cookie(auth.AuthCookieName); err == nil && cookie.Value != "" {
 		uid, errMsg := authenticateToken(cookie.Value, pr, ac, r.Context())
 		if errMsg != "" {
@@ -1009,6 +1090,7 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, ac AccountC
 	conn.SetReadLimit(inboundReadLimit)
 
 	if userID == "" {
+		usedTokenAuth = true
 		tokenStr, errMsg, closed := firstMessageAuth(conn)
 		if closed {
 			return
@@ -1033,7 +1115,22 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, ac AccountC
 		}
 		userID = uid
 
-		if !writeWSAuthFrame(
+	}
+
+	authorizationVersion := hub.workspaceAuthorizationVersion(workspaceID)
+	visibleAgentIDs, err := hub.resolveVisibleAgentIDs(r.Context(), userID, workspaceID)
+	if err != nil {
+		slog.Error("ws: failed to resolve visible Agents", "workspace_id", workspaceID, "user_id", userID, "error", err)
+		writeWSAuthErrorAndClose(conn, []byte(`{"error":"authorization lookup failed"}`), "workspace_id", workspaceID, "user_id", userID)
+		return
+	}
+
+	// Cookie-authenticated browser clients do not expect an auth_ack. Token
+	// clients do, and receive it only after their visibility snapshot is ready.
+	if usedTokenAuth {
+		// userID cannot be empty here; the second condition documents the auth
+		// invariant and keeps the branch fail-closed if that ever changes.
+		if userID == "" || !writeWSAuthFrame(
 			conn,
 			[]byte(`{"type":"auth_ack"}`),
 			"auth_ack",
@@ -1061,11 +1158,13 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, ac AccountC
 	)
 
 	client := &Client{
-		hub:         hub,
-		conn:        conn,
-		send:        make(chan []byte, 256),
-		userID:      userID,
-		workspaceID: workspaceID,
+		hub:                  hub,
+		conn:                 conn,
+		send:                 make(chan []byte, 256),
+		userID:               userID,
+		workspaceID:          workspaceID,
+		visibleAgentIDs:      visibleAgentIDs,
+		authorizationVersion: authorizationVersion,
 	}
 	hub.register <- client
 

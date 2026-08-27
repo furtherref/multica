@@ -486,7 +486,9 @@ func main() {
 	defer analyticsClient.Close()
 
 	queries := db.New(pool)
-	hub.SetAuthorizer(newScopeAuthorizer(queries))
+	scopeAuthorizer := newScopeAuthorizer(queries)
+	hub.SetAuthorizer(scopeAuthorizer)
+	hub.SetVisibleAgentResolver(scopeAuthorizer)
 	// Order matters: subscriber listeners must register BEFORE notification listeners.
 	// The notification listener queries the subscriber table to determine recipients,
 	// so subscribers must be written first within the same synchronous event dispatch.
