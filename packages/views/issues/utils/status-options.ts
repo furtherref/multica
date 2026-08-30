@@ -28,28 +28,46 @@ export interface StatusOption {
  * — a status offered in one and missing from the other is exactly how an issue
  * becomes unfindable.
  *
- * Archived statuses are excluded: archiving retires a status from future
- * assignment. Issues already on one keep it, and `useStatusLabel` still names
- * it, because the catalog query keeps archived rows.
+ * Archived statuses are excluded by default: archiving retires a status from
+ * future assignment. A read-only filter can opt specific current keys back in
+ * through `includeArchivedKeys`, so existing issues remain findable without a
+ * picker offering a retired value for assignment.
  *
  * `archive` (fork status #39) is appended by hand. It is not a catalog
  * category, so the loop below cannot produce it — but it has to stay on this
  * list, because this list is the ONLY way to archive an issue and the only way
  * to filter for archived work. It sorts last, where STATUS_ORDER puts it.
  */
-export function useStatusOptions(wsId: string): StatusOption[] {
-  const { activeStatuses } = useIssueStatuses(wsId);
+const NO_ARCHIVED_STATUS_KEYS: readonly IssueStatus[] = [];
+
+export function useStatusOptions(
+  wsId: string,
+  includeArchivedKeys: readonly IssueStatus[] = NO_ARCHIVED_STATUS_KEYS,
+): StatusOption[] {
+  const { statuses } = useIssueStatuses(wsId);
   const labelOf = useStatusLabel(wsId);
 
   return useMemo(
-    () =>
-      ALL_STATUSES.flatMap((category) => {
-        const entries = activeStatuses.filter((e) => e.category === category);
+    () => {
+      const includedArchived = new Set(includeArchivedKeys);
+      return ALL_STATUSES.flatMap((category) => {
+        const entries = statuses.filter(
+          (entry) =>
+            entry.category === category &&
+            (!entry.archived_at || includedArchived.has(entry.key)),
+        );
         // No catalog row for this category: the fetch is still in flight, or
         // this workspace predates the seed. Offer the built-in, whose key IS
         // the category, so a lifecycle step is never missing.
         if (entries.length === 0) {
-          return [{ key: category as IssueStatus, category, label: labelOf(category), color: null }];
+          return [
+            {
+              key: category as IssueStatus,
+              category,
+              label: labelOf(category),
+              color: null,
+            },
+          ];
         }
         return entries.map((e) => ({
           key: e.key as IssueStatus,
@@ -64,7 +82,8 @@ export function useStatusOptions(wsId: string): StatusOption[] {
           label: labelOf("archive"),
           color: null,
         },
-      ]),
-    [activeStatuses, labelOf],
+      ]);
+    },
+    [includeArchivedKeys, labelOf, statuses],
   );
 }
