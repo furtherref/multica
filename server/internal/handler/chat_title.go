@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -19,6 +20,46 @@ import (
 // thing keeping the goroutine from lingering if the upstream hangs. Kept short:
 // a chat title is a nicety, not worth pinning a goroutine for a minute.
 const chatTitleGenTimeout = 20 * time.Second
+
+// ChannelChatStarted publishes list invalidation metadata without changing any
+// client's current navigation. The explicit empty Chat is already committed.
+func (h *Handler) ChannelChatStarted(event engine.ChannelChatStartedEvent) {
+	ws, user, session := uuidToString(event.WorkspaceID), uuidToString(event.CreatorID), uuidToString(event.SessionID)
+	h.publishChat(protocol.EventChatSessionCreated, ws, "member", user, user, session, uuidToString(event.AgentID), protocol.ChatSessionCreatedPayload{
+		WorkspaceID: ws, ChatSessionID: session, AgentID: uuidToString(event.AgentID), CreatorID: user, Title: event.Title,
+		ChannelSource: protocol.ChatSessionChannelSource{
+			ChannelType: string(event.ChannelType), InstallationID: uuidToString(event.InstallationID), RouteRevision: event.RouteRevision,
+		},
+		IsCurrentChannelRoute: true,
+	})
+}
+
+// ChannelChatTitleInitialized publishes the deterministic first-message or
+// media fallback immediately. LLM title generation is optional, so clients
+// must not depend on its later CAS update to observe the committed title.
+func (h *Handler) ChannelChatTitleInitialized(workspaceID, creatorID, sessionID pgtype.UUID, title string) {
+	// Chat events are delivered through the creator's per-agent scope, so an
+	// event without a trusted agent ID is dropped by the fanout layer. The
+	// engine callers don't all carry the agent, so resolve it from the
+	// committed session row.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := h.Queries.GetChatSession(ctx, sessionID)
+	if err != nil {
+		slog.Error("resolve chat session for title broadcast", "chat_session_id", uuidToString(sessionID), "error", err)
+		return
+	}
+	h.publishChat(protocol.EventChatSessionUpdated, uuidToString(workspaceID), "member", uuidToString(creatorID), uuidToString(session.CreatorID), uuidToString(sessionID), uuidToString(session.AgentID), protocol.ChatSessionUpdatedPayload{
+		ChatSessionID: uuidToString(sessionID),
+		Title:         title,
+	})
+}
+
+// GenerateChannelChatTitle reuses the existing LLM + CAS title path after the
+// shared engine has persisted its deterministic first-message fallback.
+func (h *Handler) GenerateChannelChatTitle(workspaceID, creatorID, sessionID pgtype.UUID, currentTitle, sourceText string) {
+	h.maybeGenerateChatTitleAsync(uuidToString(workspaceID), uuidToString(creatorID), sessionID, currentTitle, sourceText)
+}
 
 // chatTitleSystemPrompt instructs the model to condense the opening of a
 // conversation into a short, language-matched title. The rules mirror the

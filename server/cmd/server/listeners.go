@@ -99,9 +99,12 @@ var publicRealtimePayloadKeys = map[string][]string{
 	protocol.EventChatDone:            {"chat_session_id", "task_id", "message_id", "content", "elapsed_ms", "created_at", "message_kind", "quick_actions", "quick_actions_pending"},
 	protocol.EventChatQuickActions:    {"chat_session_id", "task_id", "message_id", "quick_actions", "failed"},
 	protocol.EventChatCancelFinalized: {"outcome", "chat_session_id", "task_id", "initiator_user_id", "message_id", "content", "message_kind", "created_at", "elapsed_ms"},
-	protocol.EventChatSessionRead:     {"chat_session_id"},
-	protocol.EventChatSessionDeleted:  {"chat_session_id"},
-	protocol.EventChatSessionUpdated:  {"chat_session_id", "title", "project_id", "pinned", "status", "updated_at"},
+	// chat:session_created is delivered only to the creator via SendToUser, so
+	// the creator-private title and channel routing metadata may pass through.
+	protocol.EventChatSessionCreated: {"workspace_id", "chat_session_id", "agent_id", "creator_id", "title", "channel_source", "is_current_channel_route"},
+	protocol.EventChatSessionRead:    {"chat_session_id"},
+	protocol.EventChatSessionDeleted: {"chat_session_id"},
+	protocol.EventChatSessionUpdated: {"chat_session_id", "title", "project_id", "pinned", "status", "updated_at"},
 }
 
 func isContractProtectedRealtimeEvent(eventType string) bool {
@@ -241,6 +244,8 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 		protocol.EventInboxBatchArchived: true,
 		protocol.EventInvitationCreated:  true,
 		protocol.EventInvitationRevoked:  true,
+		protocol.EventChatSessionCreated: true,
+		protocol.EventChatSessionUpdated: true,
 	}
 
 	// Helper: marshal event and send to a specific user.
@@ -328,6 +333,16 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 			sendToRecipient(b, e, *uid)
 		}
 	})
+
+	// A Chat session is creator-private. Its initial title may be derived from
+	// the creator's first message, so the list-invalidation event must not be
+	// broadcast to every workspace member. ActorID is the creator on every
+	// producer path for this event.
+	for _, eventType := range []string{protocol.EventChatSessionCreated, protocol.EventChatSessionUpdated} {
+		bus.Subscribe(eventType, func(e events.Event) {
+			sendToRecipient(b, e, e.ActorID)
+		})
+	}
 
 	// member:added — also send to the invited user so they discover the new workspace.
 	// Pass excludeWorkspace so clients already in the target room (reached via

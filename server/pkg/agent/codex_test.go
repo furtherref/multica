@@ -365,9 +365,6 @@ func TestCodexLegacyEventTaskStarted(t *testing.T) {
 	if !gotStatus {
 		t.Fatal("expected status=running message")
 	}
-	if !c.turnStarted {
-		t.Fatal("expected turnStarted=true")
-	}
 	if c.notificationProtocol != "legacy" {
 		t.Fatalf("expected protocol=legacy, got %q", c.notificationProtocol)
 	}
@@ -592,11 +589,91 @@ func TestCodexRawTurnCompletedDeduplication(t *testing.T) {
 		doneCount++
 	}
 
-	c.handleLine(`{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}`)
-	c.handleLine(`{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}`)
+	line := `{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed","usage":{"input_tokens":100,"output_tokens":10}}}}`
+	c.handleLine(line)
+	c.handleLine(line)
 
 	if doneCount != 1 {
 		t.Fatalf("expected deduplication, but onTurnDone called %d times", doneCount)
+	}
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	if c.usage.InputTokens != 100 || c.usage.OutputTokens != 10 {
+		t.Fatalf("duplicate completion double-counted usage: %+v", c.usage)
+	}
+}
+
+func TestCodexRawTurnCompletedWithoutIDDeduplicatesLifecycleAndUsage(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+
+	var doneCount int
+	c.onTurnDone = func(aborted bool) { doneCount++ }
+	line := `{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"status":"completed","usage":{"input_tokens":100,"output_tokens":10}}}}`
+	c.handleLine(line)
+	// An empty-ID start cannot prove that a new turn began, so it must not
+	// reopen an already completed turn.
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{}}}`)
+	c.handleLine(line)
+
+	if doneCount != 1 {
+		t.Fatalf("completion count = %d, want 1", doneCount)
+	}
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	if c.usage.InputTokens != 100 || c.usage.OutputTokens != 10 {
+		t.Fatalf("duplicate empty-id completion double-counted usage: %+v", c.usage)
+	}
+}
+
+func TestCodexRawTurnCompletedReplayDoesNotReopenSameTurn(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+
+	var doneCount int
+	c.onTurnDone = func(aborted bool) { doneCount++ }
+	started := `{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-1"}}}`
+	completed := `{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed","usage":{"input_tokens":100,"output_tokens":10}}}}`
+	c.handleLine(started)
+	c.handleLine(completed)
+	c.handleLine(started)
+	c.handleLine(completed)
+
+	if doneCount != 1 {
+		t.Fatalf("completion count = %d, want 1 after replay", doneCount)
+	}
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	if c.usage.InputTokens != 100 || c.usage.OutputTokens != 10 {
+		t.Fatalf("replayed turn double-counted usage: %+v", c.usage)
+	}
+}
+
+func TestCodexRawLateCompletionWithoutIDCannotReopenClient(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+
+	var doneCount int
+	c.onTurnDone = func(aborted bool) { doneCount++ }
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-1"}}}`)
+	completedWithoutID := `{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"status":"completed","usage":{"input_tokens":100,"output_tokens":10}}}}`
+	c.handleLine(completedWithoutID)
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-2"}}}`)
+	c.handleLine(completedWithoutID)
+
+	if doneCount != 1 {
+		t.Fatalf("completion count = %d, want 1 after late no-ID replay", doneCount)
+	}
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	if c.usage.InputTokens != 100 || c.usage.OutputTokens != 10 {
+		t.Fatalf("late no-ID completion double-counted usage: %+v", c.usage)
 	}
 }
 
@@ -657,16 +734,13 @@ func TestCodexRawErrorNotificationTerminal(t *testing.T) {
 	t.Parallel()
 
 	c, _, _ := newTestCodexClient(t)
-	c.notificationProtocol = "raw"
+	c.notificationProtocol = "unknown"
 	done := false
 	var activities []string
 	c.onSemanticActivity = func(activity string) {
 		activities = append(activities, activity)
 	}
 	c.onTurnDone = func(aborted bool) {
-		if aborted {
-			t.Fatal("terminal error should not mark the turn aborted")
-		}
 		done = true
 	}
 
@@ -675,11 +749,16 @@ func TestCodexRawErrorNotificationTerminal(t *testing.T) {
 	if got := c.getTurnError(); got != "boom" {
 		t.Fatalf("expected terminal error captured, got %q", got)
 	}
-	if !done {
-		t.Fatal("terminal error should finish the turn")
+	if done {
+		t.Fatal("terminal error must wait for turn/completed")
 	}
 	if got, want := strings.Join(activities, ","), "error:terminal"; got != want {
 		t.Fatalf("semantic activity = %q, want %q", got, want)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-error","status":"failed","error":{"message":"boom"}}}}`)
+	if !done {
+		t.Fatal("turn/completed should finish the failed turn")
 	}
 }
 
@@ -1478,7 +1557,6 @@ func TestCodexRawTurnDiffFlushesOnFinalAnswer(t *testing.T) {
 	c.notificationProtocol = "raw"
 	c.threadID = "thr-main"
 	c.turnID = "turn-1"
-	c.turnStarted = true
 
 	var messages []Message
 	c.onMessage = func(msg Message) {
@@ -1511,38 +1589,6 @@ func TestCodexRawTurnDiffFlushesOnFinalAnswer(t *testing.T) {
 	}
 	if messages[diffIdx].Output != "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n" {
 		t.Fatalf("unexpected diff output: %q", messages[diffIdx].Output)
-	}
-}
-
-func TestCodexRawTurnDiffFlushesOnThreadIdle(t *testing.T) {
-	t.Parallel()
-
-	c, _, _ := newTestCodexClient(t)
-	c.notificationProtocol = "raw"
-	c.threadID = "thr-main"
-	c.turnID = "turn-1"
-	c.turnStarted = true
-
-	var messages []Message
-	c.onMessage = func(msg Message) {
-		messages = append(messages, msg)
-	}
-
-	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}}`)
-	// Turn finishes via thread/status idle instead of turn/completed.
-	c.handleLine(`{"jsonrpc":"2.0","method":"thread/status/changed","params":{"threadId":"thr-main","status":{"type":"idle"}}}`)
-
-	var diffMessages []Message
-	for _, m := range messages {
-		if m.Tool == "patch_apply" && m.CallID == "turn-1:diff" {
-			diffMessages = append(diffMessages, m)
-		}
-	}
-	if len(diffMessages) != 1 {
-		t.Fatalf("expected buffered diff to flush on thread/status idle, got %d: %+v", len(diffMessages), diffMessages)
-	}
-	if diffMessages[0].Output != "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n" {
-		t.Fatalf("unexpected diff output: %q", diffMessages[0].Output)
 	}
 }
 
@@ -1592,12 +1638,11 @@ func TestCodexRawItemFileChangeUsesAggregatedOutputFallback(t *testing.T) {
 	}
 }
 
-func TestCodexRawItemAgentMessageFinalAnswer(t *testing.T) {
+func TestCodexRawItemAgentMessageFinalAnswerWaitsForTurnCompleted(t *testing.T) {
 	t.Parallel()
 
 	c, _, _ := newTestCodexClient(t)
 	c.notificationProtocol = "raw"
-	c.turnStarted = true
 
 	var gotText string
 	var turnDone bool
@@ -1615,8 +1660,13 @@ func TestCodexRawItemAgentMessageFinalAnswer(t *testing.T) {
 	if gotText != "Done!" {
 		t.Fatalf("expected text 'Done!', got %q", gotText)
 	}
+	if turnDone {
+		t.Fatal("final_answer must not finish the turn")
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}`)
 	if !turnDone {
-		t.Fatal("expected onTurnDone for final_answer")
+		t.Fatal("turn/completed should finish the turn")
 	}
 }
 
@@ -1669,7 +1719,6 @@ func TestCodexDeliverableOutputExcludesNarration(t *testing.T) {
 
 			c, _, _ := newTestCodexClient(t)
 			c.notificationProtocol = tc.protocol
-			c.turnStarted = true
 
 			var finalAnswer, lastAgentMessage string
 			var streamed []string
@@ -1697,25 +1746,24 @@ func TestCodexDeliverableOutputExcludesNarration(t *testing.T) {
 	}
 }
 
-func TestCodexRawThreadStatusIdle(t *testing.T) {
+func TestCodexRawThreadStatusIdleWaitsForTurnCompleted(t *testing.T) {
 	t.Parallel()
 
 	c, _, _ := newTestCodexClient(t)
 	c.notificationProtocol = "raw"
-	c.turnStarted = true
 
 	var turnDone bool
-	c.onTurnDone = func(aborted bool) {
-		turnDone = true
-		if aborted {
-			t.Fatal("expected aborted=false for idle")
-		}
-	}
+	c.onTurnDone = func(aborted bool) { turnDone = true }
 
 	c.handleLine(`{"jsonrpc":"2.0","method":"thread/status/changed","params":{"status":{"type":"idle"}}}`)
 
+	if turnDone {
+		t.Fatal("idle status must not finish the turn")
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}`)
 	if !turnDone {
-		t.Fatal("expected onTurnDone for idle status")
+		t.Fatal("turn/completed should finish the turn")
 	}
 }
 
@@ -1804,7 +1852,6 @@ func TestCodexRawItemAgentMessageFinalAnswerFromSubagentIgnored(t *testing.T) {
 	c, _, _ := newTestCodexClient(t)
 	c.notificationProtocol = "raw"
 	c.threadID = "thr_main"
-	c.turnStarted = true
 
 	var messages []Message
 	var doneCount int

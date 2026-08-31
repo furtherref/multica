@@ -76,18 +76,17 @@ function seedAfterCreate(
 function MethodChooser({ onChoose }: { onChoose: (m: Method) => void }) {
   const { t } = useT("skills");
   const methods: {
-    key: Method;
+    key: Exclude<Method, "chooser">;
     icon: typeof Plus;
-    titleKey: "manual" | "url" | "runtime" | "upload";
   }[] = [
-    { key: "manual", icon: Plus, titleKey: "manual" },
-    { key: "url", icon: Download, titleKey: "url" },
-    { key: "upload", icon: Upload, titleKey: "upload" },
-    { key: "runtime", icon: HardDrive, titleKey: "runtime" },
+    { key: "manual", icon: Plus },
+    { key: "url", icon: Download },
+    { key: "upload", icon: Upload },
+    { key: "runtime", icon: HardDrive },
   ];
   return (
     <div className="grid gap-2 p-5">
-      {methods.map(({ key, icon: Icon, titleKey }) => (
+      {methods.map(({ key, icon: Icon }) => (
         <button
           key={key}
           type="button"
@@ -99,10 +98,10 @@ function MethodChooser({ onChoose }: { onChoose: (m: Method) => void }) {
           </div>
           <div className="min-w-0 flex-1">
             <div className="text-body font-medium">
-              {t(($) => $.create.method_card[`${titleKey}_title`])}
+              {t(($) => $.create.method[key].title)}
             </div>
             <div className="mt-0.5 text-caption text-muted-foreground">
-              {t(($) => $.create.method_card[`${titleKey}_desc`])}
+              {t(($) => $.create.method[key].desc)}
             </div>
           </div>
           <ChevronRight className="h-4 w-4 shrink-0 text-faint-foreground transition-colors group-hover:text-muted-foreground" />
