@@ -25,7 +25,7 @@ const chatTitleGenTimeout = 20 * time.Second
 // client's current navigation. The explicit empty Chat is already committed.
 func (h *Handler) ChannelChatStarted(event engine.ChannelChatStartedEvent) {
 	ws, user, session := uuidToString(event.WorkspaceID), uuidToString(event.CreatorID), uuidToString(event.SessionID)
-	h.publishChat(protocol.EventChatSessionCreated, ws, "member", user, session, protocol.ChatSessionCreatedPayload{
+	h.publishChat(protocol.EventChatSessionCreated, ws, "member", user, user, session, uuidToString(event.AgentID), protocol.ChatSessionCreatedPayload{
 		WorkspaceID: ws, ChatSessionID: session, AgentID: uuidToString(event.AgentID), CreatorID: user, Title: event.Title,
 		ChannelSource: protocol.ChatSessionChannelSource{
 			ChannelType: string(event.ChannelType), InstallationID: uuidToString(event.InstallationID), RouteRevision: event.RouteRevision,
@@ -38,7 +38,18 @@ func (h *Handler) ChannelChatStarted(event engine.ChannelChatStartedEvent) {
 // media fallback immediately. LLM title generation is optional, so clients
 // must not depend on its later CAS update to observe the committed title.
 func (h *Handler) ChannelChatTitleInitialized(workspaceID, creatorID, sessionID pgtype.UUID, title string) {
-	h.publishChat(protocol.EventChatSessionUpdated, uuidToString(workspaceID), "member", uuidToString(creatorID), uuidToString(sessionID), protocol.ChatSessionUpdatedPayload{
+	// Chat events are delivered through the creator's per-agent scope, so an
+	// event without a trusted agent ID is dropped by the fanout layer. The
+	// engine callers don't all carry the agent, so resolve it from the
+	// committed session row.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := h.Queries.GetChatSession(ctx, sessionID)
+	if err != nil {
+		slog.Error("resolve chat session for title broadcast", "chat_session_id", uuidToString(sessionID), "error", err)
+		return
+	}
+	h.publishChat(protocol.EventChatSessionUpdated, uuidToString(workspaceID), "member", uuidToString(creatorID), uuidToString(session.CreatorID), uuidToString(sessionID), uuidToString(session.AgentID), protocol.ChatSessionUpdatedPayload{
 		ChatSessionID: uuidToString(sessionID),
 		Title:         title,
 	})
@@ -138,7 +149,7 @@ func (h *Handler) maybeGenerateChatTitleAsync(workspaceID, userID string, sessio
 		// Reuse the existing chat:session_updated realtime channel so the
 		// frontend refreshes the title in place, identical to a manual rename.
 		resolvedSessionID := uuidToString(updated.ID)
-		h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionUpdatedPayload{
+		h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", userID, uuidToString(updated.CreatorID), resolvedSessionID, uuidToString(updated.AgentID), protocol.ChatSessionUpdatedPayload{
 			ChatSessionID: resolvedSessionID,
 			Title:         updated.Title,
 			UpdatedAt:     timestampToString(updated.UpdatedAt),

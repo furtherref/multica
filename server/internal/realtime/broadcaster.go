@@ -8,10 +8,51 @@ const (
 	ScopeUser      = "user"
 	ScopeTask      = "task"
 	ScopeChat      = "chat"
+	// ScopeWorkspaceAgent and ScopeUserAgent contain low-frequency task
+	// lifecycle events. Connections join these rooms only for Agents visible
+	// to the authenticated member at connection setup.
+	ScopeWorkspaceAgent = "workspace_agent"
+	ScopeUserAgent      = "user_agent"
+	// Legacy Agent scopes are joined only by clients that predate explicit
+	// task-scope subscriptions. They preserve installed-desktop transcript
+	// streaming without reopening workspace-wide task-content fanout.
+	ScopeLegacyWorkspaceAgent = "legacy_workspace_agent"
+	ScopeLegacyUserAgent      = "legacy_user_agent"
+	// ScopeWorkspaceAuthorization is an internal cross-node control scope.
+	// Clients join it implicitly but frames are intercepted by the Hub and are
+	// never delivered to their send channels.
+	ScopeWorkspaceAuthorization = "workspace_authorization"
 	// ScopeDaemonRuntime routes daemon wakeup frames through the Redis relay.
 	// It is consumed by the daemon WebSocket hub, not by browser clients.
 	ScopeDaemonRuntime = "daemon_runtime"
 )
+
+// WorkspaceAgentScopeID returns the immutable room key for an Agent visible
+// within a workspace connection. Workspace and Agent IDs are UUIDs, so ':' is
+// an unambiguous separator.
+func WorkspaceAgentScopeID(workspaceID, agentID string) string {
+	return workspaceID + ":" + agentID
+}
+
+// UserAgentScopeID returns the creator-specific Agent room key used by direct
+// Chat task lifecycle events.
+func UserAgentScopeID(userID, agentID string) string {
+	return userID + ":" + agentID
+}
+
+// AuthorizationChangedFrame is the opaque relay payload for workspace
+// authorization invalidation. Routing depends only on the scope, so the Hub
+// never decodes this JSON on its hot path.
+func AuthorizationChangedFrame() []byte {
+	return []byte(`{"type":"authorization:changed"}`)
+}
+
+// AuthorizationExpandedFrame asks each node to resolve fresh Agent visibility
+// and add only newly-visible rooms in place. It is safe only for mutations
+// that cannot revoke access; narrowing mutations continue to disconnect.
+func AuthorizationExpandedFrame() []byte {
+	return []byte(`{"type":"authorization:expanded"}`)
+}
 
 // DaemonControlScopeID is the FIXED scope id daemon control frames (runtime
 // revocations) publish under. Wakeup hints shard by task/runtime id, but the

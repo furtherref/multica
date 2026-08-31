@@ -17,6 +17,13 @@ type fakeScopeQuerier struct {
 	tasks    map[[16]byte]db.AgentTaskQueue
 	issues   map[[16]byte]db.Issue
 	sessions map[[16]byte]db.ChatSession
+	agents   map[[16]byte]db.Agent
+	members  map[memberLookupKey]db.Member
+	targets  map[[16]byte][]db.AgentInvocationTarget
+}
+
+type memberLookupKey struct {
+	userID, workspaceID [16]byte
 }
 
 func (f *fakeScopeQuerier) GetAgentTask(_ context.Context, id pgtype.UUID) (db.AgentTaskQueue, error) {
@@ -37,6 +44,47 @@ func (f *fakeScopeQuerier) GetChatSession(_ context.Context, id pgtype.UUID) (db
 	}
 	return db.ChatSession{}, pgx.ErrNoRows
 }
+func (f *fakeScopeQuerier) GetAgent(_ context.Context, id pgtype.UUID) (db.Agent, error) {
+	if a, ok := f.agents[id.Bytes]; ok {
+		return a, nil
+	}
+	return db.Agent{}, pgx.ErrNoRows
+}
+func (f *fakeScopeQuerier) GetMemberByUserAndWorkspace(_ context.Context, p db.GetMemberByUserAndWorkspaceParams) (db.Member, error) {
+	if m, ok := f.members[memberLookupKey{userID: p.UserID.Bytes, workspaceID: p.WorkspaceID.Bytes}]; ok {
+		return m, nil
+	}
+	return db.Member{}, pgx.ErrNoRows
+}
+func (f *fakeScopeQuerier) ListAgentInvocationTargets(_ context.Context, agentID pgtype.UUID) ([]db.AgentInvocationTarget, error) {
+	return f.targets[agentID.Bytes], nil
+}
+func (f *fakeScopeQuerier) ListSystemChatAgentIDsByCreator(_ context.Context, arg db.ListSystemChatAgentIDsByCreatorParams) ([]pgtype.UUID, error) {
+	var ids []pgtype.UUID
+	for _, session := range f.sessions {
+		agent := f.agents[session.AgentID.Bytes]
+		if session.WorkspaceID == arg.WorkspaceID && session.CreatorID == arg.CreatorID && agent.Kind == "system" {
+			ids = append(ids, session.AgentID)
+		}
+	}
+	return ids, nil
+}
+func (f *fakeScopeQuerier) ListAllAgents(_ context.Context, workspaceID pgtype.UUID) ([]db.Agent, error) {
+	agents := make([]db.Agent, 0, len(f.agents))
+	for _, agent := range f.agents {
+		if agent.WorkspaceID == workspaceID && agent.Kind == "user" {
+			agents = append(agents, agent)
+		}
+	}
+	return agents, nil
+}
+func (f *fakeScopeQuerier) ListAgentInvocationTargetsByAgentIDs(_ context.Context, agentIDs []pgtype.UUID) ([]db.AgentInvocationTarget, error) {
+	var targets []db.AgentInvocationTarget
+	for _, agentID := range agentIDs {
+		targets = append(targets, f.targets[agentID.Bytes]...)
+	}
+	return targets, nil
+}
 
 func mustUUID(t *testing.T) (string, pgtype.UUID) {
 	t.Helper()
@@ -45,6 +93,90 @@ func mustUUID(t *testing.T) (string, pgtype.UUID) {
 		t.Fatal(err)
 	}
 	return u.String(), pgtype.UUID{Bytes: u, Valid: true}
+}
+
+func TestScopeAuthorizer_VisibleAgentIDsUsesCanonicalVisibility(t *testing.T) {
+	wsStr, wsUUID := mustUUID(t)
+	userStr, userUUID := mustUUID(t)
+	otherStr, otherUUID := mustUUID(t)
+	visibleStr, visibleUUID := mustUUID(t)
+	privateStr, privateUUID := mustUUID(t)
+	ownedStr, ownedUUID := mustUUID(t)
+
+	q := &fakeScopeQuerier{
+		agents: map[[16]byte]db.Agent{
+			visibleUUID.Bytes: {ID: visibleUUID, WorkspaceID: wsUUID, OwnerID: otherUUID, Kind: "user", PermissionMode: "public_to"},
+			privateUUID.Bytes: {ID: privateUUID, WorkspaceID: wsUUID, OwnerID: otherUUID, Kind: "user", PermissionMode: "private"},
+			ownedUUID.Bytes:   {ID: ownedUUID, WorkspaceID: wsUUID, OwnerID: userUUID, Kind: "user", PermissionMode: "private"},
+		},
+		members: map[memberLookupKey]db.Member{
+			{userID: userUUID.Bytes, workspaceID: wsUUID.Bytes}: {UserID: userUUID, WorkspaceID: wsUUID, Role: "member"},
+		},
+		targets: map[[16]byte][]db.AgentInvocationTarget{
+			visibleUUID.Bytes: {{AgentID: visibleUUID, TargetType: "member", TargetID: userUUID}},
+		},
+	}
+
+	scopes, err := newScopeAuthorizer(q).VisibleAgentScopes(context.Background(), userStr, wsStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := scopes.WorkspaceAgentIDs
+	got := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		got[id] = true
+	}
+	if !got[visibleStr] || !got[ownedStr] || got[privateStr] {
+		t.Fatalf("visible Agent IDs = %v, want allowed %s and owned %s but not private %s", ids, visibleStr, ownedStr, privateStr)
+	}
+	_ = otherStr
+}
+
+func TestScopeAuthorizer_SystemChatAgentIsUserScopedOnly(t *testing.T) {
+	wsStr, wsUUID := mustUUID(t)
+	userStr, userUUID := mustUUID(t)
+	systemAgentStr, systemAgentUUID := mustUUID(t)
+	_, sessionUUID := mustUUID(t)
+
+	q := &fakeScopeQuerier{
+		agents: map[[16]byte]db.Agent{
+			systemAgentUUID.Bytes: {ID: systemAgentUUID, WorkspaceID: wsUUID, Kind: "system"},
+		},
+		sessions: map[[16]byte]db.ChatSession{
+			sessionUUID.Bytes: {ID: sessionUUID, WorkspaceID: wsUUID, CreatorID: userUUID, AgentID: systemAgentUUID},
+		},
+		members: map[memberLookupKey]db.Member{
+			{userID: userUUID.Bytes, workspaceID: wsUUID.Bytes}: {UserID: userUUID, WorkspaceID: wsUUID, Role: "member"},
+		},
+	}
+
+	scopes, err := newScopeAuthorizer(q).VisibleAgentScopes(context.Background(), userStr, wsStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsString(scopes.WorkspaceAgentIDs, systemAgentStr) {
+		t.Fatalf("system Chat carrier leaked into workspace Agent scopes: %v", scopes.WorkspaceAgentIDs)
+	}
+	if !containsString(scopes.UserAgentIDs, systemAgentStr) {
+		t.Fatalf("system Chat carrier missing from creator user scopes: %v", scopes.UserAgentIDs)
+	}
+	taskStr, taskUUID := mustUUID(t)
+	q.tasks = map[[16]byte]db.AgentTaskQueue{
+		taskUUID.Bytes: {ID: taskUUID, AgentID: systemAgentUUID, ChatSessionID: sessionUUID},
+	}
+	ok, err := newScopeAuthorizer(q).AuthorizeScope(context.Background(), userStr, wsStr, realtime.ScopeTask, taskStr)
+	if err != nil || !ok {
+		t.Fatalf("creator could not subscribe to builder task: ok=%v err=%v", ok, err)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestScopeAuthorizer_ChatRequiresCreator pins must-fix #2 from PR #1429:
@@ -118,6 +250,7 @@ func TestScopeAuthorizer_ChatTaskRequiresCreator(t *testing.T) {
 	otherStr, _ := mustUUID(t)
 	sessStr, sessUUID := mustUUID(t)
 	taskStr, taskUUID := mustUUID(t)
+	_, agentUUID := mustUUID(t)
 	_ = sessStr
 
 	q := &fakeScopeQuerier{
@@ -125,14 +258,22 @@ func TestScopeAuthorizer_ChatTaskRequiresCreator(t *testing.T) {
 			taskUUID.Bytes: {
 				ID:            taskUUID,
 				ChatSessionID: sessUUID,
+				AgentID:       agentUUID,
 			},
 		},
 		sessions: map[[16]byte]db.ChatSession{
 			sessUUID.Bytes: {
 				ID:          sessUUID,
 				WorkspaceID: wsUUID,
+				AgentID:     agentUUID,
 				CreatorID:   creatorUUID,
 			},
+		},
+		agents: map[[16]byte]db.Agent{
+			agentUUID.Bytes: {ID: agentUUID, WorkspaceID: wsUUID, OwnerID: creatorUUID, PermissionMode: "private"},
+		},
+		members: map[memberLookupKey]db.Member{
+			{userID: creatorUUID.Bytes, workspaceID: wsUUID.Bytes}: {UserID: creatorUUID, WorkspaceID: wsUUID, Role: "member"},
 		},
 	}
 	a := newScopeAuthorizer(q)
@@ -149,20 +290,23 @@ func TestScopeAuthorizer_ChatTaskRequiresCreator(t *testing.T) {
 	}
 }
 
-// TestScopeAuthorizer_IssueTaskWorkspaceOnly verifies issue tasks remain
-// workspace-scoped (any member who can see the issue may subscribe).
-func TestScopeAuthorizer_IssueTaskWorkspaceOnly(t *testing.T) {
+// TestScopeAuthorizer_IssueTaskRequiresAgentVisibility verifies workspace
+// membership alone cannot expose a private Agent's task transcript.
+func TestScopeAuthorizer_IssueTaskRequiresAgentVisibility(t *testing.T) {
 	wsStr, wsUUID := mustUUID(t)
-	memberStr, _ := mustUUID(t)
+	ownerStr, ownerUUID := mustUUID(t)
+	memberStr, memberUUID := mustUUID(t)
 	otherWsStr, _ := mustUUID(t)
 	taskStr, taskUUID := mustUUID(t)
 	_, issueUUID := mustUUID(t)
+	_, agentUUID := mustUUID(t)
 
 	q := &fakeScopeQuerier{
 		tasks: map[[16]byte]db.AgentTaskQueue{
 			taskUUID.Bytes: {
 				ID:      taskUUID,
 				IssueID: issueUUID,
+				AgentID: agentUUID,
 			},
 		},
 		issues: map[[16]byte]db.Issue{
@@ -171,13 +315,41 @@ func TestScopeAuthorizer_IssueTaskWorkspaceOnly(t *testing.T) {
 				WorkspaceID: wsUUID,
 			},
 		},
+		agents: map[[16]byte]db.Agent{
+			agentUUID.Bytes: {
+				ID:             agentUUID,
+				WorkspaceID:    wsUUID,
+				OwnerID:        ownerUUID,
+				PermissionMode: "private",
+			},
+		},
+		members: map[memberLookupKey]db.Member{
+			{userID: ownerUUID.Bytes, workspaceID: wsUUID.Bytes}:  {UserID: ownerUUID, WorkspaceID: wsUUID, Role: "member"},
+			{userID: memberUUID.Bytes, workspaceID: wsUUID.Bytes}: {UserID: memberUUID, WorkspaceID: wsUUID, Role: "member"},
+		},
 	}
 	a := newScopeAuthorizer(q)
 	ctx := context.Background()
 
-	ok, err := a.AuthorizeScope(ctx, memberStr, wsStr, realtime.ScopeTask, taskStr)
+	ok, err := a.AuthorizeScope(ctx, ownerStr, wsStr, realtime.ScopeTask, taskStr)
 	if err != nil || !ok {
-		t.Fatalf("member in workspace should be allowed: ok=%v err=%v", ok, err)
+		t.Fatalf("private Agent owner should be allowed: ok=%v err=%v", ok, err)
+	}
+
+	ok, err = a.AuthorizeScope(ctx, memberStr, wsStr, realtime.ScopeTask, taskStr)
+	if err != nil || ok {
+		t.Fatalf("workspace peer must not see private Agent task: ok=%v err=%v", ok, err)
+	}
+
+	publicAgent := q.agents[agentUUID.Bytes]
+	publicAgent.PermissionMode = "public_to"
+	q.agents[agentUUID.Bytes] = publicAgent
+	q.targets = map[[16]byte][]db.AgentInvocationTarget{
+		agentUUID.Bytes: {{AgentID: agentUUID, TargetType: "workspace"}},
+	}
+	ok, err = a.AuthorizeScope(ctx, memberStr, wsStr, realtime.ScopeTask, taskStr)
+	if err != nil || !ok {
+		t.Fatalf("workspace-target Agent task should be visible: ok=%v err=%v", ok, err)
 	}
 
 	ok, err = a.AuthorizeScope(ctx, memberStr, otherWsStr, realtime.ScopeTask, taskStr)
@@ -201,6 +373,18 @@ func (failingScopeQuerier) GetIssue(context.Context, pgtype.UUID) (db.Issue, err
 func (failingScopeQuerier) GetChatSession(context.Context, pgtype.UUID) (db.ChatSession, error) {
 	return db.ChatSession{}, errors.New("connection reset by peer")
 }
+func (failingScopeQuerier) GetAgent(context.Context, pgtype.UUID) (db.Agent, error) {
+	return db.Agent{}, errors.New("connection reset by peer")
+}
+func (failingScopeQuerier) GetMemberByUserAndWorkspace(context.Context, db.GetMemberByUserAndWorkspaceParams) (db.Member, error) {
+	return db.Member{}, errors.New("connection reset by peer")
+}
+func (failingScopeQuerier) ListAgentInvocationTargets(context.Context, pgtype.UUID) ([]db.AgentInvocationTarget, error) {
+	return nil, errors.New("connection reset by peer")
+}
+func (failingScopeQuerier) ListSystemChatAgentIDsByCreator(context.Context, db.ListSystemChatAgentIDsByCreatorParams) ([]pgtype.UUID, error) {
+	return nil, errors.New("connection reset by peer")
+}
 
 // errOnInnerQuerier succeeds for GetAgentTask (so the task path reaches its
 // inner lookups) but fails GetIssue / GetChatSession with a non-ErrNoRows
@@ -217,6 +401,18 @@ func (*errOnInnerQuerier) GetIssue(context.Context, pgtype.UUID) (db.Issue, erro
 }
 func (*errOnInnerQuerier) GetChatSession(context.Context, pgtype.UUID) (db.ChatSession, error) {
 	return db.ChatSession{}, errors.New("connection reset by peer")
+}
+func (*errOnInnerQuerier) GetAgent(context.Context, pgtype.UUID) (db.Agent, error) {
+	return db.Agent{}, errors.New("connection reset by peer")
+}
+func (*errOnInnerQuerier) GetMemberByUserAndWorkspace(context.Context, db.GetMemberByUserAndWorkspaceParams) (db.Member, error) {
+	return db.Member{}, errors.New("connection reset by peer")
+}
+func (*errOnInnerQuerier) ListAgentInvocationTargets(context.Context, pgtype.UUID) ([]db.AgentInvocationTarget, error) {
+	return nil, errors.New("connection reset by peer")
+}
+func (*errOnInnerQuerier) ListSystemChatAgentIDsByCreator(context.Context, db.ListSystemChatAgentIDsByCreatorParams) ([]pgtype.UUID, error) {
+	return nil, errors.New("connection reset by peer")
 }
 
 // TestScopeAuthorizer_DoesNotSwallowQueryErrors pins #6037: a real database

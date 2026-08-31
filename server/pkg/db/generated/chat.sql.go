@@ -2430,6 +2430,44 @@ func (q *Queries) ListPendingChatTasksForSession(ctx context.Context, chatSessio
 	return items, nil
 }
 
+const listSystemChatAgentIDsByCreator = `-- name: ListSystemChatAgentIDsByCreator :many
+SELECT DISTINCT cs.agent_id
+FROM chat_session cs
+JOIN agent a ON a.id = cs.agent_id
+WHERE cs.workspace_id = $1
+  AND cs.creator_id = $2
+  AND a.kind = 'system'
+`
+
+type ListSystemChatAgentIDsByCreatorParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CreatorID   pgtype.UUID `json:"creator_id"`
+}
+
+// Agent Builder conversations use private system Agents that intentionally do
+// not appear in the public user-Agent list. Their creator still needs the
+// user_agent room for private Chat and task lifecycle events. Keep this query
+// system-only so it cannot widen workspace-visible user-Agent authorization.
+func (q *Queries) ListSystemChatAgentIDsByCreator(ctx context.Context, arg ListSystemChatAgentIDsByCreatorParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listSystemChatAgentIDsByCreator, arg.WorkspaceID, arg.CreatorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var agent_id pgtype.UUID
+		if err := rows.Scan(&agent_id); err != nil {
+			return nil, err
+		}
+		items = append(items, agent_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUnownedChannelChatContextRevisions = `-- name: ListUnownedChannelChatContextRevisions :many
 WITH pending AS (
     SELECT DISTINCT COALESCE(channel_context_revision, 1)::bigint AS context_revision

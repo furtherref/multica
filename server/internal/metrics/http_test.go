@@ -36,6 +36,8 @@ func TestHTTPMiddlewareUsesRoutePatternLabels(t *testing.T) {
 
 	for _, want := range []string{
 		`multica_http_requests_total{method="GET",route="/api/issues/{id}",status="201"} 1`,
+		`multica_http_response_size_bytes_count{method="GET",route="/api/issues/{id}",status="201"} 1`,
+		`multica_http_response_size_bytes_sum{method="GET",route="/api/issues/{id}",status="201"} 2`,
 		`multica_build_info{commit="abc123",version="v-test"} 1`,
 	} {
 		if !strings.Contains(body, want) {

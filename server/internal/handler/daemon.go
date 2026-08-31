@@ -115,9 +115,14 @@ func (h *Handler) requireDaemonTaskAccess(w http.ResponseWriter, r *http.Request
 // implementation; the simpler one is preserved for ergonomic call sites
 // that genuinely don't need workspace_id.
 func (h *Handler) requireDaemonTaskAccessWithWorkspace(w http.ResponseWriter, r *http.Request, taskID string) (db.AgentTaskQueue, string, bool) {
+	task, workspaceID, _, ok := h.requireDaemonTaskAccessWithRealtimeScope(w, r, taskID)
+	return task, workspaceID, ok
+}
+
+func (h *Handler) requireDaemonTaskAccessWithRealtimeScope(w http.ResponseWriter, r *http.Request, taskID string) (db.AgentTaskQueue, string, string, bool) {
 	taskUUID, ok := parseUUIDOrBadRequest(w, taskID, "task_id")
 	if !ok {
-		return db.AgentTaskQueue{}, "", false
+		return db.AgentTaskQueue{}, "", "", false
 	}
 	task, err := h.Queries.GetAgentTask(r.Context(), taskUUID)
 	if err != nil {
@@ -126,23 +131,23 @@ func (h *Handler) requireDaemonTaskAccessWithWorkspace(w http.ResponseWriter, r 
 		// error must not be reported as a deletion.
 		if isNotFound(err) {
 			writeError(w, http.StatusNotFound, "task not found")
-			return db.AgentTaskQueue{}, "", false
+			return db.AgentTaskQueue{}, "", "", false
 		}
 		slog.Warn("get agent task failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to load task")
-		return db.AgentTaskQueue{}, "", false
+		return db.AgentTaskQueue{}, "", "", false
 	}
 
-	wsID := h.TaskService.ResolveTaskWorkspaceID(r.Context(), task)
+	wsID, recipientUserID := h.TaskService.ResolveTaskRealtimeScope(r.Context(), task)
 	if wsID == "" {
 		writeError(w, http.StatusNotFound, "task not found")
-		return db.AgentTaskQueue{}, "", false
+		return db.AgentTaskQueue{}, "", "", false
 	}
 
 	if !h.requireDaemonWorkspaceAccess(w, r, wsID) {
-		return db.AgentTaskQueue{}, "", false
+		return db.AgentTaskQueue{}, "", "", false
 	}
-	return task, wsID, true
+	return task, wsID, recipientUserID, true
 }
 
 // verifyDaemonWorkspaceAccess checks workspace access without writing an HTTP error.
@@ -3653,19 +3658,12 @@ func (h *Handler) ReportTaskProgress(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify ownership and resolve workspace ID.
-	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	task, workspaceID, recipientUserID, ok := h.requireDaemonTaskAccessWithRealtimeScope(w, r, taskID)
 	if !ok {
 		return
 	}
 
-	workspaceID := ""
-	if task.IssueID.Valid {
-		if issue, err := h.Queries.GetIssue(r.Context(), task.IssueID); err == nil {
-			workspaceID = uuidToString(issue.WorkspaceID)
-		}
-	}
-
-	h.TaskService.ReportProgress(r.Context(), taskID, workspaceID, req.Summary, req.Step, req.Total)
+	h.TaskService.ReportProgress(r.Context(), task, workspaceID, recipientUserID, req.Summary, req.Step, req.Total)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -4540,7 +4538,7 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 	// endpoint fires every 500ms for every running task, and that second
 	// lookup was a whole extra query per batch on the hottest write path in
 	// the system (MUL-6523).
-	task, wsID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
+	task, wsID, recipientUserID, ok := h.requireDaemonTaskAccessWithRealtimeScope(w, r, taskID)
 	if !ok {
 		return
 	}
@@ -4645,7 +4643,7 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 			// rather than reusing the table model; the columns are the table's,
 			// in order, so the conversion is checked by the compiler and breaks
 			// loudly if the query ever stops returning the whole row.
-			h.publishTask(protocol.EventTaskMessage, workspaceID, "system", "", taskID,
+			h.publishTask(protocol.EventTaskMessage, workspaceID, "system", "", task, recipientUserID,
 				taskMessageToPayload(db.TaskMessage(m), taskID, uuidToString(task.IssueID)))
 		}
 	}
@@ -4676,24 +4674,12 @@ func (h *Handler) ReportTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify the caller owns this task's workspace.
-	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	task, workspaceID, recipientUserID, ok := h.requireDaemonTaskAccessWithRealtimeScope(w, r, taskID)
 	if !ok {
 		return
 	}
-
-	workspaceID := ""
-	if task.IssueID.Valid {
-		if issue, err := h.Queries.GetIssue(r.Context(), task.IssueID); err == nil {
-			workspaceID = uuidToString(issue.WorkspaceID)
-		}
-	}
-	if workspaceID == "" && task.ChatSessionID.Valid {
-		if cs, err := h.Queries.GetChatSession(r.Context(), task.ChatSessionID); err == nil {
-			workspaceID = uuidToString(cs.WorkspaceID)
-		}
-	}
 	if workspaceID != "" {
-		h.publishTask(protocol.EventTaskActivity, workspaceID, "system", "", taskID, protocol.TaskActivityPayload{
+		h.publishTask(protocol.EventTaskActivity, workspaceID, "system", "", task, recipientUserID, protocol.TaskActivityPayload{
 			TaskID:   taskID,
 			IssueID:  uuidToString(task.IssueID),
 			Activity: req.Activity,

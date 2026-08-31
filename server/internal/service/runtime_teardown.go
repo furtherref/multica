@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -32,6 +33,12 @@ type RuntimeTeardownResult struct {
 	UnboundAgents    []db.Agent
 	CancelledTasks   []db.AgentTaskQueue
 	PausedAutopilots []db.Autopilot
+	// ChatCreators maps chat_session_id -> creator user ID for cancelled chat
+	// tasks. It must be captured inside the teardown transaction: the teardown
+	// deletes the runtime's system agents and their chat sessions cascade away,
+	// so a post-commit BroadcastCancelledTasks lookup would find nothing and the
+	// recipient-scoped task:cancelled event would be dropped.
+	ChatCreators map[string]string
 }
 
 // ValidateRuntimeAgentWorkspaces refuses to mutate cross-workspace bindings.
@@ -85,6 +92,19 @@ func TeardownRuntime(ctx context.Context, qtx *db.Queries, runtimeID pgtype.UUID
 			return out, fmt.Errorf("cancel tasks: %w", err)
 		}
 		out.CancelledTasks = cancelled
+		out.ChatCreators = make(map[string]string)
+		for _, task := range cancelled {
+			if !task.ChatSessionID.Valid {
+				continue
+			}
+			sessionID := util.UUIDToString(task.ChatSessionID)
+			if _, known := out.ChatCreators[sessionID]; known {
+				continue
+			}
+			if session, err := qtx.GetChatSession(ctx, task.ChatSessionID); err == nil {
+				out.ChatCreators[sessionID] = util.UUIDToString(session.CreatorID)
+			}
+		}
 	}
 
 	undrained, err := qtx.CountUndrainedTasksByRuntimeOrAgent(ctx, db.CountUndrainedTasksByRuntimeOrAgentParams{

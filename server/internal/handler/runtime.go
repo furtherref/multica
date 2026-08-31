@@ -772,7 +772,7 @@ func (h *Handler) PublishRuntimeTeardown(ctx context.Context, res service.Runtim
 		// The teardown deletes the runtime's system agents, and a system agent's
 		// chat sessions go with it, so the workspace of a cancelled chat task is
 		// no longer resolvable from the task row. It is this workspace.
-		h.TaskService.BroadcastCancelledTasks(ctx, wsID, res.CancelledTasks)
+		h.TaskService.BroadcastCancelledTasks(ctx, wsID, res.CancelledTasks, res.ChatCreators)
 	}
 	for _, a := range res.UnboundAgents {
 		// agent:status is the generic "this agent changed" broadcast the agent

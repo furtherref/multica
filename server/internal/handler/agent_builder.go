@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -142,6 +143,14 @@ func (h *Handler) CreateAgentBuilderSession(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "failed to commit agent builder session")
 		return
 	}
+	// The hidden system Agent is not announced through the public agent:created
+	// contract, but its creator's existing connection still needs the private
+	// user-Agent room after the session row is committed and therefore visible
+	// to the authorization resolver.
+	h.Bus.Publish(events.Event{
+		Type:        events.EventWorkspaceAuthorizationExpanded,
+		WorkspaceID: workspaceID,
+	})
 
 	writeJSON(w, http.StatusCreated, CreateAgentBuilderSessionResponse{
 		SessionID:      uuidToString(session.ID),

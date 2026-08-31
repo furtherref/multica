@@ -36,10 +36,118 @@ import (
 // internal/external payload boundary in one reviewable place.
 var internalOnlyPayloadKeys = map[string][]string{
 	protocol.EventIssueUpdated: {"prev_description", "prev_title"},
-	// task:failed error text is consumed synchronously by channel outbounds.
-	// It may contain provider/runtime detail that belongs in the originating
-	// chat transcript, not in the workspace-wide realtime fanout.
-	protocol.EventTaskFailed: {"error"},
+}
+
+// workspaceRealtimeEvents is the positive routing registry for ordinary
+// workspace broadcasts. Adding a protocol constant is not enough to put it on
+// the wire: the event must be classified here, preventing future producers
+// from silently falling through to broad workspace fanout.
+var workspaceRealtimeEvents = map[string]bool{
+	protocol.EventIssueCreated: true, protocol.EventIssueUpdated: true, protocol.EventIssueDeleted: true,
+	protocol.EventIssueMetadataChanged: true, protocol.EventIssueAttachmentsChanged: true,
+	protocol.EventCommentCreated: true, protocol.EventCommentUpdated: true, protocol.EventCommentDeleted: true,
+	protocol.EventCommentResolved: true, protocol.EventCommentUnresolved: true,
+	protocol.EventReactionAdded: true, protocol.EventReactionRemoved: true,
+	protocol.EventIssueReactionAdded: true, protocol.EventIssueReactionRemoved: true,
+	protocol.EventAgentStatus: true, protocol.EventAgentCreated: true, protocol.EventAgentArchived: true, protocol.EventAgentRestored: true,
+	protocol.EventInboxUnread:      true,
+	protocol.EventWorkspaceUpdated: true, protocol.EventWorkspaceDeleted: true,
+	protocol.EventMemberAdded: true, protocol.EventMemberUpdated: true, protocol.EventMemberRemoved: true,
+	protocol.EventSubscriberAdded: true, protocol.EventSubscriberRemoved: true,
+	protocol.EventActivityCreated: true,
+	protocol.EventSkillCreated:    true, protocol.EventSkillUpdated: true, protocol.EventSkillDeleted: true,
+	protocol.EventIssueTemplateCreated: true, protocol.EventIssueTemplateUpdated: true, protocol.EventIssueTemplateDeleted: true,
+	protocol.EventProjectCreated: true, protocol.EventProjectUpdated: true, protocol.EventProjectDeleted: true,
+	protocol.EventProjectResourceCreated: true, protocol.EventProjectResourceUpdated: true, protocol.EventProjectResourceDeleted: true,
+	protocol.EventLabelCreated: true, protocol.EventLabelUpdated: true, protocol.EventLabelDeleted: true,
+	protocol.EventIssueLabelsChanged: true,
+	protocol.EventPropertyCreated:    true, protocol.EventPropertyUpdated: true, protocol.EventIssuePropertiesChanged: true,
+	protocol.EventIssueStatusChanged: true,
+	protocol.EventPinCreated:         true, protocol.EventPinDeleted: true, protocol.EventPinReordered: true,
+	protocol.EventInvitationAccepted: true, protocol.EventInvitationDeclined: true,
+	protocol.EventAutopilotCreated: true, protocol.EventAutopilotUpdated: true, protocol.EventAutopilotDeleted: true,
+	protocol.EventAutopilotRunStart: true, protocol.EventAutopilotRunDone: true,
+	protocol.EventSquadCreated: true, protocol.EventSquadUpdated: true, protocol.EventSquadDeleted: true,
+	protocol.EventGitHubInstallationCreated: true, protocol.EventGitHubInstallationDeleted: true,
+	protocol.EventPullRequestLinked: true, protocol.EventPullRequestUpdated: true, protocol.EventPullRequestUnlinked: true,
+	protocol.EventVCSConnectionCreated: true, protocol.EventVCSConnectionDeleted: true,
+	protocol.EventLarkInstallationCreated: true, protocol.EventLarkInstallationRevoked: true,
+	protocol.EventSlackInstallationCreated: true, protocol.EventSlackInstallationRevoked: true,
+	protocol.EventDingTalkInstallationCreated: true, protocol.EventDingTalkInstallationRevoked: true,
+	protocol.EventDingTalkAccountBindingUpdated: true,
+	protocol.EventWecomInstallationCreated:      true, protocol.EventWecomInstallationRevoked: true,
+	protocol.EventTelegramInstallationCreated: true, protocol.EventTelegramInstallationRevoked: true,
+}
+
+// publicRealtimePayloadKeys is the external contract registry for task and
+// Chat events. These event families routinely carry routing metadata and
+// in-process fields that must not reach a browser. A positive allowlist keeps a
+// newly-added producer field private until the external contract is reviewed.
+var publicRealtimePayloadKeys = map[string][]string{
+	protocol.EventTaskQueued:                {"task_id", "issue_id", "status", "chat_session_id"},
+	protocol.EventTaskDispatch:              {"task_id", "issue_id", "runtime_id", "chat_session_id"},
+	protocol.EventTaskRunning:               {"task_id", "issue_id", "status", "chat_session_id"},
+	protocol.EventTaskWaitingLocalDirectory: {"task_id", "issue_id", "status", "chat_session_id", "wait_reason"},
+	protocol.EventTaskProgress:              {"task_id", "summary", "step", "total"},
+	protocol.EventTaskCompleted:             {"task_id", "issue_id", "status", "chat_session_id"},
+	protocol.EventTaskFailed:                {"task_id", "issue_id", "status", "chat_session_id"},
+	protocol.EventTaskMessage:               {"task_id", "issue_id", "seq", "type", "tool", "content", "input", "output", "created_at"},
+	protocol.EventTaskActivity:              {"task_id", "issue_id", "activity", "after_seq"},
+	protocol.EventTaskCancelled:             {"task_id", "issue_id", "status", "chat_session_id"},
+
+	protocol.EventChatMessage:         {"chat_session_id", "message_id", "role", "content", "task_id", "created_at"},
+	protocol.EventChatDone:            {"chat_session_id", "task_id", "message_id", "content", "elapsed_ms", "created_at", "message_kind", "quick_actions", "quick_actions_pending"},
+	protocol.EventChatQuickActions:    {"chat_session_id", "task_id", "message_id", "quick_actions", "failed"},
+	protocol.EventChatCancelFinalized: {"outcome", "chat_session_id", "task_id", "initiator_user_id", "message_id", "content", "message_kind", "created_at", "elapsed_ms"},
+	// chat:session_created is delivered only to the creator via SendToUser, so
+	// the creator-private title and channel routing metadata may pass through.
+	protocol.EventChatSessionCreated: {"workspace_id", "chat_session_id", "agent_id", "creator_id", "title", "channel_source", "is_current_channel_route"},
+	protocol.EventChatSessionRead:    {"chat_session_id"},
+	protocol.EventChatSessionDeleted: {"chat_session_id"},
+	protocol.EventChatSessionUpdated: {"chat_session_id", "title", "project_id", "pinned", "status", "updated_at"},
+}
+
+func isContractProtectedRealtimeEvent(eventType string) bool {
+	return strings.HasPrefix(eventType, "task:") || strings.HasPrefix(eventType, "chat:")
+}
+
+func isTaskScopedRealtimeEvent(eventType string) bool {
+	switch eventType {
+	case protocol.EventTaskMessage, protocol.EventTaskProgress, protocol.EventTaskActivity:
+		return true
+	default:
+		return false
+	}
+}
+
+func isTaskLifecycleRealtimeEvent(eventType string) bool {
+	switch eventType {
+	case protocol.EventTaskQueued,
+		protocol.EventTaskDispatch,
+		protocol.EventTaskRunning,
+		protocol.EventTaskWaitingLocalDirectory,
+		protocol.EventTaskCompleted,
+		protocol.EventTaskFailed,
+		protocol.EventTaskCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func payloadMap(payload any) (map[string]any, bool) {
+	if m, ok := payload.(map[string]any); ok {
+		return m, true
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil || m == nil {
+		return nil, false
+	}
+	return m, true
 }
 
 // projectOutbound returns payload with the event type's internal-only keys
@@ -49,6 +157,23 @@ var internalOnlyPayloadKeys = map[string][]string{
 // time this is called, but the producer still owns the map and a second
 // forwarder may yet read it, so mutating it in place would be a landmine.
 func projectOutbound(eventType string, payload any) any {
+	if publicKeys, registered := publicRealtimePayloadKeys[eventType]; registered {
+		m, ok := payloadMap(payload)
+		if !ok {
+			return nil
+		}
+		projected := make(map[string]any, len(publicKeys))
+		for _, key := range publicKeys {
+			if value, present := m[key]; present {
+				projected[key] = value
+			}
+		}
+		return projected
+	}
+	if isContractProtectedRealtimeEvent(eventType) {
+		return nil
+	}
+
 	keys := internalOnlyPayloadKeys[eventType]
 	if len(keys) == 0 {
 		return payload
@@ -77,6 +202,38 @@ func projectOutbound(eventType string, payload any) any {
 // without touching any of the event listeners below. This is Phase 0 of the
 // horizontal-scaling plan tracked in MUL-1138.
 func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
+	// Connection authorization starts from a resolved snapshot. Additive Agent
+	// creation expands rooms in place; mutations that can narrow visibility
+	// close workspace connections on every node via the relay-backed internal
+	// authorization scope so reconnect resolves a fresh set before registration.
+	invalidateWorkspaceAuthorization := func(e events.Event) {
+		if e.WorkspaceID == "" {
+			return
+		}
+		b.BroadcastToScope(realtime.ScopeWorkspaceAuthorization, e.WorkspaceID, realtime.AuthorizationChangedFrame())
+	}
+	for _, eventType := range []string{
+		protocol.EventAgentArchived,
+		protocol.EventAgentRestored,
+		protocol.EventMemberUpdated,
+		protocol.EventMemberRemoved,
+	} {
+		bus.Subscribe(eventType, invalidateWorkspaceAuthorization)
+	}
+	expandWorkspaceAuthorization := func(e events.Event) {
+		if e.WorkspaceID == "" {
+			return
+		}
+		b.BroadcastToScope(realtime.ScopeWorkspaceAuthorization, e.WorkspaceID, realtime.AuthorizationExpandedFrame())
+	}
+	bus.Subscribe(protocol.EventAgentCreated, expandWorkspaceAuthorization)
+	bus.Subscribe(events.EventWorkspaceAuthorizationExpanded, expandWorkspaceAuthorization)
+	bus.Subscribe(protocol.EventAgentStatus, func(e events.Event) {
+		if e.AuthorizationChanged {
+			invalidateWorkspaceAuthorization(e)
+		}
+	})
+
 	// Personal events should NOT be broadcast to the whole workspace.
 	personalEvents := map[string]bool{
 		protocol.EventInboxNew:           true,
@@ -217,14 +374,23 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 
 	// SubscribeAll handles workspace-broadcast for non-personal events.
 	bus.SubscribeAll(func(e events.Event) {
+		if e.Type == events.EventWorkspaceAuthorizationExpanded {
+			return
+		}
 		// Skip personal events — they are handled by type-specific listeners above.
 		if personalEvents[e.Type] {
 			return
 		}
 
+		payload := projectOutbound(e.Type, e.Payload)
+		if payload == nil && isContractProtectedRealtimeEvent(e.Type) {
+			realtime.M.MessagesDroppedTotal.Add(1)
+			slog.Warn("dropping realtime event without a valid public contract", "event_type", e.Type)
+			return
+		}
 		msg := map[string]any{
 			"type":       e.Type,
-			"payload":    projectOutbound(e.Type, e.Payload),
+			"payload":    payload,
 			"actor_id":   e.ActorID,
 			"actor_type": e.ActorType,
 		}
@@ -234,28 +400,78 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 			return
 		}
 
-		// Phase 1 (MUL-1138): the per-resource scope routing for high-frequency
-		// task/chat events is intentionally NOT enabled yet. The server-side
-		// pieces — Hub.subscribe/unsubscribe protocol, ScopeAuthorizer, Redis
-		// Streams relay — have all landed, but the client (WSClient + the
-		// per-page chat/task hooks) does not yet send `subscribe` frames or
-		// replay subscriptions on reconnect. Routing these events through
-		// `BroadcastToScope("task"|"chat", ...)` today would silently drop
-		// every chat/task message on the floor, breaking the live chat
-		// timeline, chat unread badges, and pending-task UI.
-		//
-		// Until the client lands its scope-subscription PR, we keep
-		// task/chat events on workspace fanout (same behavior as before this
-		// PR). The `Event.TaskID` / `Event.ChatSessionID` hints are still
-		// populated by producers so that flipping the switch later is a
-		// one-line change here. See review on PR #1429 for context.
+		if isTaskScopedRealtimeEvent(e.Type) {
+			if e.TaskID == "" {
+				realtime.M.MessagesDroppedTotal.Add(1)
+				slog.Warn("dropping task-scoped realtime event without trusted task id", "event_type", e.Type)
+				return
+			}
+			realtime.M.RecordEvent(e.Type)
+			b.BroadcastToScope(realtime.ScopeTask, e.TaskID, data)
+			// Installed desktop clients released before task scopes still need
+			// live transcripts. Dual-route only through authorization-filtered
+			// legacy Agent rooms; never restore workspace-wide content fanout.
+			if e.AgentID != "" {
+				if e.ChatSessionID != "" {
+					if e.RecipientUserID != "" {
+						b.BroadcastToScope(realtime.ScopeLegacyUserAgent, realtime.UserAgentScopeID(e.RecipientUserID, e.AgentID), data)
+					}
+				} else if e.WorkspaceID != "" {
+					b.BroadcastToScope(realtime.ScopeLegacyWorkspaceAgent, realtime.WorkspaceAgentScopeID(e.WorkspaceID, e.AgentID), data)
+				}
+			}
+			return
+		}
 
-		if e.WorkspaceID != "" {
+		if isTaskLifecycleRealtimeEvent(e.Type) {
+			if e.AgentID == "" {
+				realtime.M.MessagesDroppedTotal.Add(1)
+				slog.Warn("dropping task lifecycle event without trusted Agent id", "event_type", e.Type)
+				return
+			}
+			if e.ChatSessionID != "" {
+				if e.RecipientUserID == "" {
+					realtime.M.MessagesDroppedTotal.Add(1)
+					slog.Warn("dropping creator-owned task lifecycle event without trusted recipient", "event_type", e.Type)
+					return
+				}
+				realtime.M.RecordEvent(e.Type)
+				b.BroadcastToScope(realtime.ScopeUserAgent, realtime.UserAgentScopeID(e.RecipientUserID, e.AgentID), data)
+				return
+			}
+			if e.WorkspaceID == "" {
+				realtime.M.MessagesDroppedTotal.Add(1)
+				slog.Warn("dropping task lifecycle event without trusted workspace id", "event_type", e.Type)
+				return
+			}
+			realtime.M.RecordEvent(e.Type)
+			b.BroadcastToScope(realtime.ScopeWorkspaceAgent, realtime.WorkspaceAgentScopeID(e.WorkspaceID, e.AgentID), data)
+			return
+		}
+
+		if strings.HasPrefix(e.Type, "chat:") {
+			if e.RecipientUserID == "" || e.AgentID == "" {
+				realtime.M.MessagesDroppedTotal.Add(1)
+				slog.Warn("dropping creator-owned chat event without trusted authorization metadata", "event_type", e.Type)
+				return
+			}
+			realtime.M.RecordEvent(e.Type)
+			b.BroadcastToScope(realtime.ScopeUserAgent, realtime.UserAgentScopeID(e.RecipientUserID, e.AgentID), data)
+			return
+		}
+
+		// Every recognized task event has returned through an authorized scope.
+		// Unknown task contracts are dropped by projectOutbound above.
+
+		if e.WorkspaceID != "" && workspaceRealtimeEvents[e.Type] {
 			realtime.M.RecordEvent(e.Type)
 			b.BroadcastToWorkspace(e.WorkspaceID, data)
 		} else if strings.HasPrefix(e.Type, "daemon:") {
 			realtime.M.RecordEvent(e.Type)
 			b.Broadcast(data)
+		} else if e.WorkspaceID != "" {
+			realtime.M.MessagesDroppedTotal.Add(1)
+			slog.Warn("dropping unclassified workspace realtime event", "event_type", e.Type)
 		}
 		// Otherwise drop — no global broadcast for non-daemon events without a workspace.
 	})

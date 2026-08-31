@@ -762,27 +762,32 @@ func (h *Handler) notifyDaemonWorkspacesChanged(userIDs ...string) {
 
 // publishTask is publish() plus a TaskID hint so the realtime layer can route
 // the event to the per-task scope rather than the whole workspace.
-func (h *Handler) publishTask(eventType, workspaceID, actorType, actorID, taskID string, payload any) {
+func (h *Handler) publishTask(eventType, workspaceID, actorType, actorID string, task db.AgentTaskQueue, recipientUserID string, payload any) {
 	h.Bus.Publish(events.Event{
-		Type:        eventType,
-		WorkspaceID: workspaceID,
-		ActorType:   actorType,
-		ActorID:     actorID,
-		TaskID:      taskID,
-		Payload:     payload,
+		Type:            eventType,
+		WorkspaceID:     workspaceID,
+		ActorType:       actorType,
+		ActorID:         actorID,
+		TaskID:          uuidToString(task.ID),
+		AgentID:         uuidToString(task.AgentID),
+		ChatSessionID:   uuidToString(task.ChatSessionID),
+		RecipientUserID: recipientUserID,
+		Payload:         payload,
 	})
 }
 
 // publishChat is publish() plus a ChatSessionID hint so the realtime layer
 // can route the event to the per-chat-session scope.
-func (h *Handler) publishChat(eventType, workspaceID, actorType, actorID, chatSessionID string, payload any) {
+func (h *Handler) publishChat(eventType, workspaceID, actorType, actorID, recipientUserID, chatSessionID, agentID string, payload any) {
 	h.Bus.Publish(events.Event{
-		Type:          eventType,
-		WorkspaceID:   workspaceID,
-		ActorType:     actorType,
-		ActorID:       actorID,
-		ChatSessionID: chatSessionID,
-		Payload:       payload,
+		Type:            eventType,
+		WorkspaceID:     workspaceID,
+		ActorType:       actorType,
+		ActorID:         actorID,
+		ChatSessionID:   chatSessionID,
+		AgentID:         agentID,
+		RecipientUserID: recipientUserID,
+		Payload:         payload,
 	})
 }
 

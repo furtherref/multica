@@ -63,6 +63,9 @@ func TestTaskEventCarriesPayloadAndScopeHints(t *testing.T) {
 	if e.ChatSessionID != util.UUIDToString(task.ChatSessionID) {
 		t.Fatalf("event ChatSessionID = %q, want %q", e.ChatSessionID, util.UUIDToString(task.ChatSessionID))
 	}
+	if e.AgentID != util.UUIDToString(task.AgentID) || e.IssueID != util.UUIDToString(task.IssueID) {
+		t.Fatalf("trusted routing metadata = Agent %q issue %q", e.AgentID, e.IssueID)
+	}
 	payload, ok := e.Payload.(map[string]any)
 	if !ok {
 		t.Fatalf("payload type = %T, want map[string]any", e.Payload)
@@ -129,6 +132,9 @@ func TestFailTaskPublishesDeliverableChannelFailure(t *testing.T) {
 	}
 	if got.WorkspaceID != workspaceID || got.TaskID != taskID || got.ChatSessionID != chatSessionID {
 		t.Fatalf("event scope = workspace %q task %q chat %q", got.WorkspaceID, got.TaskID, got.ChatSessionID)
+	}
+	if got.AgentID != agentID || got.RecipientUserID != userID {
+		t.Fatalf("event authorization metadata = Agent %q recipient %q, want %q and %q", got.AgentID, got.RecipientUserID, agentID, userID)
 	}
 	payload, ok := got.Payload.(map[string]any)
 	if !ok {

@@ -16,7 +16,11 @@
  * use-chat-session-realtime.ts).
  */
 import { queryOptions } from "@tanstack/react-query";
+import type { TaskMessagePayload } from "@multica/core/types";
 import { api } from "@/data/api";
+import { isTaskMessageTaskId } from "./task-message-id";
+
+export { isTaskMessageTaskId } from "./task-message-id";
 
 export const chatKeys = {
   all: (wsId: string | null) => ["chat", wsId] as const,
@@ -34,19 +38,6 @@ export const chatKeys = {
    *  can render the same trace without refetching. */
   taskMessages: (taskId: string) => ["task-messages", taskId] as const,
 };
-
-// UUID gate mirrors `packages/core/chat/queries.ts`: optimistic task ids
-// (`optimistic-…`) are not real backend rows, so the query must be
-// disabled until we have a server-issued UUID. Returning the cache for
-// an optimistic id would 404 the API.
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export function isTaskMessageTaskId(
-  taskId: string | null | undefined,
-): taskId is string {
-  return typeof taskId === "string" && UUID_PATTERN.test(taskId);
-}
 
 export const chatSessionsOptions = (wsId: string | null) =>
   queryOptions({
@@ -78,4 +69,13 @@ export const taskMessagesOptions = (taskId: string | null | undefined) =>
     queryFn: ({ signal }) => api.listTaskMessages(taskId!, { signal }),
     enabled: isTaskMessageTaskId(taskId),
     staleTime: Infinity,
+    structuralSharing: (previous, incoming) => {
+      const existing = (previous ?? []) as TaskMessagePayload[];
+      const next = incoming as TaskMessagePayload[];
+      const known = new Set(existing.map((message) => message.seq));
+      const fresh = next.filter((message) => !known.has(message.seq));
+      return fresh.length === 0
+        ? existing
+        : [...existing, ...fresh].sort((left, right) => left.seq - right.seq);
+    },
   });

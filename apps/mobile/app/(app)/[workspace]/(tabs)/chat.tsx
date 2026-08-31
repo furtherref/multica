@@ -145,9 +145,9 @@ export default function ChatTab() {
     pendingChatTaskOptions(activeSessionId),
   );
   const visibleMessages = hideQueuedChatMessages(messages, pendingTask);
-  // Live execution trace for the in-flight task. `task:message` WS events
-  // append rows to this same cache key via `appendTaskMessage`, so the
-  // list/pill stay in sync without a polling fetch. `enabled` is gated by
+  // Live execution trace for the in-flight task. The workspace realtime
+  // binder subscribes to this task while the query is observed and appends
+  // scoped `task:message` frames to the same cache key. `enabled` is gated by
   // `isTaskMessageTaskId` inside taskMessagesOptions — optimistic ids
   // never hit the network.
   const { data: liveTaskMessages = [] } = useQuery(

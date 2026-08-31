@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -107,6 +108,19 @@ func (failingScopeAuthorizer) AuthorizeScope(context.Context, string, string, st
 	return false, errors.New("database unavailable")
 }
 
+type staticVisibleAgentResolver map[string][]string
+
+func (r staticVisibleAgentResolver) VisibleAgentScopes(_ context.Context, userID, workspaceID string) (AgentScopeVisibility, error) {
+	ids := r[userID+":"+workspaceID]
+	return AgentScopeVisibility{WorkspaceAgentIDs: ids, UserAgentIDs: ids}, nil
+}
+
+type visibleAgentResolverFunc func(context.Context, string, string) (AgentScopeVisibility, error)
+
+func (f visibleAgentResolverFunc) VisibleAgentScopes(ctx context.Context, userID, workspaceID string) (AgentScopeVisibility, error) {
+	return f(ctx, userID, workspaceID)
+}
+
 func TestClientHandleSubscribeReportsLookupFailure(t *testing.T) {
 	hub := NewHub()
 	hub.SetAuthorizer(failingScopeAuthorizer{})
@@ -169,6 +183,221 @@ func TestHub_ClientRegistration(t *testing.T) {
 	count := totalClients(hub)
 	if count != 1 {
 		t.Fatalf("expected 1 client, got %d", count)
+	}
+}
+
+func TestHub_ClientRegistrationJoinsOnlyVisibleAgentScopes(t *testing.T) {
+	hub := NewHub()
+	hub.SetVisibleAgentResolver(staticVisibleAgentResolver{
+		testUserID + ":" + testWorkspaceID: {"agent-visible"},
+	})
+	go hub.Run()
+
+	mc := &mockMembershipChecker{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		HandleWebSocket(hub, mc, nil, nil, nil, w, r)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	conn := connectWS(t, server)
+	defer conn.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	hub.mu.RLock()
+	legacySubscribers := len(hub.rooms[sk(ScopeLegacyWorkspaceAgent, WorkspaceAgentScopeID(testWorkspaceID, "agent-visible"))])
+	hub.mu.RUnlock()
+	if legacySubscribers != 1 {
+		t.Fatalf("legacy client compatibility subscribers = %d, want 1", legacySubscribers)
+	}
+
+	visible := []byte(`{"type":"task:running","payload":{"task_id":"task-1"}}`)
+	hub.BroadcastToScope(
+		ScopeWorkspaceAgent,
+		WorkspaceAgentScopeID(testWorkspaceID, "agent-visible"),
+		visible,
+	)
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, got, err := conn.ReadMessage()
+	if err != nil || !bytes.Equal(got, visible) {
+		t.Fatalf("visible Agent frame = %s, err=%v", got, err)
+	}
+
+	hub.BroadcastToScope(
+		ScopeWorkspaceAgent,
+		WorkspaceAgentScopeID(testWorkspaceID, "agent-hidden"),
+		[]byte(`{"type":"task:failed"}`),
+	)
+	conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	if _, hidden, err := conn.ReadMessage(); err == nil {
+		t.Fatalf("hidden Agent frame was delivered: %s", hidden)
+	}
+}
+
+func TestHub_AuthorizationExpansionAddsRoomsWithoutDisconnect(t *testing.T) {
+	resolver := staticVisibleAgentResolver{
+		"user-1:workspace-1": {"agent-old"},
+	}
+	hub := NewHub()
+	hub.SetVisibleAgentResolver(resolver)
+	client := &Client{
+		hub:                hub,
+		send:               make(chan []byte, 1),
+		userID:             "user-1",
+		workspaceID:        "workspace-1",
+		supportsTaskScopes: true,
+		subscriptions:      make(map[scopeKey]bool),
+	}
+	hub.clients[client] = true
+
+	resolver["user-1:workspace-1"] = []string{"agent-old", "agent-new"}
+	hub.BroadcastToScopeDedup(
+		ScopeWorkspaceAuthorization,
+		"workspace-1",
+		injectEventID(AuthorizationExpandedFrame(), "event-1"),
+		"event-1",
+	)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		hub.mu.RLock()
+		workspaceJoined := client.subscriptions[sk(ScopeWorkspaceAgent, WorkspaceAgentScopeID("workspace-1", "agent-new"))]
+		userJoined := client.subscriptions[sk(ScopeUserAgent, UserAgentScopeID("user-1", "agent-new"))]
+		hub.mu.RUnlock()
+		if workspaceJoined && userJoined {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	hub.mu.RLock()
+	defer hub.mu.RUnlock()
+	if !hub.clients[client] {
+		t.Fatal("additive authorization refresh disconnected the client")
+	}
+	if !client.subscriptions[sk(ScopeWorkspaceAgent, WorkspaceAgentScopeID("workspace-1", "agent-new"))] {
+		t.Fatalf("new workspace Agent scope was not joined: %+v", client.subscriptions)
+	}
+	if !client.subscriptions[sk(ScopeUserAgent, UserAgentScopeID("user-1", "agent-new"))] {
+		t.Fatalf("new user Agent scope was not joined: %+v", client.subscriptions)
+	}
+}
+
+func TestHub_AuthorizationExpansionDoesNotBlockRelayFanout(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	hub := NewHub()
+	hub.SetVisibleAgentResolver(visibleAgentResolverFunc(func(context.Context, string, string) (AgentScopeVisibility, error) {
+		close(started)
+		<-release
+		return AgentScopeVisibility{}, nil
+	}))
+	client := &Client{
+		hub:           hub,
+		send:          make(chan []byte, 1),
+		userID:        "user-1",
+		workspaceID:   "workspace-1",
+		subscriptions: make(map[scopeKey]bool),
+	}
+	hub.clients[client] = true
+
+	done := make(chan struct{})
+	go func() {
+		hub.BroadcastToScopeDedup(
+			ScopeWorkspaceAuthorization,
+			"workspace-1",
+			injectEventID(AuthorizationExpandedFrame(), "event-1"),
+			"event-1",
+		)
+		close(done)
+	}()
+	<-started
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		close(release)
+		t.Fatal("authorization expansion blocked the realtime relay on a database lookup")
+	}
+	close(release)
+}
+
+func TestHub_AuthorizationControlDeduplicatesLocalAndRelayPaths(t *testing.T) {
+	var calls atomic.Int32
+	hub := NewHub()
+	hub.SetVisibleAgentResolver(visibleAgentResolverFunc(func(context.Context, string, string) (AgentScopeVisibility, error) {
+		calls.Add(1)
+		return AgentScopeVisibility{}, nil
+	}))
+	client := &Client{
+		hub:           hub,
+		send:          make(chan []byte, 1),
+		userID:        "user-1",
+		workspaceID:   "workspace-1",
+		subscriptions: make(map[scopeKey]bool),
+	}
+	hub.clients[client] = true
+	frame := injectEventID(AuthorizationExpandedFrame(), "event-1")
+
+	hub.BroadcastToScopeDedup(ScopeWorkspaceAuthorization, "workspace-1", frame, "event-1")
+	hub.BroadcastToScopeDedup(ScopeWorkspaceAuthorization, "workspace-1", frame, "event-1")
+
+	deadline := time.Now().Add(time.Second)
+	for calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("authorization resolver calls = %d, want one for duplicate event id", got)
+	}
+}
+
+func TestHub_AuthorizationScopeDisconnectsWorkspace(t *testing.T) {
+	hub, server := newTestHub(t)
+	defer server.Close()
+
+	conn := connectWS(t, server)
+	defer conn.Close()
+	deadline := time.Now().Add(time.Second)
+	for totalClients(hub) != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := totalClients(hub); got != 1 {
+		t.Fatalf("connected clients = %d, want 1", got)
+	}
+
+	hub.BroadcastToScope(ScopeWorkspaceAuthorization, testWorkspaceID, AuthorizationChangedFrame())
+	deadline = time.Now().Add(time.Second)
+	for totalClients(hub) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := totalClients(hub); got != 0 {
+		t.Fatalf("clients after authorization invalidation = %d, want 0", got)
+	}
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("authorization-invalidated connection remained readable")
+	}
+}
+
+func TestHub_RejectsRegistrationResolvedBeforeAuthorizationChange(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+
+	version := hub.workspaceAuthorizationVersion(testWorkspaceID)
+	hub.DisconnectWorkspace(testWorkspaceID)
+	client := &Client{
+		hub:                  hub,
+		send:                 make(chan []byte, 1),
+		userID:               testUserID,
+		workspaceID:          testWorkspaceID,
+		authorizationVersion: version,
+	}
+	hub.register <- client
+
+	if got := totalClients(hub); got != 0 {
+		t.Fatalf("stale authorization registration added %d clients, want 0", got)
+	}
+	if _, ok := <-client.send; ok {
+		t.Fatal("stale authorization registration send channel remained open")
 	}
 }
 
@@ -304,13 +533,13 @@ func TestHandleWebSocket_ClientIdentityFromQuery(t *testing.T) {
 	slog.SetDefault(slog.New(handler))
 	t.Cleanup(func() { slog.SetDefault(prevDefault) })
 
-	_, server := newTestHub(t)
+	hub, server := newTestHub(t)
 	defer server.Close()
 
 	token := makeTestToken(t)
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") +
 		"/ws?workspace_id=" + testWorkspaceID +
-		"&client_platform=desktop&client_version=1.2.3&client_os=macos"
+		"&client_platform=desktop&client_version=1.2.3&client_os=macos&task_scopes=1"
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -367,6 +596,17 @@ func TestHandleWebSocket_ClientIdentityFromQuery(t *testing.T) {
 	if got, _ := found["client_os"].(string); got != "macos" {
 		t.Errorf("client_os = %q, want %q", got, "macos")
 	}
+	if got, _ := found["task_scopes"].(bool); !got {
+		t.Errorf("task_scopes = %v, want true", found["task_scopes"])
+	}
+	hub.mu.RLock()
+	for client := range hub.clients {
+		if !client.supportsTaskScopes {
+			hub.mu.RUnlock()
+			t.Fatal("capability-marked client was registered as legacy")
+		}
+	}
+	hub.mu.RUnlock()
 }
 
 // lockedWriter is a thread-safe writer used to capture concurrent slog output.

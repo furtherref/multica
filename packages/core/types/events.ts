@@ -290,8 +290,7 @@ export interface ActivityCreatedPayload {
 
 export interface TaskMessagePayload {
   task_id: string;
-  issue_id: string;
-  chat_session_id?: string;
+  issue_id?: string;
   seq: number;
   type: "text" | "thinking" | "tool_use" | "tool_result" | "error";
   tool?: string;
@@ -323,7 +322,6 @@ export interface TaskActivityPayload {
 
 export interface TaskQueuedPayload {
   task_id: string;
-  agent_id: string;
   issue_id: string;
   chat_session_id?: string;
   status: string;
@@ -331,7 +329,6 @@ export interface TaskQueuedPayload {
 
 export interface TaskDispatchPayload {
   task_id: string;
-  agent_id: string;
   issue_id: string;
   runtime_id: string;
   chat_session_id?: string;
@@ -339,7 +336,6 @@ export interface TaskDispatchPayload {
 
 export interface TaskRunningPayload {
   task_id: string;
-  agent_id: string;
   issue_id: string;
   chat_session_id?: string;
   status: string;
@@ -355,7 +351,6 @@ export interface TaskRunningPayload {
 // reaches every client on the session and lands in screenshots.
 export interface TaskWaitingLocalDirectoryPayload {
   task_id: string;
-  agent_id: string;
   issue_id: string;
   chat_session_id?: string;
   status: string;
@@ -364,7 +359,6 @@ export interface TaskWaitingLocalDirectoryPayload {
 
 export interface TaskCompletedPayload {
   task_id: string;
-  agent_id: string;
   issue_id: string;
   chat_session_id?: string;
   status: string;
@@ -372,20 +366,23 @@ export interface TaskCompletedPayload {
 
 export interface TaskFailedPayload {
   task_id: string;
-  agent_id: string;
   issue_id: string;
   chat_session_id?: string;
   status: string;
-  failure_reason?: string;
-  retry_pending?: boolean;
 }
 
 export interface TaskCancelledPayload {
   task_id: string;
-  agent_id: string;
   issue_id: string;
   chat_session_id?: string;
   status: string;
+}
+
+export interface TaskProgressPayload {
+  task_id: string;
+  summary: string;
+  step?: number;
+  total?: number;
 }
 
 export interface ReactionAddedPayload {
@@ -606,7 +603,7 @@ export interface WSEventPayloadMap {
   "task:message": TaskMessagePayload;
   "task:activity": TaskActivityPayload;
   "task:cancelled": TaskCancelledPayload;
-  "task:progress": unknown;
+  "task:progress": TaskProgressPayload;
   "inbox:new": InboxNewPayload;
   "inbox:read": InboxReadPayload;
   "inbox:unread": InboxUnreadPayload;

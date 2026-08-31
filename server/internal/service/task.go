@@ -2648,11 +2648,22 @@ func (s *TaskService) CancelTasksByTriggerComment(ctx context.Context, commentID
 // showing a run that no longer exists. Each caller already knows the workspace
 // — it is the one whose session, member or runtime is being torn down — so the
 // lookup is not needed and cannot fail.
-func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, workspaceID string, cancelled []db.AgentTaskQueue) {
+func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, workspaceID string, cancelled []db.AgentTaskQueue, knownChatCreators ...map[string]string) {
+	var creators map[string]string
+	if len(knownChatCreators) > 0 {
+		creators = knownChatCreators[0]
+	}
 	for _, t := range cancelled {
 		s.captureTaskCancelled(ctx, t)
 		s.ReconcileAgentStatus(ctx, t.AgentID)
-		s.publishTaskEvent(protocol.EventTaskCancelled, workspaceID, t)
+		e := taskEvent(protocol.EventTaskCancelled, workspaceID, t)
+		if t.ChatSessionID.Valid {
+			e.RecipientUserID = creators[util.UUIDToString(t.ChatSessionID)]
+			if e.RecipientUserID == "" {
+				e.RecipientUserID = s.chatTaskCreatorID(ctx, t)
+			}
+		}
+		s.Bus.Publish(e)
 	}
 	s.notifyTasksFinished(cancelled)
 }
@@ -3336,16 +3347,19 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 
 func (s *TaskService) broadcastChatCancelFinalized(ctx context.Context, task db.AgentTaskQueue, payload protocol.ChatCancelFinalizedPayload) {
 	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
-	if workspaceID == "" {
+	recipientUserID := s.chatTaskCreatorID(ctx, task)
+	if workspaceID == "" || recipientUserID == "" {
 		return
 	}
 	s.Bus.Publish(events.Event{
-		Type:          protocol.EventChatCancelFinalized,
-		WorkspaceID:   workspaceID,
-		ActorType:     "system",
-		ActorID:       "",
-		ChatSessionID: util.UUIDToString(task.ChatSessionID),
-		Payload:       payload,
+		Type:            protocol.EventChatCancelFinalized,
+		WorkspaceID:     workspaceID,
+		ActorType:       "system",
+		ActorID:         "",
+		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		AgentID:         util.UUIDToString(task.AgentID),
+		RecipientUserID: recipientUserID,
+		Payload:         payload,
 	})
 }
 
@@ -5717,8 +5731,15 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 		if workspaceID == "" {
 			workspaceID = s.ResolveTaskWorkspaceID(ctx, t)
 		}
+		if workspaceID == "" {
+			continue
+		}
 
-		s.publishTaskFailedEvent(workspaceID, t, t.Error.String, failureReason, retryPending)
+		e := taskEvent(protocol.EventTaskFailed, workspaceID, t, taskFailedFields(t.Error.String, failureReason, retryPending))
+		if t.ChatSessionID.Valid {
+			e.RecipientUserID = s.chatTaskCreatorID(ctx, t)
+		}
+		s.Bus.Publish(e)
 
 		affectedAgents[util.UUIDToString(t.AgentID)] = t.AgentID
 	}
@@ -6292,13 +6313,17 @@ func (s *TaskService) runInTx(ctx context.Context, fn func(*db.Queries) error) e
 }
 
 // ReportProgress broadcasts a progress update via the event bus.
-func (s *TaskService) ReportProgress(ctx context.Context, taskID string, workspaceID string, summary string, step, total int) {
+func (s *TaskService) ReportProgress(_ context.Context, task db.AgentTaskQueue, workspaceID, recipientUserID, summary string, step, total int) {
+	taskID := util.UUIDToString(task.ID)
 	s.Bus.Publish(events.Event{
-		Type:        protocol.EventTaskProgress,
-		WorkspaceID: workspaceID,
-		ActorType:   "system",
-		ActorID:     "",
-		TaskID:      taskID,
+		Type:            protocol.EventTaskProgress,
+		WorkspaceID:     workspaceID,
+		ActorType:       "system",
+		ActorID:         "",
+		TaskID:          taskID,
+		AgentID:         util.UUIDToString(task.AgentID),
+		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		RecipientUserID: recipientUserID,
 		Payload: protocol.TaskProgressPayload{
 			TaskID:  taskID,
 			Summary: summary,
@@ -6603,11 +6628,16 @@ func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTa
 		return
 	}
 	s.Bus.Publish(events.Event{
-		Type:        protocol.EventTaskDispatch,
-		WorkspaceID: workspaceID,
-		ActorType:   "system",
-		ActorID:     "",
-		Payload:     payload,
+		Type:            protocol.EventTaskDispatch,
+		WorkspaceID:     workspaceID,
+		ActorType:       "system",
+		ActorID:         "",
+		TaskID:          util.UUIDToString(task.ID),
+		AgentID:         util.UUIDToString(task.AgentID),
+		IssueID:         util.UUIDToString(task.IssueID),
+		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		RecipientUserID: s.chatTaskCreatorID(ctx, task),
+		Payload:         payload,
 	})
 }
 
@@ -6628,6 +6658,8 @@ func taskEvent(eventType, workspaceID string, task db.AgentTaskQueue, extra ...m
 		ActorType:   "system",
 		ActorID:     "",
 		TaskID:      util.UUIDToString(task.ID),
+		AgentID:     util.UUIDToString(task.AgentID),
+		IssueID:     util.UUIDToString(task.IssueID),
 		Payload:     payload,
 	}
 	if task.ChatSessionID.Valid {
@@ -6643,16 +6675,16 @@ func taskEvent(eventType, workspaceID string, task db.AgentTaskQueue, extra ...m
 	return e
 }
 
-func (s *TaskService) publishTaskEvent(eventType, workspaceID string, task db.AgentTaskQueue, extra ...map[string]any) {
+func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, task db.AgentTaskQueue, extra ...map[string]any) {
+	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
 	if workspaceID == "" {
 		return
 	}
-	s.Bus.Publish(taskEvent(eventType, workspaceID, task, extra...))
-}
-
-func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, task db.AgentTaskQueue, extra ...map[string]any) {
-	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
-	s.publishTaskEvent(eventType, workspaceID, task, extra...)
+	e := taskEvent(eventType, workspaceID, task, extra...)
+	if task.ChatSessionID.Valid {
+		e.RecipientUserID = s.chatTaskCreatorID(ctx, task)
+	}
+	s.Bus.Publish(e)
 }
 
 // taskFailedFields adds the terminal failure context required by channel
@@ -6671,34 +6703,31 @@ func taskFailedFields(errMsg, failureReason string, retryPending bool) map[strin
 	return fields
 }
 
-func (s *TaskService) publishTaskFailedEvent(workspaceID string, task db.AgentTaskQueue, errMsg, failureReason string, retryPending bool) {
-	s.publishTaskEvent(protocol.EventTaskFailed, workspaceID, task, taskFailedFields(errMsg, failureReason, retryPending))
-}
-
 func (s *TaskService) broadcastTaskFailedEvent(ctx context.Context, task db.AgentTaskQueue, errMsg, failureReason string, retryPending bool) {
-	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
-	s.publishTaskFailedEvent(workspaceID, task, errMsg, failureReason, retryPending)
+	s.broadcastTaskEvent(ctx, protocol.EventTaskFailed, task, taskFailedFields(errMsg, failureReason, retryPending))
 }
 
-// ResolveTaskWorkspaceID determines the workspace ID for a task.
+// ResolveTaskRealtimeScope determines the workspace and, for a direct Chat
+// task, the trusted session creator used by private realtime routing.
 // For issue tasks, it comes from the issue. For chat tasks, from the chat session.
 // For autopilot tasks, from the autopilot via its run.
-// Returns "" when none of the links resolve — callers treat that as "not found".
-func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentTaskQueue) string {
+// Returns empty values when none of the links resolve — callers treat that as
+// "not found".
+func (s *TaskService) ResolveTaskRealtimeScope(ctx context.Context, task db.AgentTaskQueue) (string, string) {
 	if task.IssueID.Valid {
 		if issue, err := s.Queries.GetIssue(ctx, task.IssueID); err == nil {
-			return util.UUIDToString(issue.WorkspaceID)
+			return util.UUIDToString(issue.WorkspaceID), ""
 		}
 	}
 	if task.ChatSessionID.Valid {
 		if cs, err := s.Queries.GetChatSession(ctx, task.ChatSessionID); err == nil {
-			return util.UUIDToString(cs.WorkspaceID)
+			return util.UUIDToString(cs.WorkspaceID), util.UUIDToString(cs.CreatorID)
 		}
 	}
 	if task.AutopilotRunID.Valid {
 		if run, err := s.Queries.GetAutopilotRun(ctx, task.AutopilotRunID); err == nil {
 			if ap, err := s.Queries.GetAutopilot(ctx, run.AutopilotID); err == nil {
-				return util.UUIDToString(ap.WorkspaceID)
+				return util.UUIDToString(ap.WorkspaceID), ""
 			}
 		}
 	}
@@ -6708,14 +6737,20 @@ func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentT
 	// for the daemon) and silently dropped task:dispatch / task:completed
 	// broadcasts, which is why quick-create tasks appeared stuck queued.
 	if qc, ok := s.parseQuickCreateContext(task); ok {
-		return qc.WorkspaceID
+		return qc.WorkspaceID, ""
 	}
-	return ""
+	return "", ""
+}
+
+func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentTaskQueue) string {
+	workspaceID, _ := s.ResolveTaskRealtimeScope(ctx, task)
+	return workspaceID
 }
 
 func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQueue, msg *db.ChatMessage, quickActionsPending bool) {
 	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
-	if workspaceID == "" {
+	recipientUserID := s.chatTaskCreatorID(ctx, task)
+	if workspaceID == "" || recipientUserID == "" {
 		return
 	}
 	payload := protocol.ChatDonePayload{
@@ -6738,13 +6773,26 @@ func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQu
 		}
 	}
 	s.Bus.Publish(events.Event{
-		Type:          protocol.EventChatDone,
-		WorkspaceID:   workspaceID,
-		ActorType:     "system",
-		ActorID:       "",
-		ChatSessionID: util.UUIDToString(task.ChatSessionID),
-		Payload:       payload,
+		Type:            protocol.EventChatDone,
+		WorkspaceID:     workspaceID,
+		ActorType:       "system",
+		ActorID:         "",
+		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		AgentID:         util.UUIDToString(task.AgentID),
+		RecipientUserID: recipientUserID,
+		Payload:         payload,
 	})
+}
+
+func (s *TaskService) chatTaskCreatorID(ctx context.Context, task db.AgentTaskQueue) string {
+	if !task.ChatSessionID.Valid {
+		return ""
+	}
+	session, err := s.Queries.GetChatSession(ctx, task.ChatSessionID)
+	if err != nil {
+		return ""
+	}
+	return util.UUIDToString(session.CreatorID)
 }
 
 // broadcastIssueUpdated publishes the issue:updated event the frontend's
