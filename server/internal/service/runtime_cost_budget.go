@@ -126,7 +126,9 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 			slog.Info("task enqueue refused: runtime cost budget reached",
 				"runtime_id", util.UUIDToString(row.RuntimeID), "scope", scope, "period", exceeded.Period,
 				"used_ticks", exceeded.UsedTicks, "limit_ticks", exceeded.LimitTicks)
-			s.notifyRuntimeBudgetExceeded(ctx, q, row, exceeded)
+			// s.Queries, never q: q may be the caller's transaction, and the
+			// refusal returned below always rolls that transaction back.
+			s.notifyRuntimeBudgetExceeded(ctx, s.Queries, row, exceeded)
 			return exceeded
 		}
 	}
@@ -135,5 +137,12 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 
 // notifyRuntimeBudgetExceeded is implemented in Task 4. Until then it is a
 // no-op so the check can ship on its own.
+//
+// It must NOT use the caller's transaction. checkRuntimeCostBudget refuses the
+// enqueue right after calling this, and on the chat paths that refusal rolls the
+// enclosing transaction back — a notification or MarkRuntimeCostBudgetNotified
+// marker written on that handle would be discarded with it. Callers pass the
+// auto-commit s.Queries, and the implementation must keep using the handle it is
+// given rather than reaching for a transaction of the enqueue.
 func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Queries, row db.RuntimeCostBudget, exceeded *RuntimeBudgetExceededError) {
 }
