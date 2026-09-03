@@ -55,9 +55,10 @@ type copilotEventState struct {
 	//	assistant.message  outputTokens only — legacy, older CLIs
 	//
 	// They must never be summed together: all three describe the same tokens.
-	callUsage     map[string]TokenUsage
-	msgUsage      map[string]TokenUsage
-	shutdownUsage map[string]TokenUsage
+	callUsage        map[string]TokenUsage
+	msgUsage         map[string]TokenUsage
+	shutdownUsage    map[string]TokenUsage
+	sessionFileUsage map[string]TokenUsage
 	// resumed marks a run that continued an existing Copilot session, which is
 	// what disqualifies the session.shutdown totals — see resolveUsage.
 	resumed bool
@@ -90,6 +91,9 @@ func (st *copilotEventState) resolveUsage() map[string]TokenUsage {
 	}
 	if hasTokens(st.callUsage) {
 		return st.callUsage
+	}
+	if hasTokens(st.sessionFileUsage) {
+		return st.sessionFileUsage
 	}
 	if hasTokens(st.msgUsage) {
 		return st.msgUsage
@@ -155,12 +159,13 @@ func newCopilotEventState(seedModel string, resumed bool) *copilotEventState {
 		seedModel = copilotPlaceholderModel
 	}
 	return &copilotEventState{
-		activeModel:   seedModel,
-		finalStatus:   "completed",
-		callUsage:     make(map[string]TokenUsage),
-		msgUsage:      make(map[string]TokenUsage),
-		shutdownUsage: make(map[string]TokenUsage),
-		resumed:       resumed,
+		activeModel:      seedModel,
+		finalStatus:      "completed",
+		callUsage:        make(map[string]TokenUsage),
+		msgUsage:         make(map[string]TokenUsage),
+		shutdownUsage:    make(map[string]TokenUsage),
+		sessionFileUsage: make(map[string]TokenUsage),
+		resumed:          resumed,
 	}
 }
 
@@ -432,6 +437,16 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
 
+	var resumeUsageBaseline copilotUsageSnapshot
+	var resumeUsageBaselineFound bool
+	if opts.ResumeSessionID != "" {
+		resumeUsageBaseline, resumeUsageBaselineFound, err =
+			readCopilotSessionUsageSnapshot(cmd.Env, opts.ResumeSessionID)
+		if err != nil {
+			b.cfg.Logger.Warn("Copilot resume usage baseline unavailable", "error", err)
+		}
+	}
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
@@ -509,6 +524,30 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		}
 
 		b.cfg.Logger.Info("copilot finished", "pid", cmd.Process.Pid, "status", st.finalStatus, "duration", duration.Round(time.Millisecond).String())
+
+		if st.sessionID != "" {
+			finalSnapshot, found, snapshotErr := readCopilotSessionUsageSnapshot(cmd.Env, st.sessionID)
+			if snapshotErr != nil {
+				b.cfg.Logger.Warn("Copilot session usage snapshot unavailable", "error", snapshotErr)
+			} else if found {
+				var recovered map[string]TokenUsage
+				if opts.ResumeSessionID != "" && st.sessionID == opts.ResumeSessionID {
+					if resumeUsageBaselineFound {
+						recovered, snapshotErr = diffCopilotUsageSnapshots(resumeUsageBaseline, finalSnapshot)
+					} else {
+						snapshotErr = fmt.Errorf("Copilot resume usage baseline is unavailable")
+					}
+				} else {
+					recovered = freshCopilotUsageSnapshot(finalSnapshot)
+				}
+				if snapshotErr != nil {
+					b.cfg.Logger.Warn("Copilot session usage recovery skipped", "error", snapshotErr)
+				} else if hasTokens(recovered) {
+					st.sessionFileUsage = recovered
+					b.cfg.Logger.Info("Copilot usage recovered from session snapshot", "models", len(recovered))
+				}
+			}
+		}
 
 		usage := st.resolveUsage()
 		// A run that produced output but no tokens is a silent billing hole:
