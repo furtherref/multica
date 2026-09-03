@@ -1,5 +1,6 @@
--- Migration 398 (originally 342, renumbered during the v0.4.32 upstream sync)
--- defaults every user to account_status = 'active', which silently re-enabled
+-- Migration 450_user_account_status (originally 342, renumbered on each
+-- upstream sync) defaults every user to account_status = 'active', which
+-- silently re-enabled
 -- the two production accounts previously blocked by the
 -- deleted emergency denylist (server/internal/auth/temporary_disabled_users.go,
 -- removed in 153183072 once account_status enforcement landed). Carry those

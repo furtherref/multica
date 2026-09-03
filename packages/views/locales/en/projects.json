@@ -146,6 +146,7 @@
   },
   "picker": {
     "no_project": "No project",
+    "project_required": "Project required",
     "empty": "No projects yet",
     "search_placeholder": "Search projects...",
     "clear_aria": "Clear project"

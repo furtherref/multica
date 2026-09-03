@@ -47,6 +47,13 @@ const (
 	Cancelled  = "cancelled"
 )
 
+// Archive is the fork's built-in terminal status (#39, migration 069). It is a
+// plain issue.status value rather than a catalog category: no issue_status row
+// carries it and a custom status cannot inherit it, so IsCategory stays false.
+// ExpandCategories accepts it so the indexed `status = ANY(...)` terminal
+// predicates treat archived issues as closed without a second SQL clause.
+const Archive = "archive"
+
 // canonicalOrder is the historical STATUS_ORDER from the frontend's static
 // status config. Category ranking copies it verbatim so a workspace with no
 // custom statuses sees a board and picker identical to before this feature.
@@ -534,23 +541,31 @@ func (r *Resolver) Name(ctx context.Context, q Querier, status string) string {
 // in that case, which is correct because a built-in key IS its own category.
 func ExpandCategories(ctx context.Context, q Querier, workspaceID pgtype.UUID, categories []string) ([]string, error) {
 	valid := make([]string, 0, len(categories))
+	includeArchive := false
 	for _, c := range categories {
-		if IsCategory(c) {
+		switch {
+		case c == Archive:
+			includeArchive = true
+		case IsCategory(c):
 			valid = append(valid, c)
 		}
 	}
-	if len(valid) == 0 {
+	if len(valid) == 0 && !includeArchive {
 		return nil, nil
 	}
-	keys, err := q.ListIssueStatusKeysByCategories(ctx, db.ListIssueStatusKeysByCategoriesParams{
-		WorkspaceID: workspaceID,
-		Categories:  valid,
-	})
-	if err != nil {
-		return nil, err
+	var keys []string
+	if len(valid) > 0 {
+		var err error
+		keys, err = q.ListIssueStatusKeysByCategories(ctx, db.ListIssueStatusKeysByCategoriesParams{
+			WorkspaceID: workspaceID,
+			Categories:  valid,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
-	seen := make(map[string]bool, len(keys)+len(valid))
-	out := make([]string, 0, len(keys)+len(valid))
+	seen := make(map[string]bool, len(keys)+len(valid)+1)
+	out := make([]string, 0, len(keys)+len(valid)+1)
 	for _, k := range keys {
 		if !seen[k] {
 			seen[k] = true
@@ -564,6 +579,10 @@ func ExpandCategories(ctx context.Context, q Querier, workspaceID pgtype.UUID, c
 			seen[c] = true
 			out = append(out, c)
 		}
+	}
+	// Archive has no catalog row to expand from; it is its own key.
+	if includeArchive && !seen[Archive] {
+		out = append(out, Archive)
 	}
 	return out, nil
 }

@@ -21,6 +21,7 @@ import (
 	// helper named `mention`, which would shadow this import for the whole
 	// handler package. Aliasing here keeps the collision on the fork's own line.
 	mentionpkg "github.com/multica-ai/multica/server/internal/mention"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -1544,31 +1545,6 @@ type commentTriggerComputeOptions struct {
 	// by the originator, not the immediate agent principal. Members are their
 	// own originator so this may be empty for member-authored triggers.
 	OriginatorUserID string
-
-	// AutopilotDelegationAuthorityUserID is the lineage-verified autopilot creator
-	// whose invoke rights an UNATTRIBUTED autopilot dispatch borrows for the A2A
-	// gate when it delegates mid-chain on the issue that autopilot created
-	// (MUL-4857). It is resolved SEPARATELY from OriginatorUserID, at the trusted
-	// request/comment boundary, from the server-trusted speaking task (see
-	// autopilotDelegationAuthority); it is empty whenever that lineage cannot be
-	// verified, which keeps the gate fail-closed. effectiveInvoker consults it ONLY
-	// when OriginatorUserID is empty. Authorization input only — attribution/audit
-	// read OriginatorUserID, never this, so the enqueued run stays unattributed.
-	AutopilotDelegationAuthorityUserID string
-}
-
-// effectiveInvoker is the human principal the A2A invoke gate (canInvokeAgent)
-// keys on for this comment: the resolved top-of-chain human originator, or — only
-// when the run carried no human originator — the lineage-verified autopilot
-// delegation authority (MUL-4857). OriginatorUserID is left untouched so
-// attribution stays accurate; the authority is a gate-only fallback. For member
-// actors both are the member (or the fallback is unset), and canInvokeAgent
-// ignores this value for members anyway.
-func (o commentTriggerComputeOptions) effectiveInvoker() string {
-	if o.OriginatorUserID != "" {
-		return o.OriginatorUserID
-	}
-	return o.AutopilotDelegationAuthorityUserID
 }
 
 func commentAgentTriggerReason(trigger commentAgentTrigger) string {
@@ -1674,7 +1650,6 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 	opts.OriginatorUserID = h.invokeOriginatorFromRequest(r, actorType, actorID)
-	opts.AutopilotDelegationAuthorityUserID = h.autopilotDelegationAuthorityFromRequest(r, issue, actorType, actorID)
 	triggers, targets := h.computeCommentAgentTriggers(r.Context(), issue, content, parentComment, actorType, actorID, opts)
 	resp := CommentTriggerPreviewResponse{
 		Agents:  make([]CommentTriggerAgentResponse, 0, len(triggers)),
@@ -1943,15 +1918,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	originatorUserID := h.invokeOriginatorFromRequest(r, authorType, authorID)
-	// MUL-4857: resolve the autopilot delegation authority from the SAME
-	// server-trusted X-Task-ID header the originator resolution uses, so an
-	// unattributed autopilot dispatch delegating mid-chain is keyed on its
-	// autopilot creator only when the speaking task's lineage checks out.
-	delegationAuthority := h.autopilotDelegationAuthorityFromRequest(r, issue, authorType, authorID)
 	// The comment is already saved; a blocked mention must not fail the whole
 	// request. Surface the per-target outcomes so the client can show partial
 	// success instead of a silent no-op (MUL-4525 §2).
-	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, delegationAuthority, suppressAgentIDs)
+	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs)
 
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -1992,14 +1962,13 @@ func isNoteComment(content string) bool {
 // (MUL-4525 §2): blocked mentions from resolution plus queued / coalesced /
 // deferred / blocked from enqueue. UI-suppressed triggers (the user unchecked
 // them) are removed before enqueue and produce no outcome.
-func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID, delegationAuthorityUserID string, suppressAgentIDs []pgtype.UUID) []CommentTriggerOutcome {
+func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs []pgtype.UUID) []CommentTriggerOutcome {
 	if isNoteComment(comment.Content) {
 		return nil
 	}
 	triggers, targets := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
-		ExcludeTriggerCommentID:            comment.ID,
-		OriginatorUserID:                   originatorUserID,
-		AutopilotDelegationAuthorityUserID: delegationAuthorityUserID,
+		ExcludeTriggerCommentID: comment.ID,
+		OriginatorUserID:        originatorUserID,
 	})
 	triggers = filterSuppressedCommentAgentTriggers(triggers, suppressAgentIDs)
 	h.noteBlockedRuntimeTargets(ctx, issue, targets)
@@ -2668,7 +2637,7 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 	}
 
 	// Autopilot delegation authority (MUL-4857) is applied by the gate via
-	// opts.effectiveInvoker(): when a run carried no human originator, the gate
+	// opts.OriginatorUserID: when a run carried no human originator, the gate
 	// falls back to opts.AutopilotDelegationAuthorityUserID, which the caller has
 	// already resolved from a server-trusted, lineage-verified speaking task (see
 	// autopilotDelegationAuthority). Nothing is re-derived from issue provenance
@@ -2819,7 +2788,7 @@ func (h *Handler) routeReplyToParentAuthor(ctx context.Context, issue db.Issue, 
 	if err != nil || !agent.RuntimeID.Valid || agent.ArchivedAt.Valid {
 		return commentAgentTrigger{}, false
 	}
-	if !h.canInvokeAgent(ctx, agent, authorType, authorID, opts.effectiveInvoker(), uuidToString(issue.WorkspaceID)) {
+	if !h.canInvokeAgent(ctx, agent, authorType, authorID, opts.OriginatorUserID, uuidToString(issue.WorkspaceID)) {
 		return commentAgentTrigger{}, false
 	}
 	hasPending, err := h.hasPendingTaskForIssueAndAgent(ctx, issue.ID, parent.AuthorID, opts)
@@ -2993,7 +2962,7 @@ func (h *Handler) routeAssignedSquadLeaderFallback(ctx context.Context, issue db
 	if err != nil || !agent.RuntimeID.Valid || agent.ArchivedAt.Valid {
 		return commentAgentTrigger{}, false
 	}
-	if !h.canInvokeAgent(ctx, agent, authorType, authorID, opts.effectiveInvoker(), uuidToString(issue.WorkspaceID)) {
+	if !h.canInvokeAgent(ctx, agent, authorType, authorID, opts.OriginatorUserID, uuidToString(issue.WorkspaceID)) {
 		return commentAgentTrigger{}, false
 	}
 	hasPending, err := h.hasPendingTaskForIssueAndAgent(ctx, issue.ID, squad.LeaderID, opts)
@@ -3205,7 +3174,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			}
 			// Private-leader gate first (enumeration-safe: a caller who cannot
 			// invoke the leader never learns its archived/runtime state).
-			if !h.canInvokeAgent(ctx, agent, authorType, authorID, opts.effectiveInvoker(), wsID) {
+			if !h.canInvokeAgent(ctx, agent, authorType, authorID, opts.OriginatorUserID, wsID) {
 				blockTarget("squad", m.ID, ReasonInvocationNotAllowed)
 				continue
 			}
@@ -3214,7 +3183,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 				continue
 			}
 			// Same shared verdict as the direct-agent branch below.
-			if verdict, err := service.AgentReadiness(ctx, h.Queries, agent); err == nil && verdict.Blocked() {
+			if verdict, err := service.AgentReadiness(ctx, h.runtimeLookup(obsmetrics.RuntimeLookupSourceComment), agent); err == nil && verdict.Blocked() {
 				blockUnusableTarget("squad", m.ID, agent, verdict)
 				continue
 			}
@@ -3260,7 +3229,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 		}
 		logMentionLabelMismatch(m, agent.Name, "agent", issue.ID)
 		// Private-agent gate first, before any archived/runtime state is read.
-		if !h.canInvokeAgent(ctx, agent, authorType, authorID, opts.effectiveInvoker(), wsID) {
+		if !h.canInvokeAgent(ctx, agent, authorType, authorID, opts.OriginatorUserID, wsID) {
 			blockTarget("agent", m.ID, ReasonInvocationNotAllowed)
 			continue
 		}
@@ -3274,7 +3243,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 		// will not start doing so on its own (MUL-6164). A merely offline
 		// runtime keeps queueing — that wait ends by itself when the machine
 		// returns, and taking it away would remove a behaviour people rely on.
-		if verdict, err := service.AgentReadiness(ctx, h.Queries, agent); err == nil && verdict.Blocked() {
+		if verdict, err := service.AgentReadiness(ctx, h.runtimeLookup(obsmetrics.RuntimeLookupSourceComment), agent); err == nil && verdict.Blocked() {
 			blockUnusableTarget("agent", m.ID, agent, verdict)
 			continue
 		}
@@ -3537,6 +3506,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		}
 		if err == nil && oldContent != req.Content && strictContentEdit {
 			cancelled, err = qtx.CancelAgentTasksByTriggerComment(r.Context(), existing.ID)
+			if err == nil {
+				err = service.SettleDeliveredDelegatedFailureRecoveries(r.Context(), qtx, cancelled...)
+			}
 		}
 		if err == nil && replaceAttachments {
 			var changed int64
@@ -3601,16 +3573,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		}
 
 		h.retriggerCancelledTaskSurvivors(r.Context(), issue, cancelled, existing.ID)
-		// MUL-4857: source_task_id was just re-derived from THIS edit above (the agent
-		// author re-stamps its current task; every other editor clears it), so
-		// resolving from the comment keys the delegation authority on the current
-		// editing action — identical to what the edit preview computed from the same
-		// request, and to what the completion-reconcile will restore. A non-author
-		// edit left it NULL, and a cross-issue editing task is rejected inside
-		// autopilotDelegationAuthority, so neither can borrow the old authoring run's
-		// authority.
-		delegationAuthority := h.autopilotDelegationAuthorityFromComment(r.Context(), issue, comment)
-		return h.triggerTasksForComment(r.Context(), issue, comment, parentComment, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), delegationAuthority, suppressAgentIDs)
+		return h.triggerTasksForComment(r.Context(), issue, comment, parentComment, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), suppressAgentIDs)
 	}
 
 	// Fetch reactions and attachments for the updated comment.
@@ -3814,17 +3777,12 @@ func (h *Handler) retriggerCancelledTaskSurvivors(ctx context.Context, issue db.
 		actorType := comment.AuthorType
 		actorID := uuidToString(comment.AuthorID)
 		originatorUserID := actorID
-		var delegationAuthority string
 		if actorType != "member" {
 			originatorUserID = uuidToString(h.TaskService.ResolveOriginatorFromTriggerComment(ctx, issue.WorkspaceID, comment.ID))
-			// MUL-4857: reconcile works from persisted comments, so the autopilot
-			// delegation authority is resolved from the stored comment.source_task_id.
-			delegationAuthority = h.autopilotDelegationAuthorityFromComment(ctx, issue, comment)
 		}
 		triggers, _ := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
-			ExcludeTriggerCommentID:            comment.ID,
-			OriginatorUserID:                   originatorUserID,
-			AutopilotDelegationAuthorityUserID: delegationAuthority,
+			ExcludeTriggerCommentID: comment.ID,
+			OriginatorUserID:        originatorUserID,
 		})
 		targets := targetsByComment[uuidToString(comment.ID)]
 		scoped := make([]commentAgentTrigger, 0, len(targets))

@@ -8,6 +8,13 @@ vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-test",
 }));
 
+vi.mock("@multica/core/issue-statuses/hooks", () => ({
+  useIssueStatuses: () => ({
+    colorOf: (status: string) =>
+      status === "awaiting_response" ? "#f97316" : null,
+  }),
+}));
+
 vi.mock("@multica/core/issues/queries", () => ({
   issueListOptions: () => ({
     queryKey: ["issues", "ws-test", "list"],
@@ -20,7 +27,25 @@ vi.mock("@multica/core/issues/queries", () => ({
 }));
 
 vi.mock("./status-icon", () => ({
-  StatusIcon: () => <span data-testid="status-icon" />,
+  StatusIcon: ({
+    status,
+    category,
+    color,
+    className,
+  }: {
+    status: string;
+    category?: string;
+    color?: string | null;
+    className?: string;
+  }) => (
+    <svg
+      data-testid="status-icon"
+      data-status={status}
+      data-category={category}
+      data-color={color}
+      className={className}
+    />
+  ),
 }));
 
 vi.mock("@multica/ui/components/ui/tooltip", () => ({
@@ -43,7 +68,13 @@ function renderChip(ui: ReactNode, client: QueryClient = makeClient()) {
 
 function seedIssue(
   client: QueryClient,
-  issue: { id: string; identifier: string; title: string; status: string },
+  issue: {
+    id: string;
+    identifier: string;
+    title: string;
+    status: string;
+    status_category?: string;
+  },
 ) {
   client.setQueryData(["issues", "ws-test", "list"], [issue]);
 }
@@ -129,5 +160,31 @@ describe("IssueChip", () => {
 
     expect(screen.getByText("MUL-999999999999999999999999999999999"))
       .toHaveClass("min-w-0", "truncate");
+  });
+
+  it("paints a custom status with its catalog color instead of the category token", () => {
+    const client = makeClient();
+    seedIssue(client, {
+      id: "issue-4",
+      identifier: "MUL-6956",
+      title: "Custom status color in Chat",
+      status: "awaiting_response",
+      status_category: "in_review",
+    });
+
+    renderChip(<IssueChip issueId="issue-4" />, client);
+
+    expect(screen.getByTestId("status-icon")).toHaveAttribute(
+      "data-status",
+      "awaiting_response",
+    );
+    expect(screen.getByTestId("status-icon")).toHaveAttribute(
+      "data-category",
+      "in_review",
+    );
+    expect(screen.getByTestId("status-icon")).toHaveAttribute(
+      "data-color",
+      "#f97316",
+    );
   });
 });

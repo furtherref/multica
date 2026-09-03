@@ -543,4 +543,34 @@ func TestExpandCategories(t *testing.T) {
 			t.Errorf("expand of a non-category = %v, want nil", got)
 		}
 	})
+
+	// The fork's archive status (#39) has no catalog row, so the terminal-key
+	// producers hand it to ExpandCategories alongside done/cancelled and rely
+	// on it coming back as its own key.
+	t.Run("passes the fork archive status through as its own key", func(t *testing.T) {
+		q := newFakeQuerier(custom("verified", Done))
+		got, err := ExpandCategories(ctx, q, testWorkspace, []string{Done, Cancelled, Archive})
+		if err != nil {
+			t.Fatalf("expand: %v", err)
+		}
+		want := map[string]bool{"verified": true, Done: true, Cancelled: true, Archive: true}
+		if len(got) != len(want) {
+			t.Fatalf("expand(done, cancelled, archive) = %v, want exactly %d keys", got, len(want))
+		}
+		for _, k := range got {
+			if !want[k] {
+				t.Errorf("expand(done, cancelled, archive) = %v, unexpected key %q", got, k)
+			}
+		}
+	})
+
+	t.Run("archive alone needs no catalog read", func(t *testing.T) {
+		got, err := ExpandCategories(ctx, newFakeQuerier(), testWorkspace, []string{Archive})
+		if err != nil {
+			t.Fatalf("expand: %v", err)
+		}
+		if len(got) != 1 || got[0] != Archive {
+			t.Errorf("expand(archive) = %v, want [archive]", got)
+		}
+	})
 }

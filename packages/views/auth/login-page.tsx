@@ -458,7 +458,7 @@ export function LoginPage({
               <span>{t(($) => $.login.account_suspended_notice)}</span>
               <button
                 type="button"
-                aria-label="Dismiss"
+                aria-label={t(($) => $.login.account_suspended_dismiss)}
                 onClick={() => setShowSuspendedNotice(false)}
                 className="shrink-0 cursor-pointer text-destructive hover:opacity-80"
               >

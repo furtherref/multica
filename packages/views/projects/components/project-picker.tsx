@@ -97,7 +97,7 @@ export function ProjectPicker({
               </>
             )}
             {required && (
-              <span aria-label="Project required" className="text-destructive">
+              <span aria-label={t(($) => $.picker.project_required)} className="text-destructive">
                 *
               </span>
             )}

@@ -218,5 +218,5 @@ WHERE i.workspace_id = $1 AND i.recipient_type = 'member' AND i.recipient_id = $
   AND i.issue_id IN (
     SELECT id FROM issue
     WHERE workspace_id = $1
-      AND (issue_effective_status(workspace_id, status) IN ('done', 'cancelled') OR status = 'archive')
+      AND status = ANY(sqlc.arg('terminal_status_keys')::text[])
   );
