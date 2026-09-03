@@ -73,6 +73,8 @@ import type {
   RuntimeHourlyActivity,
   RuntimeUsageByAgent,
   RuntimeUsageByHour,
+  RuntimeCostBudget,
+  RuntimeCostBudgetInput,
   DashboardUsageDaily,
   DashboardUsageByAgent,
   DashboardAgentRunTime,
@@ -331,6 +333,8 @@ import {
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
   RuntimeUsageCoverageListSchema,
+  RuntimeCostBudgetSchema,
+  EMPTY_RUNTIME_COST_BUDGET,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
   SquadSchema,
@@ -2220,6 +2224,27 @@ export class ApiClient {
       [],
       { endpoint: "GET /api/runtimes/:id/usage/by-hour" },
     );
+  }
+
+  async getRuntimeCostBudget(runtimeId: string): Promise<RuntimeCostBudget> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/budget`);
+    return parseWithFallback<RuntimeCostBudget>(raw, RuntimeCostBudgetSchema, EMPTY_RUNTIME_COST_BUDGET, {
+      endpoint: "GET /api/runtimes/:id/budget",
+    });
+  }
+
+  // Full replace: scopes missing from `input` are removed server-side.
+  async updateRuntimeCostBudget(
+    runtimeId: string,
+    input: RuntimeCostBudgetInput,
+  ): Promise<RuntimeCostBudget> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/budget`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    });
+    return parseWithFallback<RuntimeCostBudget>(raw, RuntimeCostBudgetSchema, EMPTY_RUNTIME_COST_BUDGET, {
+      endpoint: "PUT /api/runtimes/:id/budget",
+    });
   }
 
   // ---------------------------------------------------------------------------

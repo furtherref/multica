@@ -24,4 +24,8 @@ describe("runtime usage coverage query", () => {
       "Asia/Shanghai",
     ]);
   });
+
+  it("keys the budget by runtime id only (periods are UTC, no tz)", () => {
+    expect(runtimeKeys.budget("rt-1")).toEqual(["runtimes", "budget", "rt-1"]);
+  });
 });

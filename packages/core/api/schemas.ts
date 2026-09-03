@@ -74,6 +74,7 @@ import type {
   PluginPreview,
   PluginSurfaceLaunch,
   ResourceLabelsResponse,
+  RuntimeCostBudget,
   RuntimeModelListRequest,
   SearchIssuesResponse,
   SearchProjectsResponse,
@@ -1717,6 +1718,33 @@ const RuntimeUsageByHourSchema = z.object({
 }).loose();
 
 export const RuntimeUsageByHourListSchema = z.array(RuntimeUsageByHourSchema);
+
+const RuntimeBudgetPeriodSchema = z.object({
+  limit_usd: z.number().default(0),
+  used_usd: z.number().default(0),
+  period_start: z.string().default(""),
+  reset_at: z.string().default(""),
+  reached: z.boolean().default(false),
+}).loose();
+
+const RuntimeBudgetScopeSchema = z.object({
+  user_id: z.string().optional(),
+  daily: RuntimeBudgetPeriodSchema.nullable().default(null),
+  weekly: RuntimeBudgetPeriodSchema.nullable().default(null),
+  monthly: RuntimeBudgetPeriodSchema.nullable().default(null),
+}).loose();
+
+export const RuntimeCostBudgetSchema = z.object({
+  runtime: RuntimeBudgetScopeSchema.nullable().default(null),
+  users: z.array(RuntimeBudgetScopeSchema).default([]),
+  can_manage: z.boolean().default(false),
+}).loose();
+
+export const EMPTY_RUNTIME_COST_BUDGET: RuntimeCostBudget = {
+  runtime: null,
+  users: [],
+  can_manage: false,
+};
 
 // ---------------------------------------------------------------------------
 // Agent task responses. The base object stays loose so daemon/runtime fields
