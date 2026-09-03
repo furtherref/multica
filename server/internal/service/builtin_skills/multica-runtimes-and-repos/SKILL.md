@@ -70,10 +70,11 @@ Check in this order:
 1. Was a task supposed to be created? Inspect issue/comment/autopilot context.
 2. Is the assignee an agent or squad? A squad routes to its leader.
 3. Is the agent archived or bound to a runtime the actor cannot use?
-4. Is the runtime online? `multica runtime list --output json`.
-5. Did the daemon heartbeat recently? Runtime `last_seen_at` is the visible clue.
-6. Did the task get claimed or is it stuck pending/running/waiting for local directory?
-7. If repo checkout failed, classify it after checking whether repo context was
+4. Has the runtime's cost budget been reached — either the runtime total or the budget for the agent's owner? The run is refused at enqueue with `budget_exceeded` and no task is created; the runtime detail page's Cost budget card shows which limit is spent. Budgets reset on the UTC period boundary (the day, Monday, or the first of the month), and the person whose run was refused plus the runtime owner get a `runtime_budget_exceeded` inbox notice once per period.
+5. Is the runtime online? `multica runtime list --output json`.
+6. Did the daemon heartbeat recently? Runtime `last_seen_at` is the visible clue.
+7. Did the task get claimed or is it stuck pending/running/waiting for local directory?
+8. If repo checkout failed, classify it after checking whether repo context was
    present in the task/project context.
 
 ## Repos

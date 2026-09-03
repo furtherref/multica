@@ -75,6 +75,7 @@ vi.mock("./inbox-detail-label", () => ({
   useTypeLabels: () => ({
     autopilot_paused: "Autopilot paused",
     autopilot_quota_exceeded: "Autopilot run limit reached",
+    runtime_budget_exceeded: "Runtime cost budget reached",
   }),
 }));
 vi.mock("../../i18n", () => ({ useT: () => ({ t: () => "label" }) }));
@@ -165,6 +166,48 @@ describe("InboxListItem unread affordance", () => {
 
     expect(unreadDot(container)).toBeNull();
     expect(title(container)?.className).not.toContain("font-medium");
+  });
+});
+
+// System notices are written server-side in English. The row swaps in the
+// localized type label so a zh-Hans / ja / ko reader does not get an English
+// title, and an ordinary notification keeps the server title it carries.
+describe("InboxListItem system notice titles", () => {
+  it("titles a runtime budget notice with the localized type label", () => {
+    const { container } = renderRow({
+      item: item({
+        type: "runtime_budget_exceeded",
+        title: "Runtime cost budget reached",
+        body: "This runtime reached the daily cost limit of $20.00 (used $21.40).",
+        issue_id: null,
+        details: { scope: "runtime", period: "daily" },
+      }),
+      view: "inbox",
+    });
+
+    expect(title(container)?.textContent).toBe("Runtime cost budget reached");
+  });
+
+  it("titles an autopilot quota notice the same way", () => {
+    const { container } = renderRow({
+      item: item({
+        type: "autopilot_quota_exceeded",
+        title: "Autopilot hit its run limit",
+        issue_id: null,
+      }),
+      view: "inbox",
+    });
+
+    expect(title(container)?.textContent).toBe("Autopilot run limit reached");
+  });
+
+  it("leaves an ordinary notification on its server title", () => {
+    const { container } = renderRow({
+      item: item({ type: "new_comment", title: "Issue title" }),
+      view: "inbox",
+    });
+
+    expect(title(container)?.textContent).toBe("Issue title");
   });
 });
 

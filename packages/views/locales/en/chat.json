@@ -24,6 +24,7 @@
     "send_failed_toast": "Failed to send message",
     "send_blocked_toast": "Message not sent — you no longer have permission to use this agent",
     "runtime_required_toast": "Message not sent — bind a runtime to this agent first",
+    "send_blocked_budget_exceeded": "Message not sent — this runtime has reached its cost budget; try again after the period resets",
     "attachment_bind_failed_toast": "Message sent, but files were not attached. Please try again in a moment.",
     "add_tooltip": "Add",
     "upload_file": "Image or files",

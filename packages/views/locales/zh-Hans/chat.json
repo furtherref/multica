@@ -23,6 +23,7 @@
     "send_failed_toast": "发送消息失败",
     "send_blocked_toast": "消息未发送——你已没有该智能体的使用权限",
     "runtime_required_toast": "消息未发送——请先为该智能体绑定运行时",
+    "send_blocked_budget_exceeded": "消息未发送——该运行时已达到费用额度上限，请在额度周期重置后重试",
     "attachment_bind_failed_toast": "消息已发送，但文件未能附加。请稍后重试。",
     "add_tooltip": "添加",
     "upload_file": "图片或文件",

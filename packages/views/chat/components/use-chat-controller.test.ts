@@ -3,6 +3,7 @@ import { QueryClient, type InfiniteData } from "@tanstack/react-query";
 import { chatKeys } from "@multica/core/chat/queries";
 import type { ChatMessage, ChatMessagesPage, ChatPendingTask } from "@multica/core/types";
 import {
+  chatSendFailureToast,
   hasInFlightPendingTask,
   isStillOnComposeTarget,
   planProjectContextChange,
@@ -209,5 +210,26 @@ describe("planProjectContextChange", () => {
         currentSession: null,
       }),
     ).toEqual({ kind: "setDraftProject", projectId: "project-x" });
+  });
+});
+
+// Every decided refusal has to name its own cause. The generic
+// send_failed_toast reads as "retry", and for all three named codes the retry
+// is refused again — budget_exceeded clears on a calendar period boundary, not
+// by trying harder. Canonical matrix for the mapping ChatWindow and ChatPage
+// both call; their suites only assert the wiring.
+describe("chatSendFailureToast", () => {
+  it("names each decided refusal instead of the generic failure", () => {
+    expect(chatSendFailureToast("invocation_not_allowed")).toBe("send_blocked_toast");
+    expect(chatSendFailureToast("agent_runtime_required")).toBe("runtime_required_toast");
+    expect(chatSendFailureToast("budget_exceeded")).toBe("send_blocked_budget_exceeded");
+  });
+
+  it("falls back to the generic failure for an unknown or absent code", () => {
+    expect(chatSendFailureToast(undefined)).toBe("send_failed_toast");
+    expect(chatSendFailureToast("")).toBe("send_failed_toast");
+    // A reason code this build does not know must not crash or silently map to
+    // a neighbouring message: the server can add codes ahead of the client.
+    expect(chatSendFailureToast("some_future_reason")).toBe("send_failed_toast");
   });
 });
