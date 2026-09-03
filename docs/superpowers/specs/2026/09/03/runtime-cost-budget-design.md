@@ -19,10 +19,11 @@ runs that would spend against it are refused until the period rolls over.
 - Blocking is a hard refusal at enqueue time. The run is not queued. Periods
   reset on the calendar; a refused run is not retried automatically, the user
   triggers it again.
-- Period boundaries follow the timezone from the user's Preferences page
-  (`user.timezone`). The runtime total uses the runtime owner's timezone. A
-  per-user budget uses that user's timezone. Missing timezone falls back to
-  the runtime's own timezone column, then UTC. Weeks start on Monday.
+- Period boundaries are computed in UTC for every scope: a day is the UTC
+  calendar day, a week starts Monday 00:00 UTC, a month starts on the first
+  at 00:00 UTC. User and runtime timezone preferences do not affect budgets.
+  The UI shows reset times in the viewer's timezone but labels the period
+  as UTC so a reset at 08:00 local is not read as a bug.
 - Spend that the server cannot price does not count. Provider-reported cost
   (`task_usage.cost_usd_ticks`) is authoritative. Rows without it are priced
   with the server rate table; models the server cannot price count as zero.
@@ -95,9 +96,9 @@ rows. Spend is computed on demand for each check and for the budget
 endpoint; no running counter is stored, so pricing table updates and late
 usage reports never drift from the enforcement figure.
 
-Period start is computed in Go: `pricing.PeriodStart(now, period, loc)`
-returns local midnight of today, of the current Monday, or of the first of
-the month, converted back to UTC. `ResetAt` is the next boundary.
+Period start is computed in Go: `pricing.PeriodStart(now, period)`
+returns UTC midnight of today, of the current Monday, or of the first of
+the month. `ResetAt` is the next boundary.
 
 ## Enforcement
 
@@ -138,11 +139,10 @@ start under the same transaction so the notice fires once per period.
 
 ```json
 {
-  "runtime": { "timezone": "Asia/Shanghai",
-               "daily": { "limit_usd": 20, "used_usd": 3.42,
+  "runtime": { "daily": { "limit_usd": 20, "used_usd": 3.42,
                           "period_start": "...", "reset_at": "...", "reached": false },
                "weekly": null, "monthly": null },
-  "users": [ { "user_id": "...", "timezone": "...", "daily": null, "weekly": {...}, "monthly": null } ],
+  "users": [ { "user_id": "...", "daily": null, "weekly": {...}, "monthly": null } ],
   "can_manage": true
 }
 ```
@@ -176,11 +176,20 @@ once. Rows that end up with no limits are deleted. The response is the
 `packages/views/runtimes/components`:
 
 - `BudgetSection` rendered in `runtime-detail.tsx` between the hero card and
-  the usage section. It shows one card per scope: a "Runtime total" row and
-  one row per user with a budget, each with a daily, weekly and monthly meter
-  (used / limit, progress bar, reset time in the owning timezone). Unlimited
-  periods render as a dash. Empty state says no limits are set. A "lower
-  bound" hint appears whenever the usage coverage warning already shows.
+  the usage section. It is one card with a column header (Scope, Daily,
+  Weekly, Monthly) and one row per scope: a "Runtime total" row and one row
+  per user with a budget, each with a daily, weekly and monthly meter
+  (used / limit, progress bar, reset time). Unlimited periods render as a
+  dash. Empty state says no limits are set. A "lower bound" hint appears
+  whenever the usage coverage warning already shows.
+- The card is collapsed by default and then shows only the "Runtime total"
+  row. A footer toggle row styled like the hero card's "Technical details"
+  row reads "Show N member budgets" and expands the user rows in place;
+  expanded it reads "Hide member budgets". When any hidden user row has a
+  reached limit, the collapsed toggle carries a "N limits reached" badge so
+  the block is visible without expanding. The open/closed state is
+  component state and is not persisted. With no user rows the toggle is
+  omitted.
 - `RuntimeBudgetDialog` opened from an "Edit budget" button visible only when
   `canManageRuntimeBudget`. It is a table with a fixed "Runtime total" row
   and member rows added through a member picker; three USD inputs per row;
@@ -194,8 +203,9 @@ Locale keys under `runtimes.budget.*` and the inbox and issues bundles in
 
 ## Testing
 
-- `server/internal/pricing`: period boundary table across timezones, DST and
-  month ends; cost estimate with priced, unpriced and provider-costed rows.
+- `server/internal/pricing`: period boundary table across week starts,
+  month ends and year ends in UTC; cost estimate with priced, unpriced and
+  provider-costed rows.
 - Service: enqueue refused for runtime total, refused for one user while
   another passes, passes with no rows, passes when spend is unpriced,
   notification fires once per period.
@@ -204,5 +214,6 @@ Locale keys under `runtimes.budget.*` and the inbox and issues bundles in
   and reached.
 - `packages/core`: schema malformed-response test, permission rule test,
   query key test.
-- `packages/views`: `BudgetSection` empty and populated states, button gated
-  by role, dialog save wiring.
+- `packages/views`: `BudgetSection` empty and populated states, collapsed by
+  default with the toggle expanding user rows and the reached badge, button
+  gated by role, dialog save wiring.
