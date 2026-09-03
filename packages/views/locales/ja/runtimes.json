@@ -496,7 +496,10 @@
       "invalid_amount": "小数点以下 2 桁までの正の USD 金額を入力してください。",
       "save_failed": "予算を保存できませんでした。",
       "cancel": "キャンセル",
-      "save": "保存"
-    }
+      "save": "保存",
+      "search_member": "メンバーを検索",
+      "no_member_results": "メンバーが見つかりません。"
+    },
+    "load_failed": "予算を読み込めませんでした。"
   }
 }

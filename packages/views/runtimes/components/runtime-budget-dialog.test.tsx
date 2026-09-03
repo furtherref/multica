@@ -51,9 +51,9 @@ describe("RuntimeBudgetDialog", () => {
   it("seeds inputs from the budget and saves the full replacement", async () => {
     const onOpenChange = vi.fn();
     wrap(<RuntimeBudgetDialog open onOpenChange={onOpenChange} runtimeId="rt-1" budget={budget} members={members} />);
-    expect((screen.getByLabelText("Runtime total daily") as HTMLInputElement).value).toBe("60");
-    fireEvent.change(screen.getByLabelText("Runtime total monthly"), { target: { value: "500" } });
-    fireEvent.change(screen.getByLabelText("张强 daily"), { target: { value: "" } });
+    expect((screen.getByLabelText("Runtime total Daily") as HTMLInputElement).value).toBe("60");
+    fireEvent.change(screen.getByLabelText("Runtime total Monthly"), { target: { value: "500" } });
+    fireEvent.change(screen.getByLabelText("张强 Daily"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
     expect(mutateAsync).toHaveBeenCalledWith({
@@ -70,14 +70,14 @@ describe("RuntimeBudgetDialog", () => {
     wrap(<RuntimeBudgetDialog open onOpenChange={vi.fn()} runtimeId="rt-1" budget={budget} members={members} />);
     // The seeded row carries daily 20 and monthly 200; both must go before the
     // row counts as empty. Test 1 above covers the partial clear that keeps it.
-    fireEvent.change(screen.getByLabelText("张强 daily"), { target: { value: "" } });
-    fireEvent.change(screen.getByLabelText("张强 monthly"), { target: { value: "" } });
-    fireEvent.change(screen.getByLabelText("Runtime total daily"), { target: { value: "-5" } });
+    fireEvent.change(screen.getByLabelText("张强 Daily"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("张强 Monthly"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Runtime total Daily"), { target: { value: "-5" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(mutateAsync).not.toHaveBeenCalled();
     expect(screen.getByText("Enter a positive USD amount with at most two decimals.")).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText("Runtime total daily"), { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText("Runtime total Daily"), { target: { value: "5" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
     expect(mutateAsync.mock.calls[0]?.[0]).toEqual({
@@ -88,8 +88,50 @@ describe("RuntimeBudgetDialog", () => {
 
   it("adds a member row from the picker", () => {
     wrap(<RuntimeBudgetDialog open onOpenChange={vi.fn()} runtimeId="rt-1" budget={budget} members={members} />);
-    fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+    const trigger = screen.getByRole("button", { name: "Add member" });
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
     fireEvent.click(screen.getByRole("option", { name: "Li Wei" }));
-    expect(screen.getByLabelText("Li Wei daily")).toBeTruthy();
+    expect(screen.getByLabelText("Li Wei Daily")).toBeTruthy();
+  });
+
+  it("keeps in-progress edits when the budget refetches while the dialog stays open", () => {
+    const { rerender } = wrap(
+      <RuntimeBudgetDialog open onOpenChange={vi.fn()} runtimeId="rt-1" budget={budget} members={members} />,
+    );
+    fireEvent.change(screen.getByLabelText("Runtime total Daily"), { target: { value: "77" } });
+
+    // A background refetch hands down a fresh object with the same limits but
+    // moved `used_usd`. Re-seeding on that would discard the typed "77".
+    const refetched: RuntimeCostBudget = {
+      ...budget,
+      runtime: {
+        daily: { ...period(60), used_usd: 41.5 },
+        weekly: { ...period(300), used_usd: 122.75 },
+        monthly: null,
+      },
+    };
+    rerender(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <RuntimeBudgetDialog open onOpenChange={vi.fn()} runtimeId="rt-1" budget={refetched} members={members} />
+      </I18nProvider>,
+    );
+
+    expect((screen.getByLabelText("Runtime total Daily") as HTMLInputElement).value).toBe("77");
+  });
+
+  it("closes only the member popover on Escape, leaving the dialog open", () => {
+    const onOpenChange = vi.fn();
+    wrap(<RuntimeBudgetDialog open onOpenChange={onOpenChange} runtimeId="rt-1" budget={budget} members={members} />);
+    const trigger = screen.getByRole("button", { name: "Add member" });
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    // Escape must originate inside the popup, where a real browser puts focus
+    // once it opens. jsdom leaves `document.activeElement` on the trigger
+    // because Base UI moves focus asynchronously, so target the search box.
+    fireEvent.keyDown(screen.getByPlaceholderText("Search members"), { key: "Escape" });
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(onOpenChange).not.toHaveBeenCalled();
   });
 });

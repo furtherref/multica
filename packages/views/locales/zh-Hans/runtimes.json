@@ -496,7 +496,10 @@
       "invalid_amount": "请输入最多两位小数的正数美元金额。",
       "save_failed": "额度保存失败。",
       "cancel": "取消",
-      "save": "保存"
-    }
+      "save": "保存",
+      "search_member": "搜索成员",
+      "no_member_results": "未找到成员。"
+    },
+    "load_failed": "额度加载失败。"
   }
 }

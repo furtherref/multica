@@ -515,7 +515,10 @@
       "invalid_amount": "Enter a positive USD amount with at most two decimals.",
       "save_failed": "Could not save the budget.",
       "cancel": "Cancel",
-      "save": "Save"
-    }
+      "save": "Save",
+      "search_member": "Search members",
+      "no_member_results": "No members found."
+    },
+    "load_failed": "Could not load the budget."
   }
 }

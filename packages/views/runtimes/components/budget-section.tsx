@@ -15,6 +15,7 @@ import { useCurrentMember } from "@multica/core/permissions/use-current-member";
 import { canManageRuntimeBudget } from "@multica/core/permissions";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { Button } from "@multica/ui/components/ui/button";
+import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { cn } from "@multica/ui/lib/utils";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { useT } from "../../i18n";
@@ -111,7 +112,11 @@ function ScopeRow({ scope, member, isRuntime }: { scope: RuntimeBudgetScope; mem
 export function BudgetSection({ runtime }: { runtime: AgentRuntime }) {
   const { t } = useT("runtimes");
   const wsId = useWorkspaceId();
-  const { data: budget } = useQuery(runtimeCostBudgetOptions(runtime.id));
+  const {
+    data: budget,
+    isLoading: budgetLoading,
+    isError: budgetFailed,
+  } = useQuery(runtimeCostBudgetOptions(runtime.id));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { userId, role } = useCurrentMember(wsId);
   const [expanded, setExpanded] = useState(false);
@@ -139,7 +144,19 @@ export function BudgetSection({ runtime }: { runtime: AgentRuntime }) {
         )}
       </div>
 
-      {!hasAny ? (
+      {/* "No limits set" is a claim about the server's answer, so it may only
+          render once the query resolved. While it is in flight or failed the
+          card says so instead. */}
+      {budgetLoading ? (
+        <div className="flex flex-col gap-3 px-4 py-5">
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-10 rounded-md" />
+        </div>
+      ) : budgetFailed ? (
+        <p className="px-4 py-7 text-center text-caption text-muted-foreground">
+          {t(($) => $.budget.load_failed)}
+        </p>
+      ) : !hasAny ? (
         <div className="flex flex-col items-center gap-1 px-4 py-7">
           <p className="text-body font-medium">{t(($) => $.budget.empty_title)}</p>
           <p className="text-caption text-muted-foreground">{t(($) => $.budget.empty_body)}</p>

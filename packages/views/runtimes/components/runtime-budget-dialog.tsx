@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Server, X } from "lucide-react";
 import type {
   MemberWithUser,
@@ -20,6 +20,18 @@ import {
   DialogTitle,
 } from "@multica/ui/components/ui/dialog";
 import { Input } from "@multica/ui/components/ui/input";
+import {
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@multica/ui/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@multica/ui/components/ui/popover";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { useT } from "../../i18n";
 import { budgetToInput, parseBudgetField, scopeIsEmpty } from "../budget";
@@ -60,10 +72,16 @@ export function RuntimeBudgetDialog({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Re-seed whenever the dialog opens so a stale draft never overwrites a
-  // budget another admin saved meanwhile.
+  // Re-seed on the closed -> open transition only, so a stale draft never
+  // overwrites a budget another admin saved meanwhile. It must NOT re-seed on
+  // `seed` identity alone: `seed` derives from the budget query, whose
+  // `used_usd` moves on every refetch (30s staleTime, window refocus), and
+  // re-seeding then would wipe whatever the admin has typed.
+  const wasOpen = useRef(open);
   useEffect(() => {
-    if (!open) return;
+    const justOpened = open && !wasOpen.current;
+    wasOpen.current = open;
+    if (!justOpened) return;
     setRuntimeDraft(toDraft(seed.runtime ?? EMPTY_LIMITS));
     setUserDrafts(seed.users.map((u) => ({ user_id: u.user_id ?? "", ...toDraft(u) })));
     setError(null);
@@ -105,12 +123,20 @@ export function RuntimeBudgetDialog({
     }
   };
 
+  // The accessible name is read aloud, so both halves must be localized —
+  // never the raw `daily` / `weekly` / `monthly` union key.
+  const periodLabel: Record<RuntimeBudgetPeriodKey, string> = {
+    daily: t(($) => $.budget.col_daily),
+    weekly: t(($) => $.budget.col_weekly),
+    monthly: t(($) => $.budget.col_monthly),
+  };
+
   const renderInputs = (label: string, draft: Draft, onChange: (p: RuntimeBudgetPeriodKey, v: string) => void) =>
     PERIODS.map((p) => (
       <Input
         key={p}
         inputMode="decimal"
-        aria-label={`${label} ${p}`}
+        aria-label={`${label} ${periodLabel[p]}`}
         placeholder={t(($) => $.budget.dialog.no_limit_placeholder)}
         value={draft[p]}
         onChange={(e) => onChange(p, e.target.value)}
@@ -178,30 +204,42 @@ export function RuntimeBudgetDialog({
           })}
 
           <div className="flex items-center justify-between gap-2 border-t px-1 pt-2">
-            <div className="relative">
-              <Button type="button" variant="outline" size="sm" onClick={() => setPickerOpen((v) => !v)} disabled={available.length === 0}>
-                <Plus className="h-3.5 w-3.5" />
-                {t(($) => $.budget.dialog.add_member)}
-              </Button>
-              {pickerOpen && (
-                <ul role="listbox" className="absolute left-0 top-full z-10 mt-1 max-h-56 w-64 overflow-y-auto rounded-lg border bg-popover p-1 shadow-md">
-                  {available.map((m) => (
-                    <li
-                      key={m.user_id}
-                      role="option"
-                      aria-selected={false}
-                      className="cursor-pointer rounded-md px-2 py-1.5 text-body hover:bg-muted"
-                      onClick={() => {
-                        setUserDrafts((all) => [...all, { user_id: m.user_id, daily: "", weekly: "", monthly: "" }]);
-                        setPickerOpen(false);
-                      }}
-                    >
-                      {m.name}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+            {/* Popover + Command rather than a hand-rolled listbox: it gives
+                keyboard navigation, `aria-expanded` on the trigger, outside
+                click dismissal, and an Escape that closes only the popover
+                instead of the surrounding dialog. */}
+            <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+              <PopoverTrigger
+                render={
+                  <Button type="button" variant="outline" size="sm" disabled={available.length === 0}>
+                    <Plus className="h-3.5 w-3.5" />
+                    {t(($) => $.budget.dialog.add_member)}
+                  </Button>
+                }
+              />
+              <PopoverContent align="start" className="w-64 p-0">
+                <Command>
+                  <CommandInput placeholder={t(($) => $.budget.dialog.search_member)} />
+                  <CommandList className="max-h-56">
+                    <CommandEmpty>{t(($) => $.budget.dialog.no_member_results)}</CommandEmpty>
+                    {available.map((m) => (
+                      <CommandItem
+                        key={m.user_id}
+                        value={m.name}
+                        className="flex items-center gap-2"
+                        onSelect={() => {
+                          setUserDrafts((all) => [...all, { user_id: m.user_id, daily: "", weekly: "", monthly: "" }]);
+                          setPickerOpen(false);
+                        }}
+                      >
+                        <ActorAvatar actorType="member" actorId={m.user_id} size="sm" />
+                        <span className="truncate">{m.name}</span>
+                      </CommandItem>
+                    ))}
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
             <span className="text-micro text-muted-foreground">{t(($) => $.budget.dialog.clear_hint)}</span>
           </div>
 

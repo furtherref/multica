@@ -496,7 +496,10 @@
       "invalid_amount": "소수점 두 자리 이하의 양수 USD 금액을 입력하세요.",
       "save_failed": "예산을 저장하지 못했습니다.",
       "cancel": "취소",
-      "save": "저장"
-    }
+      "save": "저장",
+      "search_member": "멤버 검색",
+      "no_member_results": "멤버를 찾을 수 없습니다."
+    },
+    "load_failed": "예산을 불러오지 못했습니다."
   }
 }

@@ -13,6 +13,8 @@ const TEST_RESOURCES = { en: { common: enCommon, runtimes: enRuntimes } };
 const budgetState = vi.hoisted(() => ({
   data: undefined as RuntimeCostBudget | undefined,
   role: "member" as "owner" | "admin" | "member",
+  isLoading: false,
+  isError: false,
 }));
 
 vi.mock("@multica/core/runtimes/queries", () => ({
@@ -23,13 +25,20 @@ vi.mock("@multica/core/workspace/queries", () => ({
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQuery: (opts: { queryKey: unknown[] }) => {
-    if (opts.queryKey[1] === "budget") return { data: budgetState.data, isLoading: false };
+    if (opts.queryKey[1] === "budget") {
+      return {
+        data: budgetState.data,
+        isLoading: budgetState.isLoading,
+        isError: budgetState.isError,
+      };
+    }
     return {
       data: [
         { user_id: "u-zhang", name: "张强", role: "owner", email: "", avatar_url: null },
         { user_id: "u-li", name: "Li Wei", role: "member", email: "", avatar_url: null },
       ],
       isLoading: false,
+      isError: false,
     };
   },
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
@@ -61,6 +70,22 @@ describe("BudgetSection", () => {
   beforeEach(() => {
     budgetState.data = undefined;
     budgetState.role = "member";
+    budgetState.isLoading = false;
+    budgetState.isError = false;
+  });
+
+  it("shows a skeleton instead of the empty state while the budget is loading", () => {
+    budgetState.isLoading = true;
+    const { container } = wrap(<BudgetSection runtime={runtime} />);
+    expect(screen.queryByText("No limits set")).toBeNull();
+    expect(container.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThan(0);
+  });
+
+  it("shows a load error instead of the empty state when the budget query fails", () => {
+    budgetState.isError = true;
+    wrap(<BudgetSection runtime={runtime} />);
+    expect(screen.queryByText("No limits set")).toBeNull();
+    expect(screen.getByText("Could not load the budget.")).toBeTruthy();
   });
 
   it("renders the empty state and hides the edit button for members", () => {
