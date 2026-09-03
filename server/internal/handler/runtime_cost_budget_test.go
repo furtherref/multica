@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -141,6 +142,33 @@ func TestGetRuntimeCostBudgetMemberSeesCanManageFalse(t *testing.T) {
 	testutil.Call(t, testHandler.GetRuntimeCostBudget, budgetRequest(t, memberUserID, http.MethodGet, runtimeID, nil)).Want(http.StatusOK).JSON(&out)
 	if out["can_manage"] != false {
 		t.Fatalf("can_manage = %#v, want false", out["can_manage"])
+	}
+}
+
+// A profile delete removes its runtime rows in bulk through
+// DeleteAgentRuntimesByProfile rather than one DeleteAgentRuntime per runtime,
+// so it needs its own budget cleanup: runtime_cost_budget carries no foreign
+// key, and rows keyed by a deleted runtime_id are unreachable afterwards.
+func TestDeleteRuntimeProfileRemovesRuntimeBudgets(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	profileID := insertRuntimeProfileFixture(t, ctx, "Budget Profile", "codex", "budget-profile-codex")
+	runtimeID := insertProfileRuntimeFixture(t, ctx, profileID, "Budget Profile Runtime", "codex")
+	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM runtime_cost_budget WHERE runtime_id = $1`, runtimeID) })
+
+	body := map[string]any{"runtime": map[string]any{"daily_usd": 3}}
+	testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, testUserID, http.MethodPut, runtimeID, body)).Want(http.StatusOK)
+
+	req := withURLParams(
+		newRequest(http.MethodDelete, "/api/workspaces/"+testWorkspaceID+"/runtime-profiles/"+profileID, nil),
+		"id", testWorkspaceID, "profileId", profileID,
+	)
+	testutil.Call(t, testHandler.DeleteRuntimeProfile, req).Want(http.StatusNoContent)
+
+	if n := dbfx.Count(t, `SELECT count(*) FROM runtime_cost_budget WHERE runtime_id = $1`, runtimeID); n != 0 {
+		t.Fatalf("budget rows survived runtime profile delete: %d", n)
 	}
 }
 
