@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { setCurrentWorkspace } from "../platform/workspace-storage";
 import { configStore } from "../config";
 import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, clientErrorMessage } from "./client";
-import { EMPTY_PLUGIN_PACKAGE_LIST, EMPTY_PLUGIN_PREVIEW, EMPTY_PLUGIN_SURFACE_LAUNCH } from "./schemas";
+import {
+  EMPTY_PLUGIN_PACKAGE_LIST,
+  EMPTY_PLUGIN_PREVIEW,
+  EMPTY_PLUGIN_SURFACE_LAUNCH,
+  EMPTY_RUNTIME_COST_BUDGET,
+} from "./schemas";
 
 afterEach(() => {
   setCurrentWorkspace(null, null);
@@ -2188,6 +2193,65 @@ describe("ApiClient model discovery response schema", () => {
  * every child kept notifying. An unknown path 404s, which surfaces as a
  * rejected mutation the user can act on.
  */
+describe("ApiClient runtime cost budget writes", () => {
+  const budget = {
+    runtime: {
+      daily: {
+        limit_usd: 20,
+        used_usd: 3.42,
+        period_start: "2026-09-03T00:00:00Z",
+        reset_at: "2026-09-04T00:00:00Z",
+        reached: false,
+      },
+      weekly: null,
+      monthly: null,
+    },
+    users: [],
+    can_manage: true,
+  };
+
+  // The server saves the budget but withholds the spend from a writer who
+  // cannot READ the runtime (an admin on another member's private machine):
+  // 204, no body. The client must answer the empty budget rather than throw or
+  // hand the caller `undefined` — the mutation's invalidation refetches through
+  // GET, which is the single read gate.
+  it("answers the empty budget when the write returns 204 with no body", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+    );
+
+    const result = await new ApiClient("https://api.example.test")
+      .updateRuntimeCostBudget("rt-1", {
+        runtime: { daily_usd: 20, weekly_usd: null, monthly_usd: null },
+        users: [],
+      });
+
+    expect(result).toEqual(EMPTY_RUNTIME_COST_BUDGET);
+  });
+
+  it("still parses the body when the writer may read the runtime", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(budget), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const result = await new ApiClient("https://api.example.test")
+      .updateRuntimeCostBudget("rt-1", {
+        runtime: { daily_usd: 20, weekly_usd: null, monthly_usd: null },
+        users: [],
+      });
+
+    expect(result.can_manage).toBe(true);
+    expect(result.runtime?.daily?.limit_usd).toBe(20);
+  });
+});
+
 describe("ApiClient unsubscribe endpoints", () => {
   function stubOK() {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));

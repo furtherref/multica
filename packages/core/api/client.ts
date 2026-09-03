@@ -2234,6 +2234,14 @@ export class ApiClient {
   }
 
   // Full replace: scopes missing from `input` are removed server-side.
+  //
+  // The write is workspace governance, but the echoed body is runtime data: an
+  // admin writing a budget on another member's PRIVATE runtime may not read its
+  // spend, so the server saves the budget and answers 204 with no body rather
+  // than handing back figures GET would refuse. `this.fetch` maps 204 to
+  // undefined (same as `deleteRuntime`), so answer the empty budget — the
+  // mutation invalidates the budget query and the refetch renders whatever this
+  // caller is actually allowed to see.
   async updateRuntimeCostBudget(
     runtimeId: string,
     input: RuntimeCostBudgetInput,
@@ -2242,6 +2250,7 @@ export class ApiClient {
       method: "PUT",
       body: JSON.stringify(input),
     });
+    if (raw === undefined || raw === null) return EMPTY_RUNTIME_COST_BUDGET;
     return parseWithFallback<RuntimeCostBudget>(raw, RuntimeCostBudgetSchema, EMPTY_RUNTIME_COST_BUDGET, {
       endpoint: "PUT /api/runtimes/:id/budget",
     });

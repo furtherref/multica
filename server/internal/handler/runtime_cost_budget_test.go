@@ -185,3 +185,38 @@ func TestDeleteRuntimeRemovesItsBudgets(t *testing.T) {
 		t.Fatalf("budget rows survived runtime delete: %d", n)
 	}
 }
+
+// A private runtime is readable only by its owner (canUseRuntimeForAgent), so
+// the PUT response must not become the second way an admin reads its spend:
+// the write still succeeds — budgets are workspace governance — but the body
+// that GET would refuse is withheld and the caller gets 204.
+func TestPutRuntimeCostBudgetHidesPrivateRuntimeSpendFromNonReaders(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	// Default fixture visibility is private and the owner is testUserID, the
+	// workspace owner — so the admin below can write it but cannot read it.
+	runtimeID := dbfx.Runtime(t, "budget-rt-private")
+	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM runtime_cost_budget WHERE runtime_id = $1`, runtimeID) })
+	adminUserID := dbfx.User(t, "Budget Private Admin", "budget-private-admin@example.com")
+	dbfx.Member(t, testWorkspaceID, adminUserID, "admin")
+	body := map[string]any{"runtime": map[string]any{"daily_usd": 12}, "users": []any{}}
+
+	// The admin's write lands...
+	res := testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, adminUserID, http.MethodPut, runtimeID, body)).Want(http.StatusNoContent)
+	if got := res.Text(); got != "" {
+		t.Fatalf("204 carried a body: %q", got)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM runtime_cost_budget WHERE runtime_id = $1`, runtimeID); n != 1 {
+		t.Fatalf("rows after the admin PUT = %d, want 1", n)
+	}
+	// ...and GET stays the single read gate that refuses them.
+	testutil.Call(t, testHandler.GetRuntimeCostBudget, budgetRequest(t, adminUserID, http.MethodGet, runtimeID, nil)).Want(http.StatusNotFound)
+
+	// The runtime owner reads their own machine, so they still get the body.
+	var out map[string]any
+	testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, testUserID, http.MethodPut, runtimeID, body)).Want(http.StatusOK).JSON(&out)
+	if out["runtime"].(map[string]any)["daily"].(map[string]any)["limit_usd"].(float64) != 12 {
+		t.Fatalf("owner PUT body = %#v", out)
+	}
+}

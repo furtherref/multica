@@ -231,5 +231,14 @@ func (h *Handler) PutRuntimeCostBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save runtime budget")
 		return
 	}
+	// The write is workspace governance, but the GET body is runtime data:
+	// requireRuntimeReadAccess 404s an admin on another member's private
+	// runtime, so echoing the spend here would hand out exactly the figures
+	// that gate withholds. Answer 204 for a caller who could not GET it; the
+	// client refetches through GET, which stays the single read gate.
+	if !canUseRuntimeForAgent(member, rt) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	h.writeRuntimeBudget(w, r, rt.ID, member)
 }

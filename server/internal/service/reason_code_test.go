@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/dispatch"
+	"github.com/multica-ai/multica/server/internal/pricing"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -24,6 +25,17 @@ func TestDispatchFailReasonCode(t *testing.T) {
 	wrapped := fmt.Errorf("dispatch create_issue: enqueue task for issue: %w", ErrAttributionFailClosed)
 	if got := dispatchFailReasonCode(wrapped); got != dispatch.ReasonAttributionBlocked {
 		t.Errorf("wrapped fail-closed: got %q, want attribution_blocked", got)
+	}
+	// A spent runtime cost budget is its own outcome: the refusal is expected
+	// and self-explanatory, and calling it internal_error would send the user
+	// looking for a fault instead of at the limit that stopped the run. Typed
+	// via errors.As, and it must survive the enqueue wrap the same way.
+	budget := &RuntimeBudgetExceededError{Scope: RuntimeBudgetScopeRuntime, Period: pricing.PeriodDaily}
+	if got := dispatchFailReasonCode(budget); got != dispatch.ReasonBudgetExceeded {
+		t.Errorf("bare budget refusal: got %q, want budget_exceeded", got)
+	}
+	if got := dispatchFailReasonCode(fmt.Errorf("dispatch create_issue: enqueue task for issue: %w", budget)); got != dispatch.ReasonBudgetExceeded {
+		t.Errorf("wrapped budget refusal: got %q, want budget_exceeded", got)
 	}
 	if got := dispatchFailReasonCode(errors.New("some other failure")); got != dispatch.ReasonInternalError {
 		t.Errorf("generic error: got %q, want internal_error", got)

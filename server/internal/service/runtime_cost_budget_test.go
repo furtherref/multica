@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -377,6 +378,33 @@ func TestRuntimeBudgetNoticeReachesBlockedUserAndOwnerOnce(t *testing.T) {
 	}
 }
 
+// seedSecondOwnerAgent adds a second workspace member and an agent they own on
+// runtimeID, so a refusal can name a blocked person who is NOT the runtime
+// owner. Returns the new user's and agent's ids.
+func seedSecondOwnerAgent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, workspaceID, runtimeID string) (string, string) {
+	t.Helper()
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO "user" (name, email) VALUES ('Attr User 2', $1) RETURNING id`,
+		fmt.Sprintf("attr2-%d@multica.test", time.Now().UnixNano())).Scan(&userID); err != nil {
+		t.Fatalf("seed second user: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, userID) })
+	if _, err := pool.Exec(ctx, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'member')`,
+		workspaceID, userID); err != nil {
+		t.Fatalf("seed second member: %v", err)
+	}
+	var agentID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent (workspace_id, name, runtime_mode, runtime_config, runtime_id, visibility,
+			max_concurrent_tasks, owner_id, instructions, custom_env, custom_args)
+		VALUES ($1, 'attr-agent-2', 'cloud', '{}'::jsonb, $2, 'workspace', 1, $3, '', '{}'::jsonb, '[]'::jsonb)
+		RETURNING id`, workspaceID, runtimeID, userID).Scan(&agentID); err != nil {
+		t.Fatalf("seed second agent: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID) })
+	return userID, agentID
+}
+
 // TestRuntimeBudgetNoticeReachesDistinctBlockedUserAndOwner covers the case
 // where the blocked user and the runtime owner are different people: both
 // must be notified, as two separate inbox rows.
@@ -392,27 +420,7 @@ func TestRuntimeBudgetNoticeReachesDistinctBlockedUserAndOwner(t *testing.T) {
 	runtimeID := util.UUIDToString(firstAgent.RuntimeID)
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 
-	// A second member, owning a second agent on the same runtime as the
-	// fixture's runtime owner.
-	var secondUserID string
-	if err := pool.QueryRow(ctx, `INSERT INTO "user" (name, email) VALUES ('Attr User 2', $1) RETURNING id`,
-		fmt.Sprintf("attr2-%d@multica.test", time.Now().UnixNano())).Scan(&secondUserID); err != nil {
-		t.Fatalf("seed second user: %v", err)
-	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, secondUserID) })
-	if _, err := pool.Exec(ctx, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'member')`,
-		workspaceID, secondUserID); err != nil {
-		t.Fatalf("seed second member: %v", err)
-	}
-	var secondAgentID string
-	if err := pool.QueryRow(ctx, `
-		INSERT INTO agent (workspace_id, name, runtime_mode, runtime_config, runtime_id, visibility,
-			max_concurrent_tasks, owner_id, instructions, custom_env, custom_args)
-		VALUES ($1, 'attr-agent-2', 'cloud', '{}'::jsonb, $2, 'workspace', 1, $3, '', '{}'::jsonb, '[]'::jsonb)
-		RETURNING id`, workspaceID, runtimeID, secondUserID).Scan(&secondAgentID); err != nil {
-		t.Fatalf("seed second agent: %v", err)
-	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, secondAgentID) })
+	secondUserID, secondAgentID := seedSecondOwnerAgent(t, ctx, pool, workspaceID, runtimeID)
 
 	daily := 5.0
 	seedBudget(t, ctx, q, workspaceID, runtimeID, &secondUserID, &daily, nil, nil)
@@ -449,5 +457,85 @@ func TestRuntimeBudgetNoticeReachesDistinctBlockedUserAndOwner(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("total notices = %d, want 2 (blocked user + runtime owner)", n)
+	}
+}
+
+// TestRuntimeBudgetNoticeRuntimeScopeReachesBlockedOwnerAndRuntimeOwner is the
+// regression for a runtime-TOTAL refusal: that row has no user_id, so a
+// recipient set keyed on the exceeded scope's user id would notify only the
+// runtime owner and leave the person whose run was actually refused with
+// nothing. The blocked agent's owner is the first recipient in both scopes.
+func TestRuntimeBudgetNoticeRuntimeScopeReachesBlockedOwnerAndRuntimeOwner(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, ownerID, firstAgentID, issueID := seedAttributionFixture(t, pool)
+	firstAgent, err := q.GetAgent(ctx, util.MustParseUUID(firstAgentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeID := util.UUIDToString(firstAgent.RuntimeID)
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+
+	secondUserID, secondAgentID := seedSecondOwnerAgent(t, ctx, pool, workspaceID, runtimeID)
+
+	// Runtime total: nil user id, so it blocks every agent on the runtime.
+	daily := 5.0
+	seedBudget(t, ctx, q, workspaceID, runtimeID, nil, &daily, nil, nil)
+	seedSpend(t, ctx, pool, secondAgentID, issueID, 6, now.Add(-time.Hour))
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM inbox_item WHERE workspace_id = $1 AND type = 'runtime_budget_exceeded'`, workspaceID)
+	})
+
+	secondAgent, err := q.GetAgent(ctx, util.MustParseUUID(secondAgentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	var exceeded *RuntimeBudgetExceededError
+	if err := svc.checkRuntimeCostBudget(ctx, q, secondAgent, now); !errors.As(err, &exceeded) || exceeded.Scope != RuntimeBudgetScopeRuntime {
+		t.Fatalf("expected runtime-scope refusal, got %v", err)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM inbox_item WHERE workspace_id = $1 AND type = 'runtime_budget_exceeded' AND recipient_id = $2`, workspaceID, secondUserID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("blocked agent owner notices = %d, want exactly 1", n)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM inbox_item WHERE workspace_id = $1 AND type = 'runtime_budget_exceeded' AND recipient_id = $2`, workspaceID, ownerID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("runtime owner notices = %d, want exactly 1", n)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM inbox_item WHERE workspace_id = $1 AND type = 'runtime_budget_exceeded'`, workspaceID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("total notices = %d, want 2 (blocked agent owner + runtime owner)", n)
+	}
+
+	// The runtime scope has no user, so details must omit user_id entirely
+	// rather than carry a JSON null: inbox details is a flat string map.
+	var raw []byte
+	if err := pool.QueryRow(ctx, `SELECT details FROM inbox_item WHERE workspace_id = $1 AND type = 'runtime_budget_exceeded' AND recipient_id = $2`, workspaceID, secondUserID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var details map[string]any
+	if err := json.Unmarshal(raw, &details); err != nil {
+		t.Fatalf("details is not an object: %v (%s)", err, raw)
+	}
+	if _, present := details["user_id"]; present {
+		t.Fatalf("runtime-scope details carried user_id: %s", raw)
+	}
+	for _, key := range []string{"scope", "period", "runtime_id", "used_usd", "limit_usd", "period_start", "reset_at"} {
+		if _, ok := details[key].(string); !ok {
+			t.Fatalf("details.%s = %#v, want a string (InboxItem.details is Record<string, string>)", key, details[key])
+		}
+	}
+	if details["used_usd"] != "6.00" || details["limit_usd"] != "5.00" {
+		t.Fatalf("details amounts = %#v / %#v, want \"6.00\" / \"5.00\"", details["used_usd"], details["limit_usd"])
 	}
 }

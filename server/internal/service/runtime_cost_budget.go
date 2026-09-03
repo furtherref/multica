@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -133,7 +134,7 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 				"used_ticks", exceeded.UsedTicks, "limit_ticks", exceeded.LimitTicks)
 			// s.Queries, never q: q may be the caller's transaction, and the
 			// refusal returned below always rolls that transaction back.
-			s.notifyRuntimeBudgetExceeded(ctx, s.Queries, row, exceeded)
+			s.notifyRuntimeBudgetExceeded(ctx, s.Queries, row, exceeded, agent.OwnerID)
 			return exceeded
 		}
 	}
@@ -141,8 +142,12 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 }
 
 // notifyRuntimeBudgetExceeded creates one "limit reached" inbox item per
-// period for the scope that refused the run. Recipients: the blocked user
-// (per-user scope) and the runtime owner, de-duplicated. The recipient set
+// period for the scope that refused the run. Recipients: the owner of the
+// agent whose run was refused (blockedOwnerID) and the runtime owner,
+// de-duplicated. Both scopes use that same set. Keying the first recipient on
+// exceeded.UserID instead would notify nobody but the runtime owner for a
+// runtime-total refusal, because that scope's row has no user_id — and the
+// person whose run was refused is exactly who needs to know. The recipient set
 // and notice details are built first, and MarkRuntimeCostBudgetNotified only
 // claims the period once a recipient is known — an empty recipient set (a
 // runtime-scope budget on a runtime with no owner) or a lookup/marshal
@@ -156,15 +161,15 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 // marker written on that handle would be discarded with it. Callers pass the
 // auto-commit s.Queries, and the implementation must keep using the handle it is
 // given rather than reaching for a transaction of the enqueue.
-func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Queries, row db.RuntimeCostBudget, exceeded *RuntimeBudgetExceededError) {
+func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Queries, row db.RuntimeCostBudget, exceeded *RuntimeBudgetExceededError, blockedOwnerID pgtype.UUID) {
 	rt, err := RuntimeLookup{Queries: q, Metrics: s.Metrics, Source: obsmetrics.RuntimeLookupSourceBudgetNotice}.Get(ctx, row.RuntimeID)
 	if err != nil {
 		slog.Warn("runtime budget notice: load runtime failed", "runtime_id", util.UUIDToString(row.RuntimeID), "error", err)
 		return
 	}
 	recipients := map[string]pgtype.UUID{}
-	if exceeded.UserID.Valid {
-		recipients[util.UUIDToString(exceeded.UserID)] = exceeded.UserID
+	if blockedOwnerID.Valid {
+		recipients[util.UUIDToString(blockedOwnerID)] = blockedOwnerID
 	}
 	if rt.OwnerID.Valid {
 		recipients[util.UUIDToString(rt.OwnerID)] = rt.OwnerID
@@ -174,17 +179,22 @@ func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Que
 			"runtime_id", util.UUIDToString(row.RuntimeID), "scope", exceeded.Scope, "period", exceeded.Period)
 		return
 	}
-	var userID *string
-	if exceeded.UserID.Valid {
-		v := util.UUIDToString(exceeded.UserID)
-		userID = &v
+	// inbox_item.details is a flat string map on the wire (InboxItem.details is
+	// Record<string, string> in packages/core/types/inbox.ts), so amounts are
+	// formatted here and an absent user_id is omitted rather than sent as null.
+	detailFields := map[string]string{
+		"scope":        string(exceeded.Scope),
+		"period":       string(exceeded.Period),
+		"runtime_id":   util.UUIDToString(row.RuntimeID),
+		"used_usd":     strconv.FormatFloat(pricing.TicksToUSD(exceeded.UsedTicks), 'f', 2, 64),
+		"limit_usd":    strconv.FormatFloat(pricing.TicksToUSD(exceeded.LimitTicks), 'f', 2, 64),
+		"period_start": exceeded.PeriodStart.UTC().Format(time.RFC3339),
+		"reset_at":     exceeded.ResetAt.UTC().Format(time.RFC3339),
 	}
-	details, err := json.Marshal(map[string]any{
-		"scope": exceeded.Scope, "period": exceeded.Period,
-		"runtime_id": util.UUIDToString(row.RuntimeID), "user_id": userID,
-		"used_usd": pricing.TicksToUSD(exceeded.UsedTicks), "limit_usd": pricing.TicksToUSD(exceeded.LimitTicks),
-		"period_start": exceeded.PeriodStart.UTC().Format(time.RFC3339), "reset_at": exceeded.ResetAt.UTC().Format(time.RFC3339),
-	})
+	if exceeded.UserID.Valid {
+		detailFields["user_id"] = util.UUIDToString(exceeded.UserID)
+	}
+	details, err := json.Marshal(detailFields)
 	if err != nil {
 		slog.Warn("runtime budget notice: marshal details failed", "error", err)
 		return

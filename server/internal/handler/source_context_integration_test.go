@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/entitlement/entitlementtest"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/pricing"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -34,6 +36,36 @@ func TestWriteSourceContextErrorHidesInternalDetails(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "failed to capture source context") {
 		t.Fatalf("generic source-context error missing: %s", recorder.Body.String())
+	}
+}
+
+// A spent runtime cost budget reaching the source-context capture path is a
+// refusal the caller can act on, not a capture failure: it must answer 409 with
+// the structured budget_exceeded reason code rather than falling through to the
+// generic 500 above.
+func TestWriteSourceContextErrorMapsBudgetRefusal(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	err := fmt.Errorf("enqueue quick create task: %w", &service.RuntimeBudgetExceededError{
+		Scope: service.RuntimeBudgetScopeUser, Period: pricing.PeriodWeekly,
+	})
+	(&Handler{}).writeSourceContextError(recorder, err, service.SourceContextLimitUsage{})
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+	var body struct {
+		ReasonCode string `json:"reason_code"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v (%s)", err, recorder.Body.String())
+	}
+	if body.ReasonCode != string(ReasonBudgetExceeded) {
+		t.Fatalf("reason_code = %q, want %q", body.ReasonCode, ReasonBudgetExceeded)
+	}
+	// The limit figures are the runtime's private spend; the refusal names the
+	// cause, it does not publish the numbers.
+	if strings.Contains(recorder.Body.String(), "USD") {
+		t.Fatalf("budget figures leaked in response: %s", recorder.Body.String())
 	}
 }
 
