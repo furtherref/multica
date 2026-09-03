@@ -272,8 +272,14 @@ func TestRefreshTrackedWorkspaceSettingsAppliesToggle(t *testing.T) {
 	settings := `{"co_authored_by_enabled":false}`
 	d, cache := newCoAuthoredByStateDaemon(t, workspaceID, &settings)
 
+	// This fork defaults the trailer to OFF (furtherref/multica#31), so the
+	// tracked workspace must start explicitly enabled for the toggle-off
+	// refresh below to prove anything.
+	d.mu.Lock()
+	d.workspaces[workspaceID].settings = json.RawMessage(`{"co_authored_by_enabled":true}`)
+	d.mu.Unlock()
 	if !d.workspaceCoAuthoredByEnabled(workspaceID) {
-		t.Fatal("precondition: workspace should start with the default (enabled) verdict")
+		t.Fatal("precondition: workspace should start with the trailer enabled")
 	}
 
 	d.refreshTrackedWorkspaceSettings(context.Background())
