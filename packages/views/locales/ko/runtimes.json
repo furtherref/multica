@@ -452,6 +452,7 @@
     "cost_by_caption_model_other": "사용된 모델 {{count}}개",
     "cost_by_owner_none": "소유자 없음",
     "cost_by_owner_former": "탈퇴한 멤버",
+    "cost_by_model_breakdown_aria": "모델별 내역",
     "daily_breakdown_toggle": "일별 상세 테이블",
     "table_date": "날짜",
     "table_model": "모델",

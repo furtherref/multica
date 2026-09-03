@@ -329,6 +329,36 @@ describe("CostByBlock — By owner tab", () => {
     expect(screen.getByText("2 owners on this runtime")).toBeInTheDocument();
   });
 
+  it("expands an owner row into its per-model breakdown and collapses it again", () => {
+    // Canonical fold matrix lives in ../utils.test.ts (aggregateCostByOwnerModel);
+    // this only covers the toggle wiring.
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    // Collapsed by default: no model rows under any owner.
+    expect(screen.queryByText("claude-sonnet-4-6")).not.toBeInTheDocument();
+
+    const toggles = screen.getAllByRole("button", { name: "Model breakdown" });
+    // One toggle per owner bucket (Alice + No owner).
+    expect(toggles).toHaveLength(2);
+    expect(toggles[0]).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(toggles[0]!);
+
+    expect(toggles[0]).toHaveAttribute("aria-expanded", "true");
+    // Alice's two agents both used sonnet at 1M input → one model row,
+    // 2M tokens, $6.00 (matches her owner row total).
+    const modelRow = screen.getByText("claude-sonnet-4-6").closest("[data-model-row]");
+    expect(modelRow).not.toBeNull();
+    expect(within(modelRow as HTMLElement).getByText("2M")).toBeInTheDocument();
+    expect(within(modelRow as HTMLElement).getByText("$6.00")).toBeInTheDocument();
+    // Only the clicked owner expanded.
+    expect(screen.getAllByText("claude-sonnet-4-6")).toHaveLength(1);
+
+    fireEvent.click(toggles[0]!);
+
+    expect(screen.queryByText("claude-sonnet-4-6")).not.toBeInTheDocument();
+  });
+
   it("switches to the By agent tab on click", () => {
     render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
 

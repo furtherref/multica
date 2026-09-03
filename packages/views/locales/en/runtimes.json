@@ -469,6 +469,7 @@
     "cost_by_caption_model_other": "{{count}} models used",
     "cost_by_owner_none": "No owner",
     "cost_by_owner_former": "Former member",
+    "cost_by_model_breakdown_aria": "Model breakdown",
     "daily_breakdown_toggle": "Daily breakdown table",
     "table_date": "Date",
     "table_model": "Model",

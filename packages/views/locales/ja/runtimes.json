@@ -452,6 +452,7 @@
     "cost_by_caption_model_other": "使用されたモデル {{count}} 個",
     "cost_by_owner_none": "所有者なし",
     "cost_by_owner_former": "退出したメンバー",
+    "cost_by_model_breakdown_aria": "モデル別内訳",
     "daily_breakdown_toggle": "日別内訳テーブル",
     "table_date": "日付",
     "table_model": "モデル",

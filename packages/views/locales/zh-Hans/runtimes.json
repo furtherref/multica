@@ -452,6 +452,7 @@
     "cost_by_caption_model_other": "{{count}} 个模型已使用",
     "cost_by_owner_none": "无所有者",
     "cost_by_owner_former": "已离开的成员",
+    "cost_by_model_breakdown_aria": "模型明细",
     "daily_breakdown_toggle": "每日明细表",
     "table_date": "日期",
     "table_model": "模型",
