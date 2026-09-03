@@ -493,7 +493,7 @@
     "trigger_blocked_issue_archived": "このイシューはアーカイブ済みです。復元するとエージェントをトリガーできます",
     "trigger_blocked_runtime_unusable": "この対象の CLI はそのマシンで実行できません — そのマシンで再インストールしてください",
     "trigger_blocked_agent_runtime_required": "この対象にはランタイムがありません — 実行するにはバインドしてください",
-    "trigger_blocked_budget_exceeded": "この対象の Runtime は費用予算の上限に達しています — 期間がリセットされてから再試行してください",
+    "trigger_blocked_budget_exceeded": "この対象のランタイムは費用予算の上限に達しています — 期間がリセットされてから再試行してください",
     "trigger_blocked_generic": "この対象はトリガーされません",
     "trigger_blocked_short_invocation_not_allowed": "未検出または権限なし",
     "trigger_blocked_short_target_unavailable": "利用不可",

@@ -75,7 +75,7 @@
     "quick_create_unconfirmed": "通过智能体创建结果未确认",
     "autopilot_paused": "自动化已暂停",
     "autopilot_quota_exceeded": "自动化执行次数已用完",
-    "runtime_budget_exceeded": "Runtime 费用额度已达上限"
+    "runtime_budget_exceeded": "运行时费用额度已达上限"
   },
   "labels": {
     "set_status_to": "状态设为",

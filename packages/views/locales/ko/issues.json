@@ -494,7 +494,7 @@
     "trigger_blocked_issue_archived": "이슈가 보관됨 상태입니다. 복원 후 에이전트를 트리거할 수 있습니다",
     "trigger_blocked_runtime_unusable": "이 대상의 CLI를 해당 기기에서 실행할 수 없습니다 — 그 기기에서 다시 설치하세요",
     "trigger_blocked_agent_runtime_required": "이 대상에 런타임이 없습니다 — 실행하려면 런타임을 연결하세요",
-    "trigger_blocked_budget_exceeded": "이 대상의 Runtime이 비용 예산 한도에 도달했습니다 — 기간이 재설정된 후 다시 시도하세요",
+    "trigger_blocked_budget_exceeded": "이 대상의 런타임이 비용 예산 한도에 도달했습니다 — 기간이 재설정된 후 다시 시도하세요",
     "trigger_blocked_generic": "이 대상은 트리거되지 않습니다",
     "trigger_blocked_short_invocation_not_allowed": "찾을 수 없음 또는 권한 없음",
     "trigger_blocked_short_target_unavailable": "사용 불가",

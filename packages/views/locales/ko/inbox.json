@@ -75,7 +75,7 @@
     "quick_create_unconfirmed": "에이전트 생성 결과 미확인",
     "autopilot_paused": "자동화 일시 중지됨",
     "autopilot_quota_exceeded": "자동화 실행 한도 도달",
-    "runtime_budget_exceeded": "Runtime 비용 예산 한도 도달"
+    "runtime_budget_exceeded": "런타임 비용 예산 한도 도달"
   },
   "labels": {
     "set_status_to": "상태 변경:",
