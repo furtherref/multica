@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -50,15 +51,18 @@ func TestCopilotSessionUsageReadsLatestShutdownFromSubprocessHome(t *testing.T) 
 		shutdownEvent("claude-sonnet-5", 30_000, 900, 24_000, 2_000),
 	)
 
-	snapshot, found, err := readCopilotSessionUsageSnapshot(
+	read, err := readCopilotSessionUsageSnapshot(
 		[]string{"HOME=" + home},
 		sessionID,
 	)
 	if err != nil {
 		t.Fatalf("read snapshot: %v", err)
 	}
-	if !found {
+	if !read.Found {
 		t.Fatal("expected a shutdown snapshot")
+	}
+	if read.ActivityAfterShutdown {
+		t.Fatal("a session whose last event is a shutdown must not be marked active")
 	}
 	want := copilotUsageSnapshot{
 		"claude-sonnet-5": {
@@ -68,8 +72,89 @@ func TestCopilotSessionUsageReadsLatestShutdownFromSubprocessHome(t *testing.T) 
 			CacheWriteTokens: 2_000,
 		},
 	}
-	if !reflect.DeepEqual(snapshot, want) {
-		t.Fatalf("snapshot = %#v, want %#v", snapshot, want)
+	if !reflect.DeepEqual(read.Snapshot, want) {
+		t.Fatalf("snapshot = %#v, want %#v", read.Snapshot, want)
+	}
+}
+
+func TestCopilotSessionUsageHonorsCopilotHome(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	copilotHome := filepath.Join(t.TempDir(), "relocated-copilot")
+	sessionID := "35059dc3-d928-4ffb-8616-b78938621d90"
+	path := filepath.Join(copilotHome, "session-state", sessionID, "events.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir session state: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(shutdownEvent("gpt-5.5", 1_000, 100, 800, 100)+"\n"), 0o600); err != nil {
+		t.Fatalf("write session events: %v", err)
+	}
+
+	read, err := readCopilotSessionUsageSnapshot(
+		[]string{"HOME=" + home, "COPILOT_HOME=" + copilotHome},
+		sessionID,
+	)
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	if !read.Found || read.Snapshot["gpt-5.5"].InputTokens != 1_000 {
+		t.Fatalf("snapshot = %#v, found=%v; COPILOT_HOME should locate session-state", read.Snapshot, read.Found)
+	}
+}
+
+func TestCopilotSessionUsageKeepsLineOnTailBoundary(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	sessionID := "35059dc3-d928-4ffb-8616-b78938621d91"
+	shutdown := shutdownEvent("gpt-5.5", 1_000, 100, 800, 100) + "\n"
+	fillerLine := `{"type":"assistant.message","data":{"content":"x"}}` + "\n"
+	// Lay the shutdown line down so that it starts exactly at the tail
+	// window boundary: everything from its first byte to EOF is exactly the
+	// window size, and the byte before it is the prefix's newline.
+	prefix := strings.Repeat(fillerLine, 3)
+	suffix := make([]byte, 0, copilotSessionUsageTailBytes)
+	remaining := int(copilotSessionUsageTailBytes) - len(shutdown)
+	for remaining > 0 {
+		chunk := fillerLine
+		if len(chunk) > remaining {
+			chunk = strings.Repeat("x", remaining-1) + "\n"
+		}
+		suffix = append(suffix, chunk...)
+		remaining -= len(chunk)
+	}
+	writeCopilotSessionEvents(t, home, sessionID, prefix+shutdown+string(suffix))
+
+	read, err := readCopilotSessionUsageSnapshot([]string{"HOME=" + home}, sessionID)
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	if !read.Found || read.Snapshot["gpt-5.5"].OutputTokens != 100 {
+		t.Fatalf("snapshot = %#v, found=%v; a line starting on the window boundary must be kept", read.Snapshot, read.Found)
+	}
+}
+
+func TestCopilotSessionUsageFlagsActivityAfterShutdown(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	sessionID := "35059dc3-d928-4ffb-8616-b78938621d92"
+	writeCopilotSessionEvents(t, home, sessionID,
+		shutdownEvent("gpt-5.5", 1_000, 100, 800, 100),
+		`{"type":"session.start","data":{}}`,
+		`{"type":"assistant.message","data":{"content":"turn from a run that was killed"}}`,
+	)
+
+	read, err := readCopilotSessionUsageSnapshot([]string{"HOME=" + home}, sessionID)
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	if !read.Found || !read.ActivityAfterShutdown {
+		t.Fatalf("read = %#v; assistant activity after the last shutdown must mark the baseline stale", read)
+	}
+	if _, err := diffCopilotUsageSnapshots(read, copilotSessionUsageRead{
+		Found:    true,
+		Snapshot: copilotUsageSnapshot{"gpt-5.5": {InputTokens: 5_000, OutputTokens: 500}},
+	}, "gpt-5.5"); err == nil {
+		t.Fatal("expected a stale baseline to be rejected")
 	}
 }
 
@@ -84,7 +169,7 @@ func TestCopilotSessionUsageFreshSnapshotSeparatesCachedInput(t *testing.T) {
 		},
 	}
 
-	usage := freshCopilotUsageSnapshot(snapshot)
+	usage := freshCopilotUsageSnapshot(snapshot, "fallback")
 	got := usage["claude-sonnet-5"]
 	if got.InputTokens != 4_000 || got.OutputTokens != 900 {
 		t.Fatalf("fresh usage input/output = %d/%d, want 4000/900", got.InputTokens, got.OutputTokens)
@@ -110,7 +195,11 @@ func TestCopilotSessionUsageResumeDiffsEachModel(t *testing.T) {
 		},
 	}
 
-	usage, err := diffCopilotUsageSnapshots(before, after)
+	usage, err := diffCopilotUsageSnapshots(
+		copilotSessionUsageRead{Snapshot: before, Found: true},
+		copilotSessionUsageRead{Snapshot: after, Found: true},
+		"fallback",
+	)
 	if err != nil {
 		t.Fatalf("diff snapshots: %v", err)
 	}
@@ -141,18 +230,34 @@ func TestCopilotSessionUsageKeepsLastValidSnapshotBeforePartialLine(t *testing.T
 		`{"type":"session.shutdown","data":{"modelMetrics":`,
 	)
 
-	snapshot, found, err := readCopilotSessionUsageSnapshot([]string{"HOME=" + home}, sessionID)
+	read, err := readCopilotSessionUsageSnapshot([]string{"HOME=" + home}, sessionID)
 	if err != nil {
 		t.Fatalf("read snapshot: %v", err)
 	}
-	if !found || snapshot["gpt-5.5"].OutputTokens != 100 {
-		t.Fatalf("snapshot = %#v, found=%v", snapshot, found)
+	if !read.Found || read.Snapshot["gpt-5.5"].OutputTokens != 100 {
+		t.Fatalf("snapshot = %#v, found=%v", read.Snapshot, read.Found)
+	}
+	if read.ActivityAfterShutdown {
+		t.Fatal("a torn trailing line is not model activity")
+	}
+}
+
+func TestCopilotSessionUsageAttributesEmptyModelToFallback(t *testing.T) {
+	t.Parallel()
+	usage := freshCopilotUsageSnapshot(copilotUsageSnapshot{
+		"": {InputTokens: 1_000, OutputTokens: 100},
+	}, "claude-sonnet-5")
+	if _, ok := usage[""]; ok {
+		t.Fatal("empty model key must not be reported")
+	}
+	if got := usage["claude-sonnet-5"]; got.InputTokens != 1_000 || got.OutputTokens != 100 {
+		t.Fatalf("fallback usage = %#v", got)
 	}
 }
 
 func TestCopilotSessionUsageRejectsUnsafeSessionID(t *testing.T) {
 	t.Parallel()
-	_, _, err := readCopilotSessionUsageSnapshot([]string{"HOME=" + t.TempDir()}, "../escape")
+	_, err := readCopilotSessionUsageSnapshot([]string{"HOME=" + t.TempDir()}, "../escape")
 	if err == nil {
 		t.Fatal("expected unsafe session id to be rejected")
 	}
@@ -160,9 +265,10 @@ func TestCopilotSessionUsageRejectsUnsafeSessionID(t *testing.T) {
 
 func TestCopilotSessionUsageResumeRequiresBaseline(t *testing.T) {
 	t.Parallel()
-	_, err := diffCopilotUsageSnapshots(nil, copilotUsageSnapshot{
-		"gpt-5.5": {InputTokens: 100, OutputTokens: 10},
-	})
+	_, err := diffCopilotUsageSnapshots(copilotSessionUsageRead{}, copilotSessionUsageRead{
+		Found:    true,
+		Snapshot: copilotUsageSnapshot{"gpt-5.5": {InputTokens: 100, OutputTokens: 10}},
+	}, "gpt-5.5")
 	if err == nil {
 		t.Fatal("expected missing baseline to be rejected")
 	}
@@ -177,7 +283,11 @@ func TestCopilotSessionUsageRejectsCounterRegression(t *testing.T) {
 		"gpt-5.5": {InputTokens: 900, OutputTokens: 120},
 	}
 
-	_, err := diffCopilotUsageSnapshots(before, after)
+	_, err := diffCopilotUsageSnapshots(
+		copilotSessionUsageRead{Snapshot: before, Found: true},
+		copilotSessionUsageRead{Snapshot: after, Found: true},
+		"gpt-5.5",
+	)
 	if err == nil {
 		t.Fatal("expected regressed cumulative counters to be rejected")
 	}
@@ -314,5 +424,62 @@ func TestCopilotExecuteResumeUsesSessionFileDelta(t *testing.T) {
 	if got.InputTokens != 2_000 || got.OutputTokens != 600 ||
 		got.CacheReadTokens != 12_000 || got.CacheWriteTokens != 1_000 {
 		t.Fatalf("resume delta = %#v", got)
+	}
+}
+
+func TestCopilotExecuteResumeSkipsStaleBaseline(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	sessionID := "35059dc3-d928-4ffb-8616-b78938621d88"
+	writeCopilotSessionEvents(
+		t,
+		home,
+		sessionID,
+		shutdownEvent("gpt-5.6-terra", 10_000, 500, 8_000, 1_000),
+		// A previous resumed run consumed tokens and was killed before its
+		// shutdown was written; its usage was reported from stdout already.
+		`{"type":"assistant.message","data":{"model":"gpt-5.6-terra","content":"killed turn"}}`,
+	)
+	fakePath := writeCopilotSessionFixtureExecutable(
+		t,
+		home,
+		sessionID,
+		nil,
+		[]string{shutdownEvent("gpt-5.6-terra", 25_000, 1_100, 20_000, 2_000)},
+	)
+
+	result := runCopilotExecuteWithConfig(t, Config{
+		ExecutablePath: fakePath,
+		Env:            map[string]string{"HOME": home},
+		Logger:         slog.Default(),
+	}, ExecOptions{Timeout: 5 * time.Second, ResumeSessionID: sessionID})
+
+	if hasTokens(result.Usage) {
+		t.Fatalf("usage = %#v; a stale baseline must not be diffed, the killed run would be billed twice", result.Usage)
+	}
+}
+
+func TestCopilotExecuteResumeSkipsFileWhenSessionIDMismatches(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	resumeID := "35059dc3-d928-4ffb-8616-b78938621d89"
+	reportedID := "35059dc3-d928-4ffb-8616-b78938621d8a"
+	writeCopilotSessionEvents(t, home, resumeID, shutdownEvent("gpt-5.6-terra", 10_000, 500, 8_000, 1_000))
+	fakePath := writeCopilotSessionFixtureExecutable(
+		t,
+		home,
+		reportedID,
+		nil,
+		[]string{shutdownEvent("gpt-5.6-terra", 25_000, 1_100, 20_000, 2_000)},
+	)
+
+	result := runCopilotExecuteWithConfig(t, Config{
+		ExecutablePath: fakePath,
+		Env:            map[string]string{"HOME": home},
+		Logger:         slog.Default(),
+	}, ExecOptions{Timeout: 5 * time.Second, ResumeSessionID: resumeID})
+
+	if hasTokens(result.Usage) {
+		t.Fatalf("usage = %#v; a resumed run reporting a different session id must not be billed as a fresh session", result.Usage)
 	}
 }

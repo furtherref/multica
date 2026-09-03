@@ -78,9 +78,23 @@ again:
 - resumed session: subtract the baseline snapshot model by model and token
   bucket by token bucket.
 
-The collector reads only a bounded tail of `events.jsonl`, ignores every
-event except `session.shutdown`, and never logs message content. Session IDs
-must pass a strict safe-component validation before being used in a path.
+The file is only consulted when the stream left no complete source: per-call
+`assistant.usage`, or `session.shutdown` on a fresh session, wins without a
+read. Recovery is skipped, never guessed, whenever the counters' scope is in
+doubt:
+
+- the baseline is stale: `assistant.*` or `tool.*` events follow the last
+  `session.shutdown`, meaning an earlier run used the session and was killed
+  before writing its shutdown, so a diff would fold that run in again;
+- a resumed run reports a session ID other than the one it resumed, so
+  neither the fresh rule nor the captured baseline applies;
+- an empty `modelMetrics` key is attributed to the run's active model, the
+  same rule the stream applies.
+
+The collector reads only a bounded tail of `events.jsonl`, keeps a line that
+begins exactly on the tail boundary, parses only `session.shutdown` payloads,
+and never logs message content. Session IDs must pass a strict safe-component
+validation before being used in a path.
 
 Copilot's `inputTokens` includes both cache tiers. The recovered raw snapshot
 therefore flows through the existing `addUsage` helper, which stores:
@@ -116,11 +130,13 @@ subprocess:
 The file is:
 
 ```text
-<home>/.copilot/session-state/<validated-session-id>/events.jsonl
+<copilot-home>/session-state/<validated-session-id>/events.jsonl
 ```
 
-This matches the observed Linux runtime while keeping tests deterministic via
-a task-local `HOME`.
+where `<copilot-home>` is `COPILOT_HOME` from the subprocess environment when
+set, else `<home>/.copilot` — the same resolution the daemon uses for
+`mcp-config.json`. This matches the observed Linux runtime while keeping tests
+deterministic via a task-local `HOME`.
 
 ## Custom pricing notice
 

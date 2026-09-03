@@ -437,11 +437,11 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
 
-	var resumeUsageBaseline copilotUsageSnapshot
-	var resumeUsageBaselineFound bool
+	// Capture the session's counters before the CLI can append to them: a
+	// resumed run's own usage is the growth over this baseline.
+	var resumeUsageBaseline copilotSessionUsageRead
 	if opts.ResumeSessionID != "" {
-		resumeUsageBaseline, resumeUsageBaselineFound, err =
-			readCopilotSessionUsageSnapshot(cmd.Env, opts.ResumeSessionID)
+		resumeUsageBaseline, err = readCopilotSessionUsageSnapshot(cmd.Env, opts.ResumeSessionID)
 		if err != nil {
 			b.cfg.Logger.Warn("Copilot resume usage baseline unavailable", "error", err)
 		}
@@ -525,28 +525,14 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 
 		b.cfg.Logger.Info("copilot finished", "pid", cmd.Process.Pid, "status", st.finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		if st.sessionID != "" {
-			finalSnapshot, found, snapshotErr := readCopilotSessionUsageSnapshot(cmd.Env, st.sessionID)
-			if snapshotErr != nil {
-				b.cfg.Logger.Warn("Copilot session usage snapshot unavailable", "error", snapshotErr)
-			} else if found {
-				var recovered map[string]TokenUsage
-				if opts.ResumeSessionID != "" && st.sessionID == opts.ResumeSessionID {
-					if resumeUsageBaselineFound {
-						recovered, snapshotErr = diffCopilotUsageSnapshots(resumeUsageBaseline, finalSnapshot)
-					} else {
-						snapshotErr = fmt.Errorf("Copilot resume usage baseline is unavailable")
-					}
-				} else {
-					recovered = freshCopilotUsageSnapshot(finalSnapshot)
-				}
-				if snapshotErr != nil {
-					b.cfg.Logger.Warn("Copilot session usage recovery skipped", "error", snapshotErr)
-				} else if hasTokens(recovered) {
-					st.sessionFileUsage = recovered
-					b.cfg.Logger.Info("Copilot usage recovered from session snapshot", "models", len(recovered))
-				}
-			}
+		// The session file only matters when the stream left no complete
+		// source for resolveUsage, so skip the read (and its log line) when
+		// stdout already carried per-call usage or a usable shutdown total.
+		needsFileRecovery := st.sessionID != "" &&
+			!hasTokens(st.callUsage) &&
+			(st.resumed || !hasTokens(st.shutdownUsage))
+		if needsFileRecovery {
+			st.sessionFileUsage = b.recoverCopilotSessionUsage(cmd.Env, opts, st, resumeUsageBaseline)
 		}
 
 		usage := st.resolveUsage()
@@ -575,6 +561,54 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	mcpFileCleanup = nil
 
 	return &Session{Messages: msgCh, Result: resCh}, nil
+}
+
+// recoverCopilotSessionUsage reads this run's usage back out of the CLI's
+// session file. A fresh session reports the file's cumulative counters; a
+// resumed session reports their growth over the baseline captured before
+// launch. Every failure mode degrades to "nothing recovered": under-reporting
+// beats double-billing, so any doubt about which turns the counters cover
+// leaves sessionFileUsage empty.
+func (b *copilotBackend) recoverCopilotSessionUsage(
+	env []string,
+	opts ExecOptions,
+	st *copilotEventState,
+	baseline copilotSessionUsageRead,
+) map[string]TokenUsage {
+	if st.resumed && st.sessionID != opts.ResumeSessionID {
+		// The counters in the reported session's file may include turns
+		// from before this run; the fresh-session rule cannot apply and the
+		// baseline belongs to a different session.
+		b.cfg.Logger.Warn("Copilot session usage recovery skipped",
+			"error", "resumed session id does not match the reported session id",
+			"resume_session", opts.ResumeSessionID,
+			"session", st.sessionID)
+		return nil
+	}
+	final, err := readCopilotSessionUsageSnapshot(env, st.sessionID)
+	if err != nil {
+		b.cfg.Logger.Warn("Copilot session usage snapshot unavailable", "error", err)
+		return nil
+	}
+	if !final.Found {
+		b.cfg.Logger.Debug("Copilot session usage snapshot not found", "session", st.sessionID)
+		return nil
+	}
+	var recovered map[string]TokenUsage
+	if st.resumed {
+		recovered, err = diffCopilotUsageSnapshots(baseline, final, st.activeModel)
+		if err != nil {
+			b.cfg.Logger.Warn("Copilot session usage recovery skipped", "error", err)
+			return nil
+		}
+	} else {
+		recovered = freshCopilotUsageSnapshot(final.Snapshot, st.activeModel)
+	}
+	if !hasTokens(recovered) {
+		return nil
+	}
+	b.cfg.Logger.Info("Copilot usage recovered from session snapshot", "models", len(recovered))
+	return recovered
 }
 
 // ── Copilot CLI JSONL event types ──
