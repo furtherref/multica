@@ -2,6 +2,7 @@ import type {
   Agent,
   AgentRuntime,
   RuntimeUsage,
+  RuntimeUsageCoverage,
   RuntimeUsageByAgent,
 } from "@multica/core/types";
 import { getCustomPricing } from "@multica/core/runtimes/custom-pricing-store";
@@ -604,6 +605,23 @@ export function collectUnmappedModels(rows: readonly Priceable[]): string[] {
   return Array.from(set).toSorted();
 }
 
+export function collectActiveCustomPricingModels(
+  rows: readonly Priceable[],
+): string[] {
+  const active = new Set<string>();
+  for (const row of rows) {
+    const candidates = pricingCandidates(row.model, row.provider);
+    if (candidates.some((candidate) => MODEL_PRICING[candidate] !== undefined)) {
+      continue;
+    }
+    const custom = candidates.find(
+      (candidate) => getCustomPricing(candidate) !== undefined,
+    );
+    if (custom) active.add(custom);
+  }
+  return Array.from(active).toSorted();
+}
+
 // Anything carrying per-model token totals can be priced — RuntimeUsage,
 // RuntimeUsageByAgent, RuntimeUsageByHour all share this shape on purpose
 // (the back-end keeps the model dimension specifically so the client can
@@ -1164,6 +1182,32 @@ export function sliceWindow(
       (u) => u.date >= isoPrev && u.date < isoCurrent,
     ),
   };
+}
+
+export interface UsageCoverageTotals {
+  completedRuns: number;
+  completeRuns: number;
+  outputOnlyRuns: number;
+  missingRuns: number;
+}
+
+export function aggregateUsageCoverage(
+  rows: readonly RuntimeUsageCoverage[],
+): UsageCoverageTotals {
+  return rows.reduce<UsageCoverageTotals>(
+    (total, row) => ({
+      completedRuns: total.completedRuns + row.completed_runs,
+      completeRuns: total.completeRuns + row.complete_runs,
+      outputOnlyRuns: total.outputOnlyRuns + row.output_only_runs,
+      missingRuns: total.missingRuns + row.missing_runs,
+    }),
+    {
+      completedRuns: 0,
+      completeRuns: 0,
+      outputOnlyRuns: 0,
+      missingRuns: 0,
+    },
+  );
 }
 
 function diffDaysIso(from: string, to: string): number {
