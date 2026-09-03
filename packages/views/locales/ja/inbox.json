@@ -74,7 +74,8 @@
     "quick_create_failed": "エージェントでの作成に失敗",
     "quick_create_unconfirmed": "エージェントでの作成結果は未確認",
     "autopilot_paused": "自動化を一時停止しました",
-    "autopilot_quota_exceeded": "自動化の実行上限に達しました"
+    "autopilot_quota_exceeded": "自動化の実行上限に達しました",
+    "runtime_budget_exceeded": "Runtime の費用予算の上限に達しました"
   },
   "labels": {
     "set_status_to": "ステータスを変更:",
@@ -88,7 +89,8 @@
     "reacted_to_comment": "あなたのコメントに {{emoji}} のリアクションをしました",
     "created_with_agent": "エージェントで作成: {{identifier}}",
     "failed_with_detail": "失敗: {{detail}}",
-    "autopilot_quota_blocked": "上限に達したため実行をブロックしました"
+    "autopilot_quota_blocked": "上限に達したため実行をブロックしました",
+    "runtime_budget_blocked": "期間がリセットされるまで新しい実行は拒否されます"
   },
   "toasts": {
     "source_context_retry_started": "元のコンテキストで再試行を開始しました",

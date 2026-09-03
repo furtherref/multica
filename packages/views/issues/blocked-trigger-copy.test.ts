@@ -63,4 +63,15 @@ describe("blocked trigger copy", () => {
       en.comment.trigger_blocked_short_generic,
     );
   });
+
+  // budget_exceeded (runtime cost budget) has its own copy in both lengths —
+  // it must not fall through to the generic label.
+  it("has budget_exceeded copy in both lengths", () => {
+    expect(blockedReasonLabel("budget_exceeded", t)).toBe(
+      en.comment.trigger_blocked_budget_exceeded,
+    );
+    expect(blockedShortReasonLabel("budget_exceeded", t)).toBe(
+      en.comment.trigger_blocked_short_budget_exceeded,
+    );
+  });
 });

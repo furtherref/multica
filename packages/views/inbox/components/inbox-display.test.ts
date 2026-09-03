@@ -6,6 +6,7 @@ import {
   getQuickCreateOutcomeDetail,
   isAutopilotQuotaNotice,
   isQuickCreateOutcome,
+  isRuntimeBudgetNotice,
   resolveDetailItem,
   stripQuickCreatePrefix,
 } from "./inbox-display";
@@ -108,6 +109,11 @@ describe("inbox display helpers", () => {
   it("keeps paused autopilot title and body on the same server fallback path", () => {
     expect(isAutopilotQuotaNotice("autopilot_paused")).toBe(false);
     expect(isAutopilotQuotaNotice("autopilot_quota_exceeded")).toBe(true);
+  });
+
+  it("recognises the runtime budget notice", () => {
+    expect(isRuntimeBudgetNotice("runtime_budget_exceeded")).toBe(true);
+    expect(isRuntimeBudgetNotice("task_failed")).toBe(false);
   });
 });
 
