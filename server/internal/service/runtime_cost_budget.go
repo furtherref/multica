@@ -2,14 +2,18 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/pricing"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // RuntimeBudgetScope names which row refused a run.
@@ -135,8 +139,11 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 	return nil
 }
 
-// notifyRuntimeBudgetExceeded is implemented in Task 4. Until then it is a
-// no-op so the check can ship on its own.
+// notifyRuntimeBudgetExceeded creates one "limit reached" inbox item per
+// period for the scope that refused the run. MarkRuntimeCostBudgetNotified
+// claims the period first, so concurrent refusals produce one notice.
+// Recipients: the blocked user (per-user scope) and the runtime owner,
+// de-duplicated. Failures are logged; the refusal itself is already decided.
 //
 // It must NOT use the caller's transaction. checkRuntimeCostBudget refuses the
 // enqueue right after calling this, and on the chat paths that refusal rolls the
@@ -145,4 +152,79 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 // auto-commit s.Queries, and the implementation must keep using the handle it is
 // given rather than reaching for a transaction of the enqueue.
 func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Queries, row db.RuntimeCostBudget, exceeded *RuntimeBudgetExceededError) {
+	claimed, err := q.MarkRuntimeCostBudgetNotified(ctx, db.MarkRuntimeCostBudgetNotifiedParams{
+		Period:      string(exceeded.Period),
+		PeriodStart: pgtype.Timestamptz{Time: exceeded.PeriodStart, Valid: true},
+		ID:          row.ID,
+	})
+	if err != nil {
+		slog.Warn("runtime budget notice claim failed", "budget_id", util.UUIDToString(row.ID), "error", err)
+		return
+	}
+	if claimed == 0 {
+		return
+	}
+	rt, err := q.GetAgentRuntime(ctx, row.RuntimeID)
+	if err != nil {
+		slog.Warn("runtime budget notice: load runtime failed", "runtime_id", util.UUIDToString(row.RuntimeID), "error", err)
+		return
+	}
+	recipients := map[string]pgtype.UUID{}
+	if exceeded.UserID.Valid {
+		recipients[util.UUIDToString(exceeded.UserID)] = exceeded.UserID
+	}
+	if rt.OwnerID.Valid {
+		recipients[util.UUIDToString(rt.OwnerID)] = rt.OwnerID
+	}
+	var userID *string
+	if exceeded.UserID.Valid {
+		v := util.UUIDToString(exceeded.UserID)
+		userID = &v
+	}
+	details, err := json.Marshal(map[string]any{
+		"scope": exceeded.Scope, "period": exceeded.Period,
+		"runtime_id": util.UUIDToString(row.RuntimeID), "user_id": userID,
+		"used_usd": pricing.TicksToUSD(exceeded.UsedTicks), "limit_usd": pricing.TicksToUSD(exceeded.LimitTicks),
+		"period_start": exceeded.PeriodStart.UTC().Format(time.RFC3339), "reset_at": exceeded.ResetAt.UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		slog.Warn("runtime budget notice: marshal details failed", "error", err)
+		return
+	}
+	scopeLabel := "This runtime"
+	if exceeded.Scope == RuntimeBudgetScopeUser {
+		scopeLabel = "Your agents on this runtime"
+	}
+	body := fmt.Sprintf("%s reached the %s cost limit of $%.2f (used $%.2f). New runs are refused until %s UTC.",
+		scopeLabel, exceeded.Period, pricing.TicksToUSD(exceeded.LimitTicks), pricing.TicksToUSD(exceeded.UsedTicks),
+		exceeded.ResetAt.UTC().Format("Jan 2, 15:04"))
+	for _, recipient := range recipients {
+		item, err := q.CreateInboxItem(ctx, db.CreateInboxItemParams{
+			ID: dbid.NewV7(), WorkspaceID: row.WorkspaceID,
+			RecipientType: "member", RecipientID: recipient,
+			Type: "runtime_budget_exceeded", Severity: "attention", IssueID: pgtype.UUID{},
+			Title: "Runtime cost budget reached", Body: pgtype.Text{String: body, Valid: true},
+			ActorType: pgtype.Text{String: "system", Valid: true}, ActorID: pgtype.UUID{},
+			Details: details,
+		})
+		if err != nil {
+			slog.Warn("runtime budget notice: create inbox item failed", "error", err)
+			continue
+		}
+		if s.Bus != nil {
+			s.Bus.Publish(events.Event{
+				Type: protocol.EventInboxNew, WorkspaceID: util.UUIDToString(item.WorkspaceID), ActorType: "system",
+				Payload: map[string]any{"item": map[string]any{
+					"id": util.UUIDToString(item.ID), "workspace_id": util.UUIDToString(item.WorkspaceID),
+					"recipient_type": item.RecipientType, "recipient_id": util.UUIDToString(item.RecipientID),
+					"type": item.Type, "severity": item.Severity, "issue_id": nil,
+					"issue_status": nil, "issue_priority": nil,
+					"title": item.Title, "body": util.TextToPtr(item.Body), "read": item.Read,
+					"archived": item.Archived, "created_at": util.TimestampToString(item.CreatedAt),
+					"actor_type": util.TextToPtr(item.ActorType), "actor_id": nil,
+					"details": json.RawMessage(item.Details),
+				}},
+			})
+		}
+	}
 }

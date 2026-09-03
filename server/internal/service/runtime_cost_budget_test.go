@@ -265,3 +265,49 @@ func TestChatEnqueuePathsRefusedWhenBudgetReached(t *testing.T) {
 		t.Fatalf("refused chat runs must not be queued, found %d", n)
 	}
 }
+
+func TestRuntimeBudgetNoticeFiresOncePerPeriod(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, ownerID, agentID, issueID := seedAttributionFixture(t, pool)
+	agent, _ := q.GetAgent(ctx, util.MustParseUUID(agentID))
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	daily := 5.0
+	row := seedBudget(t, ctx, q, workspaceID, util.UUIDToString(agent.RuntimeID), nil, &daily, nil, nil)
+	seedSpend(t, ctx, pool, agentID, issueID, 6, now.Add(-time.Hour))
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM inbox_item WHERE workspace_id = $1 AND type = 'runtime_budget_exceeded'`, workspaceID)
+	})
+
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	for i := 0; i < 2; i++ {
+		if err := svc.checkRuntimeCostBudget(ctx, q, agent, now); err == nil {
+			t.Fatal("expected refusal")
+		}
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM inbox_item WHERE workspace_id = $1 AND type = 'runtime_budget_exceeded' AND recipient_id = $2`, workspaceID, ownerID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("runtime owner notices = %d, want exactly 1", n)
+	}
+	// Next day: yesterday's spend is outside the new UTC day, so the check
+	// passes until today's spend lands; then the marker no longer matches and
+	// the notice fires again.
+	if err := svc.checkRuntimeCostBudget(ctx, q, agent, now.Add(24*time.Hour)); err != nil {
+		t.Fatalf("expected pass at the start of the next day, got %v", err)
+	}
+	seedSpend(t, ctx, pool, agentID, issueID, 6, now.Add(25*time.Hour))
+	if err := svc.checkRuntimeCostBudget(ctx, q, agent, now.Add(26*time.Hour)); err == nil {
+		t.Fatal("expected refusal on the next day")
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM inbox_item WHERE workspace_id = $1 AND type = 'runtime_budget_exceeded'`, workspaceID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("notices after period rollover = %d, want 2", n)
+	}
+	_ = row
+}
