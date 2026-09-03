@@ -45,6 +45,19 @@ func TestListRuntimeUsageCoverageClassifiesCompletedRuns(t *testing.T) {
 	outputOnlyID := addTask("completed")
 	addUsage(outputOnlyID, 0, 300, 0, 0)
 	addTask("completed")
+	// A provider-priced run carries only a dollar amount; its zero token
+	// buckets must not read as missing telemetry.
+	costOnlyID := addTask("completed")
+	dbfx.Insert(t, "task_usage", testutil.Cols{
+		"task_id":            costOnlyID,
+		"provider":           "opencode",
+		"model":              "cost-only",
+		"input_tokens":       int64(0),
+		"output_tokens":      int64(0),
+		"cache_read_tokens":  int64(0),
+		"cache_write_tokens": int64(0),
+		"cost_usd_ticks":     int64(1_500),
+	})
 	failedID := addTask("failed")
 	addUsage(failedID, 100, 50, 0, 0)
 	cancelledID := addTask("cancelled")
@@ -69,8 +82,8 @@ func TestListRuntimeUsageCoverageClassifiesCompletedRuns(t *testing.T) {
 	if got.Date != "2026-08-28" {
 		t.Fatalf("coverage date = %q, want Asia/Shanghai date 2026-08-28", got.Date)
 	}
-	if got.CompletedRuns != 3 || got.CompleteRuns != 1 ||
+	if got.CompletedRuns != 4 || got.CompleteRuns != 2 ||
 		got.OutputOnlyRuns != 1 || got.MissingRuns != 1 {
-		t.Fatalf("coverage = %#v, want completed/complete/output-only/missing 3/1/1/1", got)
+		t.Fatalf("coverage = %#v, want completed/complete/output-only/missing 4/2/1/1", got)
 	}
 }

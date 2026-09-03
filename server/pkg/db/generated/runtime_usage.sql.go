@@ -320,7 +320,8 @@ WITH per_task AS (
         COALESCE(SUM(tu.input_tokens), 0)::bigint AS input_tokens,
         COALESCE(SUM(tu.output_tokens), 0)::bigint AS output_tokens,
         COALESCE(SUM(tu.cache_read_tokens), 0)::bigint AS cache_read_tokens,
-        COALESCE(SUM(tu.cache_write_tokens), 0)::bigint AS cache_write_tokens
+        COALESCE(SUM(tu.cache_write_tokens), 0)::bigint AS cache_write_tokens,
+        COALESCE(SUM(tu.cost_usd_ticks), 0)::bigint AS cost_usd_ticks
     FROM agent_task_queue atq
     LEFT JOIN task_usage tu ON tu.task_id = atq.id
     WHERE atq.runtime_id = $2
@@ -333,13 +334,16 @@ SELECT
     COUNT(*)::bigint AS completed_runs,
     COUNT(*) FILTER (
         WHERE input_tokens + cache_read_tokens + cache_write_tokens > 0
+           OR cost_usd_ticks > 0
     )::bigint AS complete_runs,
     COUNT(*) FILTER (
         WHERE input_tokens + cache_read_tokens + cache_write_tokens = 0
+          AND cost_usd_ticks = 0
           AND output_tokens > 0
     )::bigint AS output_only_runs,
     COUNT(*) FILTER (
         WHERE input_tokens + output_tokens + cache_read_tokens + cache_write_tokens = 0
+          AND cost_usd_ticks = 0
     )::bigint AS missing_runs
 FROM per_task
 GROUP BY date
@@ -364,7 +368,9 @@ type ListRuntimeUsageCoverageRow struct {
 // complete input-side breakdown, output-only telemetry, or no token telemetry.
 // Failed/cancelled runs are excluded because they may have ended before the
 // provider was invoked; a completed run without usage is the billing hole this
-// report is meant to surface.
+// report is meant to surface. A run the provider priced itself
+// (cost_usd_ticks > 0) is complete regardless of its token buckets: adapters
+// that only report a dollar amount leave every token column at zero.
 func (q *Queries) ListRuntimeUsageCoverage(ctx context.Context, arg ListRuntimeUsageCoverageParams) ([]ListRuntimeUsageCoverageRow, error) {
 	rows, err := q.db.Query(ctx, listRuntimeUsageCoverage, arg.Tz, arg.RuntimeID, arg.Since)
 	if err != nil {
