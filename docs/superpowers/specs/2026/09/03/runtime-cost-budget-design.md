@@ -120,7 +120,9 @@ map the error with `errors.As` to that code; synchronous triggers answer
 `409` through `writeDispatchBlocked`.
 
 Tasks already queued or running when a limit is reached are not interrupted
-and are not filtered at claim time. The overshoot is bounded by the
+and are not filtered at claim time. Runtime deletion (every path, including
+profile deletion and the offline-runtime sweeper), member revocation and
+workspace deletion remove the runtime's budget rows in the same transaction. The overshoot is bounded by the
 in-flight work at the moment the limit is crossed, and the claim path stays
 untouched.
 
@@ -129,9 +131,11 @@ untouched.
 On the first refusal in a period for a given row and period, the service
 creates an inbox item of type `runtime_budget_exceeded` with severity
 `attention`, details carrying scope, period, used, limit, reset time and
-runtime id. Recipients are the blocked user and the runtime owner,
-de-duplicated. The `*_notified_period_start` column is set to the period
-start under the same transaction so the notice fires once per period.
+runtime id as strings. Recipients are the owner of the refused agent and the
+runtime owner, de-duplicated, for both scopes. The notice runs on an
+auto-commit connection, never inside the enqueue transaction (which the
+refusal rolls back), and the runtime and recipients are resolved before the
+`*_notified_period_start` claim so a failed lookup cannot consume a period.
 
 ## API
 
@@ -158,7 +162,9 @@ start under the same transaction so the notice fires once per period.
 Validation: amounts are finite, greater than zero, at most 1,000,000 USD,
 with at most two decimals; each `user_id` is a workspace member and appears
 once. Rows that end up with no limits are deleted. The response is the
-`GET` body.
+`GET` body, except when the writer cannot read the runtime (an admin on
+another member's private runtime): then the reply is `204` with no body,
+because the spend figures are the read that `GET` denies.
 
 ## Frontend
 
@@ -170,8 +176,10 @@ once. Rows that end up with no limits are deleted. The response is the
   under `runtimeKeys`; `useUpdateRuntimeBudget(wsId)` invalidating that key.
 - `canManageRuntimeBudget(ctx)` in `permissions/rules.ts` reusing
   `isAdminLike`.
-- `budget_exceeded` added wherever `attribution_blocked` is classified, and
-  `runtime_budget_exceeded` added to the inbox item type union.
+- `budget_exceeded` added wherever `attribution_blocked` is classified, in
+  the chat send-failure toasts, and in the mobile dispatch-reason mapper;
+  `runtime_budget_exceeded` added to the inbox item type union, the views
+  inbox labels and title predicate, and the mobile inbox label record.
 
 `packages/views/runtimes/components`:
 
