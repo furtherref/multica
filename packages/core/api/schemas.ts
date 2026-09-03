@@ -1652,7 +1652,7 @@ export const DashboardFailureByAgentListSchema = z.array(
 );
 
 // ---------------------------------------------------------------------------
-// Runtime usage schemas — the runtime-detail page's four usage endpoints
+// Runtime usage schemas — the runtime-detail page's usage endpoints
 // (`/api/runtimes/:id/usage*`). Same leniency rules as the dashboard
 // schemas above: numbers default to 0, strings to "", `.loose()` passes
 // unknown fields.
