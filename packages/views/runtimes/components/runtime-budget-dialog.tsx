@@ -145,13 +145,15 @@ export function RuntimeBudgetDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t(($) => $.budget.dialog.title)}</DialogTitle>
           <DialogDescription>{t(($) => $.budget.dialog.description)}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-2">
+        {/* The member rows grow without bound, so only this region scrolls;
+            the header and the save/cancel footer stay reachable. */}
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
           <div className="grid grid-cols-[minmax(0,1.3fr)_repeat(3,minmax(0,1fr))_1.75rem] gap-2 px-1 text-micro uppercase tracking-wider text-muted-foreground">
             <div>{t(($) => $.budget.col_scope)}</div>
             <div>{t(($) => $.budget.col_daily)}</div>
