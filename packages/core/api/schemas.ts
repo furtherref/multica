@@ -1672,6 +1672,18 @@ const RuntimeUsageSchema = z.object({
 
 export const RuntimeUsageListSchema = z.array(RuntimeUsageSchema);
 
+const RuntimeUsageCoverageSchema = z.object({
+  date: z.string().default(""),
+  completed_runs: z.number().default(0),
+  complete_runs: z.number().default(0),
+  output_only_runs: z.number().default(0),
+  missing_runs: z.number().default(0),
+}).loose();
+
+export const RuntimeUsageCoverageListSchema = z.array(
+  RuntimeUsageCoverageSchema,
+);
+
 const RuntimeHourlyActivitySchema = z.object({
   hour: z.number().default(0),
   count: z.number().default(0),

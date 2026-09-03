@@ -68,6 +68,7 @@ import type {
   CreatePersonalAccessTokenRequest,
   CreatePersonalAccessTokenResponse,
   RuntimeUsage,
+  RuntimeUsageCoverage,
   IssueUsageSummary,
   RuntimeHourlyActivity,
   RuntimeUsageByAgent,
@@ -329,6 +330,7 @@ import {
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
+  RuntimeUsageCoverageListSchema,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
   SquadSchema,
@@ -2145,6 +2147,24 @@ export class ApiClient {
     return parseWithFallback<RuntimeUsage[]>(raw, RuntimeUsageListSchema, [], {
       endpoint: "GET /api/runtimes/:id/usage",
     });
+  }
+
+  async getRuntimeUsageCoverage(
+    runtimeId: string,
+    params?: { days?: number; tz?: string },
+  ): Promise<RuntimeUsageCoverage[]> {
+    const search = new URLSearchParams();
+    if (params?.days) search.set("days", String(params.days));
+    if (params?.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/usage/coverage?${search}`,
+    );
+    return parseWithFallback<RuntimeUsageCoverage[]>(
+      raw,
+      RuntimeUsageCoverageListSchema,
+      [],
+      { endpoint: "GET /api/runtimes/:id/usage/coverage" },
+    );
   }
 
   async getRuntimeTaskActivity(

@@ -7,6 +7,8 @@ export const runtimeKeys = {
   listMine: (wsId: string) => [...runtimeKeys.all(wsId), "list", "mine"] as const,
   usage: (rid: string, days: number, tz: string) =>
     ["runtimes", "usage", rid, days, tz] as const,
+  usageCoverage: (rid: string, days: number, tz: string) =>
+    ["runtimes", "usage", "coverage", rid, days, tz] as const,
   usageByAgent: (rid: string, days: number, tz: string) =>
     ["runtimes", "usage", "by-agent", rid, days, tz] as const,
   // by-hour now follows the viewer's tz, like the other reports.
@@ -23,6 +25,18 @@ export function runtimeUsageOptions(
   return queryOptions({
     queryKey: runtimeKeys.usage(runtimeId, days, tz),
     queryFn: () => api.getRuntimeUsage(runtimeId, { days, tz }),
+    staleTime: 60 * 1000,
+  });
+}
+
+export function runtimeUsageCoverageOptions(
+  runtimeId: string,
+  days: number,
+  tz: string,
+) {
+  return queryOptions({
+    queryKey: runtimeKeys.usageCoverage(runtimeId, days, tz),
+    queryFn: () => api.getRuntimeUsageCoverage(runtimeId, { days, tz }),
     staleTime: 60 * 1000,
   });
 }
