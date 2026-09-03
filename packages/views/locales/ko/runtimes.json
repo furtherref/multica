@@ -406,6 +406,7 @@
     "kpi_tokens_hint": "입력 {{input}} · 출력 {{output}}",
     "kpi_tokens_incomplete_hint": "입력/캐시 데이터 불완전 · 출력 {{output}}",
     "coverage_warning": "사용량 텔레메트리가 불완전합니다. 완료된 실행 {{completed}}건 중 출력만 보고된 실행은 {{outputOnly}}건, 미보고 실행은 {{missing}}건입니다. 기록된 비용은 하한입니다.",
+    "coverage_unavailable": "텔레메트리 커버리지를 불러오지 못해 이 기간의 불완전한 실행은 표시되지 않습니다.",
     "when_title": "런타임 비용 발생 시점",
     "when_tab_daily": "일별",
     "when_tab_weekly": "주별",

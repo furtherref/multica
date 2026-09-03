@@ -79,6 +79,7 @@ vi.mock("@multica/core/runtimes/custom-pricing-store", () => {
 const usageOverride = vi.hoisted(() => ({ rows: null as unknown[] | null }));
 const coverageOverride = vi.hoisted(() => ({
   rows: null as unknown[] | null,
+  error: false,
 }));
 
 // useQuery is mocked so the component renders synchronously with canned
@@ -167,6 +168,7 @@ vi.mock("@tanstack/react-query", async () => {
             ? (coverageOverride.rows ?? coverageRows)
           : (opts?.kind && dataByKind[opts.kind]) || [],
       isLoading: false,
+      isError: opts?.kind === "coverage" && coverageOverride.error,
     }),
   };
 });
@@ -320,6 +322,7 @@ describe("UsageSection — custom-pricing entry point", () => {
   beforeEach(() => {
     usageOverride.rows = null;
     coverageOverride.rows = null;
+    coverageOverride.error = false;
     pricingState.pricings = {};
   });
 
@@ -380,6 +383,7 @@ describe("UsageSection — telemetry coverage", () => {
   beforeEach(() => {
     usageOverride.rows = null;
     coverageOverride.rows = null;
+    coverageOverride.error = false;
     pricingState.pricings = {};
   });
 
@@ -416,6 +420,38 @@ describe("UsageSection — telemetry coverage", () => {
     expect(
       screen.getByText("Input/cache incomplete · output 1K"),
     ).toBeInTheDocument();
+  });
+
+  it("keeps the no-usage page when the only incomplete runs fall outside the window", () => {
+    const outsideWindow = new Date();
+    outsideWindow.setUTCDate(outsideWindow.getUTCDate() - 60);
+    usageOverride.rows = [];
+    coverageOverride.rows = [
+      {
+        date: outsideWindow.toISOString().slice(0, 10),
+        completed_runs: 2,
+        complete_runs: 0,
+        output_only_runs: 0,
+        missing_runs: 2,
+      },
+    ];
+
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    expect(screen.getByText("No usage data yet")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("says so when coverage could not be loaded instead of implying complete telemetry", () => {
+    coverageOverride.rows = [];
+    coverageOverride.error = true;
+
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    expect(
+      screen.getByText(/Telemetry coverage could not be loaded/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("renders missing-only coverage instead of the generic no-usage page", () => {

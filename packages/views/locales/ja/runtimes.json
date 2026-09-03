@@ -406,6 +406,7 @@
     "kpi_tokens_hint": "入力 {{input}} · 出力 {{output}}",
     "kpi_tokens_incomplete_hint": "入力/キャッシュは不完全 · 出力 {{output}}",
     "coverage_warning": "使用量テレメトリが不完全です。完了した {{completed}} 回のうち、出力のみ {{outputOnly}} 回、未報告 {{missing}} 回です。記録済みコストは下限です。",
+    "coverage_unavailable": "テレメトリのカバレッジを読み込めなかったため、この期間では不完全な実行は表示されません。",
     "when_title": "このランタイムでコストが発生した時期",
     "when_tab_daily": "日別",
     "when_tab_weekly": "週別",

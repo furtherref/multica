@@ -1078,6 +1078,34 @@ describe("user-supplied custom pricing", () => {
     ).toEqual(["acme/custom-model"]);
   });
 
+  it("does not count a custom price as active when nothing was estimated with it", () => {
+    useCustomPricingStore.getState().setCustomPricing("acme/custom-model", {
+      input: 1,
+      output: 2,
+      cacheRead: 0.1,
+      cacheWrite: 1,
+    });
+
+    expect(
+      collectActiveCustomPricingModels([
+        // Provider-priced in full: estimateCost never consults the override.
+        {
+          ...zeroUsage,
+          provider: "acme",
+          model: "custom-model",
+          input_tokens: 5_000,
+          cost_usd_ticks: 1_500,
+          uncosted_input_tokens: 0,
+          uncosted_output_tokens: 0,
+          uncosted_cache_read_tokens: 0,
+          uncosted_cache_write_tokens: 0,
+        },
+        // No tokens at all: nothing to price.
+        { ...zeroUsage, provider: "acme", model: "custom-model" },
+      ]),
+    ).toEqual([]);
+  });
+
   it("falls back to a stripped dated snapshot in the custom store", () => {
     useCustomPricingStore.getState().setCustomPricing("brand-new-model", {
       input: 2,

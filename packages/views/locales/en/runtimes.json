@@ -419,6 +419,7 @@
     "kpi_tokens_hint": "in {{input}} · out {{output}}",
     "kpi_tokens_incomplete_hint": "Input/cache incomplete · output {{output}}",
     "coverage_warning": "Usage telemetry is incomplete: {{outputOnly}} output-only, {{missing}} missing out of {{completed}} completed runs. Recorded cost is a lower bound.",
+    "coverage_unavailable": "Telemetry coverage could not be loaded, so incomplete runs are not flagged in this period.",
     "when_title": "When this runtime spent",
     "when_tab_daily": "Daily",
     "when_tab_weekly": "Weekly",

@@ -406,6 +406,7 @@
     "kpi_tokens_hint": "输入 {{input}} · 输出 {{output}}",
     "kpi_tokens_incomplete_hint": "输入/缓存数据不完整 · 输出 {{output}}",
     "coverage_warning": "用量数据不完整：{{completed}} 次已完成执行中，{{outputOnly}} 次仅上报输出，{{missing}} 次未上报 token。已记录费用仅为下限。",
+    "coverage_unavailable": "无法加载用量覆盖情况，当前时间范围内不会标记数据不完整的执行。",
     "when_title": "这个运行时在何时消耗",
     "when_tab_daily": "按天",
     "when_tab_weekly": "按周",

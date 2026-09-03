@@ -593,23 +593,34 @@ export function collectUnmappedModels(rows: readonly Priceable[]): string[] {
   const set = new Set<string>();
   for (const r of rows) {
     if (!r.model || isModelPriced(r.model, r.provider)) continue;
-    const uncosted = uncostedTokens(r);
-    const needsEstimate =
-      uncosted.input > 0 ||
-      uncosted.output > 0 ||
-      uncosted.cacheRead > 0 ||
-      uncosted.cacheWrite > 0;
-    if (!needsEstimate && (r.cost_usd_ticks ?? 0) > 0) continue;
+    if (!needsPriceEstimate(r) && (r.cost_usd_ticks ?? 0) > 0) continue;
     set.add(pricingKey(r.model, r.provider));
   }
   return Array.from(set).toSorted();
 }
 
+// Whether estimateCost would consult a rate table for this row at all: only
+// tokens the provider did not price itself go through resolvePricing.
+function needsPriceEstimate(row: Priceable): boolean {
+  const uncosted = uncostedTokens(row);
+  return (
+    uncosted.input > 0 ||
+    uncosted.output > 0 ||
+    uncosted.cacheRead > 0 ||
+    uncosted.cacheWrite > 0
+  );
+}
+
+// The custom prices that actually priced something in `rows`: a saved
+// override only counts as active when estimateCost consulted it, so a row the
+// provider costed in full (or one with no tokens) never raises the "priced
+// with your custom rates" notice.
 export function collectActiveCustomPricingModels(
   rows: readonly Priceable[],
 ): string[] {
   const active = new Set<string>();
   for (const row of rows) {
+    if (!row.model || !needsPriceEstimate(row)) continue;
     const candidates = pricingCandidates(row.model, row.provider);
     if (candidates.some((candidate) => MODEL_PRICING[candidate] !== undefined)) {
       continue;
@@ -1168,11 +1179,11 @@ export function aggregateByWeek(
 // timezone so the cutoff lands on the same calendar boundary the backend
 // used when bucketing rows — without this the browser/runtime tz gap could
 // shift the boundary by a day at the edges (#MUL-2382 sliceWindow tz bug).
-export function sliceWindow(
-  usage: readonly RuntimeUsage[],
+export function sliceWindow<T extends { date: string }>(
+  usage: readonly T[],
   days: number,
   tz: string,
-): { filtered: RuntimeUsage[]; prevFiltered: RuntimeUsage[] } {
+): { filtered: T[]; prevFiltered: T[] } {
   const today = todayIso(tz);
   const isoCurrent = addDaysIso(today, -days);
   const isoPrev = addDaysIso(today, -days * 2);

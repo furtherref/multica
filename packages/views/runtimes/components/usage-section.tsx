@@ -33,8 +33,6 @@ import {
   collectUnmappedModels,
   collectActiveCustomPricingModels,
   aggregateUsageCoverage,
-  addDaysIso,
-  todayIso,
   pctChange,
   sliceWindow,
   NO_OWNER_KEY,
@@ -146,9 +144,11 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
   const { data: usage = [], isLoading: loading } = useQuery(
     runtimeUsageOptions(runtimeId, 180, tz),
   );
-  const { data: coverage = [], isLoading: coverageLoading } = useQuery(
-    runtimeUsageCoverageOptions(runtimeId, 180, tz),
-  );
+  const {
+    data: coverage = [],
+    isLoading: coverageLoading,
+    isError: coverageUnavailable,
+  } = useQuery(runtimeUsageCoverageOptions(runtimeId, 180, tz));
   const [dim, setDim] = useState<Exclude<WhenTab, "heatmap">>("daily");
   const [days, setDays] = useState<TimeRange>(30);
   // Subscribe so the KPI cards (which call estimateCost at render-time, not
@@ -158,7 +158,6 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
   useCustomPricingStore((s) => s.pricings);
 
   if (loading || coverageLoading) return <UsageSkeleton />;
-  if (usage.length === 0 && coverage.length === 0) return <UsageEmpty />;
 
   // Slice the cached 180-day window into the user's selected sub-window AND
   // the immediately prior window of equal length. The KPI delta ("+18% vs
@@ -166,13 +165,17 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
   // all of history". Tz-aware so the cutoff lands on the same calendar
   // boundary the backend used when bucketing rows.
   const { filtered, prevFiltered } = sliceWindow(usage, days, tz);
-  const coverageCutoff = addDaysIso(todayIso(tz), -days);
   const coverageTotals = aggregateUsageCoverage(
-    coverage.filter((row) => row.date >= coverageCutoff),
+    sliceWindow(coverage, days, tz).filtered,
   );
   const incompleteRuns =
     coverageTotals.outputOnlyRuns + coverageTotals.missingRuns;
   const coverageIncomplete = incompleteRuns > 0;
+
+  // A runtime with no usage at all stays on the empty page unless the
+  // selected window has runs whose telemetry is missing: those must surface
+  // as a warning, not as a dashboard that reads "$0.00".
+  if (usage.length === 0 && !coverageIncomplete) return <UsageEmpty />;
 
   const allowedRanges = rangesForDim(dim);
   const handleDimChange = (next: Exclude<WhenTab, "heatmap">) => {
@@ -240,6 +243,11 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
           the chart would render normally and the unmapped tokens would silently
           contribute $0 to totals. Stays reachable once every model is priced
           if the user has saved overrides, so those rates remain editable. */}
+      {coverageUnavailable && (
+        <p className="rounded-lg border bg-muted/20 px-3 py-2 text-caption text-muted-foreground">
+          {t(($) => $.usage.coverage_unavailable)}
+        </p>
+      )}
       {coverageIncomplete && (
         <div
           role="alert"
