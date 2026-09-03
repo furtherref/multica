@@ -476,6 +476,7 @@
     "table_output": "Output",
     "table_cache_r": "Cache R",
     "table_cache_w": "Cache W",
+    "table_cost": "Cost",
     "no_data": "No usage data yet"
   }
 }

@@ -459,6 +459,7 @@
     "table_output": "输出",
     "table_cache_r": "缓存读",
     "table_cache_w": "缓存写",
+    "table_cost": "费用",
     "no_data": "还没有使用数据"
   }
 }

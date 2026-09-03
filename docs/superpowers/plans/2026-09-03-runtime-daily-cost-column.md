@@ -35,16 +35,33 @@
 
 - [ ] **Step 1: Write the failing component test**
 
-Add a test that renders `UsageSection`, clicks the `Daily breakdown table` button, and asserts both the `Cost` column header and the expected formatted cost for the first fixture row:
+Add a test that provides a current-day usage row with `$0.35` of provider-reported cost, renders `UsageSection`, clicks the `Daily breakdown table` button, and asserts the Cost header and formatted row value within the folded section:
 
 ```tsx
 it("shows the calculated cost as the final daily breakdown column", () => {
+  usageOverride.rows = [{
+    runtime_id: "r-1",
+    date: new Date().toISOString().slice(0, 10),
+    provider: "copilot",
+    model: "gpt-5.5",
+    input_tokens: 34_300,
+    output_tokens: 3_000,
+    cache_read_tokens: 175_700,
+    cache_write_tokens: 0,
+    cost_usd_ticks: 3_500_000_000,
+    uncosted_input_tokens: 0,
+    uncosted_output_tokens: 0,
+    uncosted_cache_read_tokens: 0,
+    uncosted_cache_write_tokens: 0,
+  }];
   render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
 
-  fireEvent.click(screen.getByRole("button", { name: "Daily breakdown table" }));
+  const toggle = screen.getByRole("button", { name: "Daily breakdown table" });
+  fireEvent.click(toggle);
+  const breakdown = within(toggle.parentElement!);
 
-  expect(screen.getByText("Cost")).toBeInTheDocument();
-  expect(screen.getByText("$0.00")).toBeInTheDocument();
+  expect(breakdown.getByText("Cost")).toBeInTheDocument();
+  expect(breakdown.getByText("$0.35")).toBeInTheDocument();
 });
 ```
 
