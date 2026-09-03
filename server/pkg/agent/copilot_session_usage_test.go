@@ -293,6 +293,60 @@ func TestCopilotSessionUsageRejectsCounterRegression(t *testing.T) {
 	}
 }
 
+func TestCopilotResumeUsageLockSerializesSameSession(t *testing.T) {
+	home := t.TempDir()
+	env := []string{"HOME=" + home}
+	sessionID := "35059dc3-d928-4ffb-8616-b78938621d90"
+
+	releaseFirst, err := acquireCopilotResumeUsageLock(context.Background(), env, sessionID)
+	if err != nil {
+		t.Fatalf("acquire first lock: %v", err)
+	}
+
+	secondAcquired := make(chan func(), 1)
+	go func() {
+		release, acquireErr := acquireCopilotResumeUsageLock(context.Background(), env, sessionID)
+		if acquireErr == nil {
+			secondAcquired <- release
+		}
+	}()
+
+	select {
+	case release := <-secondAcquired:
+		release()
+		releaseFirst()
+		t.Fatal("second execution acquired the same session before the first released it")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseFirst()
+	select {
+	case release := <-secondAcquired:
+		release()
+	case <-time.After(time.Second):
+		t.Fatal("second execution did not acquire the session after release")
+	}
+}
+
+func TestCopilotResumeUsageLockAllowsDifferentSessions(t *testing.T) {
+	home := t.TempDir()
+	env := []string{"HOME=" + home}
+
+	releaseFirst, err := acquireCopilotResumeUsageLock(context.Background(), env, "35059dc3-d928-4ffb-8616-b78938621d91")
+	if err != nil {
+		t.Fatalf("acquire first lock: %v", err)
+	}
+	defer releaseFirst()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	releaseSecond, err := acquireCopilotResumeUsageLock(ctx, env, "35059dc3-d928-4ffb-8616-b78938621d92")
+	if err != nil {
+		t.Fatalf("different session was blocked: %v", err)
+	}
+	releaseSecond()
+}
+
 func runCopilotExecuteWithConfig(t *testing.T, cfg Config, opts ExecOptions) Result {
 	t.Helper()
 	backend, err := New("copilot", cfg)
@@ -346,8 +400,124 @@ func writeCopilotSessionFixtureExecutable(
 	return fakePath
 }
 
+func waitForCopilotFixtureFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat fixture marker: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for fixture marker %q", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestCopilotExecuteSerializesConcurrentResumesOfSameSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	home := t.TempDir()
+	sessionID := "35059dc3-d928-4ffb-8616-b78938621d93"
+	writeCopilotSessionEvents(t, home, sessionID, shutdownEvent("gpt-5.6-terra", 10_000, 500, 8_000, 1_000))
+
+	fixtureDir := t.TempDir()
+	firstClaim := filepath.Join(fixtureDir, "first-claim")
+	firstStarted := filepath.Join(fixtureDir, "first-started")
+	secondStarted := filepath.Join(fixtureDir, "second-started")
+	releaseFirst := filepath.Join(fixtureDir, "release-first")
+	sessionPath := filepath.Join(home, ".copilot", "session-state", sessionID, "events.jsonl")
+	fakePath := filepath.Join(fixtureDir, "copilot")
+	script := "#!/bin/sh\n" +
+		"if mkdir \"" + firstClaim + "\" 2>/dev/null; then\n" +
+		"  : > \"" + firstStarted + "\"\n" +
+		"  while [ ! -f \"" + releaseFirst + "\" ]; do sleep 0.02; done\n" +
+		"  printf '%s\\n' '" + shutdownEvent("gpt-5.6-terra", 25_000, 1_100, 20_000, 2_000) + "' >> \"" + sessionPath + "\"\n" +
+		"else\n" +
+		"  : > \"" + secondStarted + "\"\n" +
+		"  printf '%s\\n' '" + shutdownEvent("gpt-5.6-terra", 40_000, 1_500, 32_000, 3_000) + "' >> \"" + sessionPath + "\"\n" +
+		"fi\n" +
+		"printf '%s\\n' '{\"type\":\"result\",\"sessionId\":\"" + sessionID + "\",\"exitCode\":0}'\n"
+	writeTestExecutable(t, fakePath, []byte(script))
+
+	backend, err := New("copilot", Config{
+		ExecutablePath: fakePath,
+		Env:            map[string]string{"HOME": home},
+		Logger:         slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("new Copilot backend: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	defer func() { _ = os.WriteFile(releaseFirst, nil, 0o600) }()
+
+	first, err := backend.Execute(ctx, "first", ExecOptions{ResumeSessionID: sessionID})
+	if err != nil {
+		t.Fatalf("execute first resume: %v", err)
+	}
+	go func() { // The backend must always have a message consumer.
+		for range first.Messages {
+		}
+	}()
+	waitForCopilotFixtureFile(t, firstStarted)
+
+	type executeResult struct {
+		session *Session
+		err     error
+	}
+	secondExecute := make(chan executeResult, 1)
+	go func() {
+		session, executeErr := backend.Execute(ctx, "second", ExecOptions{ResumeSessionID: sessionID})
+		secondExecute <- executeResult{session: session, err: executeErr}
+	}()
+
+	select {
+	case result := <-secondExecute:
+		if result.session != nil {
+			go func() {
+				for range result.session.Messages {
+				}
+			}()
+		}
+		t.Fatalf("second same-session Execute returned before the first completed: %v", result.err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if _, err := os.Stat(secondStarted); !os.IsNotExist(err) {
+		t.Fatalf("second same-session process started early; stat error = %v", err)
+	}
+
+	if err := os.WriteFile(releaseFirst, nil, 0o600); err != nil {
+		t.Fatalf("release first fixture: %v", err)
+	}
+	firstResult := <-first.Result
+	if got := firstResult.Usage["gpt-5.6-terra"]; got.OutputTokens != 600 {
+		t.Fatalf("first resume usage = %#v", got)
+	}
+
+	var second executeResult
+	select {
+	case second = <-secondExecute:
+	case <-ctx.Done():
+		t.Fatalf("second same-session Execute remained blocked: %v", ctx.Err())
+	}
+	if second.err != nil {
+		t.Fatalf("execute second resume: %v", second.err)
+	}
+	go func() {
+		for range second.session.Messages {
+		}
+	}()
+	secondResult := <-second.session.Result
+	if got := secondResult.Usage["gpt-5.6-terra"]; got.OutputTokens != 400 {
+		t.Fatalf("second resume usage = %#v", got)
+	}
+}
+
 func TestCopilotExecuteFreshSessionFileBeatsLegacyOutputOnly(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	sessionID := "35059dc3-d928-4ffb-8616-b78938621d85"
 	fakePath := writeCopilotSessionFixtureExecutable(
@@ -364,7 +534,7 @@ func TestCopilotExecuteFreshSessionFileBeatsLegacyOutputOnly(t *testing.T) {
 		ExecutablePath: fakePath,
 		Env:            map[string]string{"HOME": home},
 		Logger:         slog.Default(),
-	}, ExecOptions{Timeout: 5 * time.Second})
+	}, ExecOptions{})
 
 	got := result.Usage["claude-sonnet-5"]
 	if got.InputTokens != 4_000 || got.OutputTokens != 900 {
@@ -373,7 +543,6 @@ func TestCopilotExecuteFreshSessionFileBeatsLegacyOutputOnly(t *testing.T) {
 }
 
 func TestCopilotExecuteCompleteStdoutBeatsSessionFile(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	sessionID := "35059dc3-d928-4ffb-8616-b78938621d86"
 	fakePath := writeCopilotSessionFixtureExecutable(
@@ -388,7 +557,7 @@ func TestCopilotExecuteCompleteStdoutBeatsSessionFile(t *testing.T) {
 		ExecutablePath: fakePath,
 		Env:            map[string]string{"HOME": home},
 		Logger:         slog.Default(),
-	}, ExecOptions{Timeout: 5 * time.Second})
+	}, ExecOptions{})
 
 	got := result.Usage["claude-sonnet-4.5"]
 	if got.InputTokens != 1_500 || got.OutputTokens != 250 {
@@ -397,7 +566,6 @@ func TestCopilotExecuteCompleteStdoutBeatsSessionFile(t *testing.T) {
 }
 
 func TestCopilotExecuteResumeUsesSessionFileDelta(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	sessionID := "35059dc3-d928-4ffb-8616-b78938621d87"
 	writeCopilotSessionEvents(
@@ -418,7 +586,7 @@ func TestCopilotExecuteResumeUsesSessionFileDelta(t *testing.T) {
 		ExecutablePath: fakePath,
 		Env:            map[string]string{"HOME": home},
 		Logger:         slog.Default(),
-	}, ExecOptions{Timeout: 5 * time.Second, ResumeSessionID: sessionID})
+	}, ExecOptions{ResumeSessionID: sessionID})
 
 	got := result.Usage["gpt-5.6-terra"]
 	if got.InputTokens != 2_000 || got.OutputTokens != 600 ||
@@ -428,7 +596,6 @@ func TestCopilotExecuteResumeUsesSessionFileDelta(t *testing.T) {
 }
 
 func TestCopilotExecuteResumeSkipsStaleBaseline(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	sessionID := "35059dc3-d928-4ffb-8616-b78938621d88"
 	writeCopilotSessionEvents(
@@ -452,7 +619,7 @@ func TestCopilotExecuteResumeSkipsStaleBaseline(t *testing.T) {
 		ExecutablePath: fakePath,
 		Env:            map[string]string{"HOME": home},
 		Logger:         slog.Default(),
-	}, ExecOptions{Timeout: 5 * time.Second, ResumeSessionID: sessionID})
+	}, ExecOptions{ResumeSessionID: sessionID})
 
 	if hasTokens(result.Usage) {
 		t.Fatalf("usage = %#v; a stale baseline must not be diffed, the killed run would be billed twice", result.Usage)
@@ -460,7 +627,6 @@ func TestCopilotExecuteResumeSkipsStaleBaseline(t *testing.T) {
 }
 
 func TestCopilotExecuteResumeSkipsFileWhenSessionIDMismatches(t *testing.T) {
-	t.Parallel()
 	home := t.TempDir()
 	resumeID := "35059dc3-d928-4ffb-8616-b78938621d89"
 	reportedID := "35059dc3-d928-4ffb-8616-b78938621d8a"
@@ -477,7 +643,7 @@ func TestCopilotExecuteResumeSkipsFileWhenSessionIDMismatches(t *testing.T) {
 		ExecutablePath: fakePath,
 		Env:            map[string]string{"HOME": home},
 		Logger:         slog.Default(),
-	}, ExecOptions{Timeout: 5 * time.Second, ResumeSessionID: resumeID})
+	}, ExecOptions{ResumeSessionID: resumeID})
 
 	if hasTokens(result.Usage) {
 		t.Fatalf("usage = %#v; a resumed run reporting a different session id must not be billed as a fresh session", result.Usage)

@@ -440,12 +440,25 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	// Capture the session's counters before the CLI can append to them: a
 	// resumed run's own usage is the growth over this baseline.
 	var resumeUsageBaseline copilotSessionUsageRead
+	var resumeUsageUnlock func()
 	if opts.ResumeSessionID != "" {
+		resumeUsageUnlock, err = acquireCopilotResumeUsageLock(runCtx, cmd.Env, opts.ResumeSessionID)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("acquire Copilot resume usage lock: %w", err)
+		}
 		resumeUsageBaseline, err = readCopilotSessionUsageSnapshot(cmd.Env, opts.ResumeSessionID)
 		if err != nil {
 			b.cfg.Logger.Warn("Copilot resume usage baseline unavailable", "error", err)
 		}
 	}
+	// Release the session lock if startup fails before the result goroutine
+	// takes ownership of it.
+	defer func() {
+		if resumeUsageUnlock != nil {
+			resumeUsageUnlock()
+		}
+	}()
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -464,11 +477,15 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
+	ownedResumeUsageUnlock := resumeUsageUnlock
 
 	go func() {
 		defer cancel()
 		defer close(msgCh)
 		defer close(resCh)
+		if ownedResumeUsageUnlock != nil {
+			defer ownedResumeUsageUnlock()
+		}
 		if mcpConfigPath != "" {
 			defer cleanupMcpConfigTemp(mcpConfigPath)
 		}
@@ -559,6 +576,9 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	}()
 	// The goroutine owns the temp file from here on.
 	mcpFileCleanup = nil
+	// The goroutine also owns the resumed session lock through the final
+	// snapshot read.
+	resumeUsageUnlock = nil
 
 	return &Session{Messages: msgCh, Result: resCh}, nil
 }

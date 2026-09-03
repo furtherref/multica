@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 const copilotSessionUsageTailBytes int64 = 8 * 1024 * 1024
@@ -31,6 +33,64 @@ type copilotSessionUsageRead struct {
 	// a resume baseline — diffing against it would fold that unrecorded
 	// activity into the next run.
 	ActivityAfterShutdown bool
+}
+
+type copilotResumeUsageLockEntry struct {
+	token chan struct{}
+	refs  int
+}
+
+var copilotResumeUsageLocks = struct {
+	sync.Mutex
+	entries map[string]*copilotResumeUsageLockEntry
+}{entries: make(map[string]*copilotResumeUsageLockEntry)}
+
+// acquireCopilotResumeUsageLock serializes resumed executions that read and
+// later diff the same cumulative session file. The caller must hold the lock
+// from before its baseline read until after its final snapshot read; otherwise
+// two overlapping turns can share a baseline and each bill the other's growth.
+func acquireCopilotResumeUsageLock(ctx context.Context, env []string, sessionID string) (func(), error) {
+	if !isSafeCopilotSessionID(sessionID) {
+		return nil, errors.New("unsafe Copilot session id")
+	}
+	configDir, err := copilotConfigDir(env)
+	if err != nil {
+		return nil, err
+	}
+	key := filepath.Clean(configDir) + "\x00" + sessionID
+
+	copilotResumeUsageLocks.Lock()
+	entry := copilotResumeUsageLocks.entries[key]
+	if entry == nil {
+		entry = &copilotResumeUsageLockEntry{token: make(chan struct{}, 1)}
+		entry.token <- struct{}{}
+		copilotResumeUsageLocks.entries[key] = entry
+	}
+	entry.refs++
+	copilotResumeUsageLocks.Unlock()
+
+	dropRef := func() {
+		copilotResumeUsageLocks.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(copilotResumeUsageLocks.entries, key)
+		}
+		copilotResumeUsageLocks.Unlock()
+	}
+
+	select {
+	case <-entry.token:
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				entry.token <- struct{}{}
+				dropRef()
+			})
+		}, nil
+	case <-ctx.Done():
+		dropRef()
+		return nil, ctx.Err()
+	}
 }
 
 func readCopilotSessionUsageSnapshot(env []string, sessionID string) (copilotSessionUsageRead, error) {
