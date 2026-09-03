@@ -243,7 +243,7 @@ Expected: only planned files changed.
 Run:
 
 ```bash
-git add docs/superpowers/specs/2026-05-07-issue-archive-status-design.md docs/superpowers/plans/2026-05-07-issue-archive-status.md packages/core/types/issue.ts packages/core/issues/config/status.ts packages/core/issues/config/status.test.ts packages/views/locales/en/issues.json packages/views/locales/zh-Hans/issues.json server/cmd/multica/cmd_issue.go server/cmd/multica/cmd_issue_test.go server/migrations/069_issue_archive_status.up.sql server/migrations/069_issue_archive_status.down.sql server/pkg/db/queries/issue.sql server/pkg/db/queries/inbox.sql server/pkg/db/queries/project.sql server/pkg/db/generated/issue.sql.go server/pkg/db/generated/inbox.sql.go server/pkg/db/generated/project.sql.go server/internal/handler/issue.go server/internal/handler/search_test.go server/internal/handler/handler_test.go
+git add docs/superpowers/specs/2026/05/07/issue-archive-status-design.md docs/superpowers/plans/2026/05/07/issue-archive-status.md packages/core/types/issue.ts packages/core/issues/config/status.ts packages/core/issues/config/status.test.ts packages/views/locales/en/issues.json packages/views/locales/zh-Hans/issues.json server/cmd/multica/cmd_issue.go server/cmd/multica/cmd_issue_test.go server/migrations/069_issue_archive_status.up.sql server/migrations/069_issue_archive_status.down.sql server/pkg/db/queries/issue.sql server/pkg/db/queries/inbox.sql server/pkg/db/queries/project.sql server/pkg/db/generated/issue.sql.go server/pkg/db/generated/inbox.sql.go server/pkg/db/generated/project.sql.go server/internal/handler/issue.go server/internal/handler/search_test.go server/internal/handler/handler_test.go
 git commit -m "feat: add archive issue status"
 ```
 

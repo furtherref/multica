@@ -1217,7 +1217,7 @@ git commit -m "fix(github): keep archived issues archived when a linked PR merge
 ### Task 8: Consistency audit, design-doc addendum + full verification
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-05-07-issue-archive-status-design.md` (semantics addendum)
+- Modify: `docs/superpowers/specs/2026/05/07/issue-archive-status-design.md` (semantics addendum)
 - Otherwise verification-only; produces changes only if the audit finds a missed site (then: fix + test in the pattern of Tasks 1–7).
 
 **Interfaces:**
@@ -1226,7 +1226,7 @@ git commit -m "fix(github): keep archived issues archived when a linked PR merge
 
 - [ ] **Step 1: Design-doc addendum**
 
-The original archive design (`docs/superpowers/specs/2026-05-07-issue-archive-status-design.md`, "Product Semantics") defines archive as "a closed issue status … matching the user-facing terminal behavior of `cancelled`". This branch deliberately EXTENDS that: unlike done/cancelled, archived issues also refuse manual rerun, comment-driven triggers (explicit and implicit), retries, claims, and webhook auto-done. Append a dated addendum section to that design doc:
+The original archive design (`docs/superpowers/specs/2026/05/07/issue-archive-status-design.md`, "Product Semantics") defines archive as "a closed issue status … matching the user-facing terminal behavior of `cancelled`". This branch deliberately EXTENDS that: unlike done/cancelled, archived issues also refuse manual rerun, comment-driven triggers (explicit and implicit), retries, claims, and webhook auto-done. Append a dated addendum section to that design doc:
 
 ```markdown
 ## Addendum (2026-07-16): archive means retired, stricter than done/cancelled

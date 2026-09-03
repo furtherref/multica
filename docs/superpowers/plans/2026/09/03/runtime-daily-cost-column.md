@@ -8,7 +8,7 @@
 
 **Tech Stack:** React, TypeScript, Tailwind CSS grid utilities, i18next JSON resources, Vitest, Testing Library.
 
-**Spec:** `docs/superpowers/specs/2026-09-03-runtime-daily-cost-column-design.md`
+**Spec:** `docs/superpowers/specs/2026/09/03/runtime-daily-cost-column-design.md`
 
 ## Global Constraints
 
@@ -105,6 +105,6 @@ Expected: every command exits 0.
 Inspect the scoped diff, confirm no unrelated files or secrets are included, then commit:
 
 ```bash
-git add docs/superpowers/specs/2026-09-03-runtime-daily-cost-column-design.md docs/superpowers/plans/2026-09-03-runtime-daily-cost-column.md packages/views/runtimes/components/usage-section.test.tsx packages/views/runtimes/components/usage-section.tsx packages/views/locales/en/runtimes.json packages/views/locales/zh-Hans/runtimes.json packages/views/locales/ja/runtimes.json packages/views/locales/ko/runtimes.json
+git add docs/superpowers/specs/2026/09/03/runtime-daily-cost-column-design.md docs/superpowers/plans/2026/09/03/runtime-daily-cost-column.md packages/views/runtimes/components/usage-section.test.tsx packages/views/runtimes/components/usage-section.tsx packages/views/locales/en/runtimes.json packages/views/locales/zh-Hans/runtimes.json packages/views/locales/ja/runtimes.json packages/views/locales/ko/runtimes.json
 git commit -m "feat(runtimes): show cost in daily usage breakdown"
 ```

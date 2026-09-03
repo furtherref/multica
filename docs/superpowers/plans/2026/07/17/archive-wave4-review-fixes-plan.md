@@ -78,7 +78,7 @@ Expected: all selected tests PASS.
 
 **Files:**
 - Modify: `docs/superpowers/plans/2026/07/15/archive-consistency-fixes-plan.md`
-- Modify: `docs/superpowers/specs/2026-05-07-issue-archive-status-design.md`
+- Modify: `docs/superpowers/specs/2026/05/07/issue-archive-status-design.md`
 - Modify: `server/internal/service/builtin_skills/multica-mentioning/references/mentioning-source-map.md`
 - Modify: `server/internal/service/builtin_skills/multica-working-on-issues/references/working-on-issues-source-map.md`
 
@@ -96,7 +96,7 @@ Point SQL rows to `server/pkg/db/queries/agent.sql:907-938` and refresh the help
 rg -n 'agent\.sql:544|comment\.go:1232|comment\.go:1197|comment\.go:1397|comment\.go:1440' \
   server/internal/service/builtin_skills/multica-mentioning/references/mentioning-source-map.md
 rg -n 'never started.*can still launch|never starts.*best-effort' \
-  docs/superpowers/specs/2026-05-07-issue-archive-status-design.md \
+  docs/superpowers/specs/2026/05/07/issue-archive-status-design.md \
   docs/superpowers/plans/2026/07/15/archive-consistency-fixes-plan.md
 ```
 
