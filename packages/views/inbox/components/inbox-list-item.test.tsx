@@ -174,10 +174,12 @@ describe("InboxListItem unread affordance", () => {
 // title, and an ordinary notification keeps the server title it carries.
 describe("InboxListItem system notice titles", () => {
   it("titles a runtime budget notice with the localized type label", () => {
+    // The server title must differ from the label, or the assertion passes
+    // whether or not the row swaps anything.
     const { container } = renderRow({
       item: item({
         type: "runtime_budget_exceeded",
-        title: "Runtime cost budget reached",
+        title: "Runtime budget exceeded raw",
         body: "This runtime reached the daily cost limit of $20.00 (used $21.40).",
         issue_id: null,
         details: { scope: "runtime", period: "daily" },
@@ -186,6 +188,7 @@ describe("InboxListItem system notice titles", () => {
     });
 
     expect(title(container)?.textContent).toBe("Runtime cost budget reached");
+    expect(title(container)?.textContent).not.toBe("Runtime budget exceeded raw");
   });
 
   it("titles an autopilot quota notice the same way", () => {
