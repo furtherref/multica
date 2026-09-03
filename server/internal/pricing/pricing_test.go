@@ -1,4 +1,4 @@
-package metrics
+package pricing
 
 import "testing"
 
@@ -212,9 +212,9 @@ func TestGrokPricingMatchesRecordedTurn(t *testing.T) {
 	if !ok {
 		t.Fatal("grok-4.5 did not resolve")
 	}
-	got := tokenCostUSD(uncachedInput, price.InputPerM) +
-		tokenCostUSD(cacheRead, price.CacheReadPerM) +
-		tokenCostUSD(output, price.OutputPerM)
+	got := TokenCostUSD(uncachedInput, price.InputPerM) +
+		TokenCostUSD(cacheRead, price.CacheReadPerM) +
+		TokenCostUSD(output, price.OutputPerM)
 
 	if diff := got - wantUSD; diff > 1e-12 || diff < -1e-12 {
 		t.Fatalf("recomputed cost = %.10f, want %.10f (xAI costUsdTicks)", got, wantUSD)

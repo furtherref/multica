@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/pricing"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -588,7 +589,7 @@ func (m *BusinessMetrics) RecordLLMUsage(source, runtimeMode, rawProvider, model
 	}
 	source = NormalizeTaskSource(source)
 	runtimeMode = NormalizeRuntimeMode(runtimeMode)
-	price, priced := PriceForModelAlias(modelAlias)
+	price, priced := pricing.PriceForModelAlias(modelAlias)
 	if !priced {
 		provider := NormalizeRuntimeProvider(rawProvider)
 		alias := NormalizeModelAlias(modelAlias)
@@ -606,20 +607,20 @@ func (m *BusinessMetrics) RecordLLMUsage(source, runtimeMode, rawProvider, model
 		if costUSDTicks > 0 {
 			m.llmCostUSD.
 				WithLabelValues(provider, alias, NormalizeTokenType("input"), runtimeMode, source).
-				Add(float64(costUSDTicks) / CostUSDTicksPerUSD)
+				Add(float64(costUSDTicks) / pricing.CostUSDTicksPerUSD)
 		}
 		m.llmRequests.WithLabelValues(provider, "unknown", runtimeMode).Inc()
 		return
 	}
 
 	costs := [4]float64{
-		tokenCostUSD(inputTokens, price.InputPerM),
-		tokenCostUSD(outputTokens, price.OutputPerM),
-		tokenCostUSD(cacheReadTokens, price.CacheReadPerM),
-		tokenCostUSD(cacheWriteTokens, price.CacheWritePerM),
+		pricing.TokenCostUSD(inputTokens, price.InputPerM),
+		pricing.TokenCostUSD(outputTokens, price.OutputPerM),
+		pricing.TokenCostUSD(cacheReadTokens, price.CacheReadPerM),
+		pricing.TokenCostUSD(cacheWriteTokens, price.CacheWritePerM),
 	}
 	if costUSDTicks > 0 {
-		costs = distributeAuthoritativeCost(float64(costUSDTicks)/CostUSDTicksPerUSD, costs)
+		costs = distributeAuthoritativeCost(float64(costUSDTicks)/pricing.CostUSDTicksPerUSD, costs)
 	}
 
 	m.recordPricedTokens(price.Provider, price.Model, "input", runtimeMode, source, inputTokens, costs[0])
