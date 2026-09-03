@@ -940,20 +940,21 @@ function DailyBreakdownTable({ usage }: { usage: RuntimeUsage[] }) {
   }
   return (
     <div className="rounded-lg border">
-      <div className="grid grid-cols-[100px_1fr_80px_80px_80px_80px] gap-2 border-b px-3 py-2 text-caption font-medium text-muted-foreground">
+      <div className="grid grid-cols-[100px_1fr_80px_80px_80px_80px_80px] gap-2 border-b px-3 py-2 text-caption font-medium text-muted-foreground">
         <div>{t(($) => $.usage.table_date)}</div>
         <div>{t(($) => $.usage.table_model)}</div>
         <div className="text-right">{t(($) => $.usage.table_input)}</div>
         <div className="text-right">{t(($) => $.usage.table_output)}</div>
         <div className="text-right">{t(($) => $.usage.table_cache_r)}</div>
         <div className="text-right">{t(($) => $.usage.table_cache_w)}</div>
+        <div className="text-right">{t(($) => $.usage.table_cost)}</div>
       </div>
       <div className="max-h-64 overflow-y-auto divide-y">
         {[...byDate.entries()].map(([date, rows]) =>
           rows.map((row, i) => (
             <div
               key={`${date}-${row.model}-${i}`}
-              className="grid grid-cols-[100px_1fr_80px_80px_80px_80px] gap-2 px-3 py-1.5 text-caption"
+              className="grid grid-cols-[100px_1fr_80px_80px_80px_80px_80px] gap-2 px-3 py-1.5 text-caption"
             >
               <div className="text-muted-foreground">{date}</div>
               <div className="truncate font-mono">{row.model}</div>
@@ -968,6 +969,9 @@ function DailyBreakdownTable({ usage }: { usage: RuntimeUsage[] }) {
               </div>
               <div className="text-right tabular-nums">
                 {formatTokens(row.cache_write_tokens)}
+              </div>
+              <div className="text-right font-medium tabular-nums">
+                {formatUsd(estimateCost(row))}
               </div>
             </div>
           )),

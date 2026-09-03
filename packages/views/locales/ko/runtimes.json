@@ -459,6 +459,7 @@
     "table_output": "출력",
     "table_cache_r": "캐시 R",
     "table_cache_w": "캐시 W",
+    "table_cost": "비용",
     "no_data": "아직 사용량 데이터가 없습니다"
   }
 }

@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import type { AgentRuntime } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -258,6 +258,45 @@ describe("UsageSection — Viewing timezone wiring", () => {
     fireEvent.click(screen.getByRole("button", { name: "7d" }));
 
     expect(flows.at(-1)).toHaveAttribute("aria-label", "1K");
+  });
+});
+
+describe("UsageSection — daily breakdown", () => {
+  beforeEach(() => {
+    usageOverride.rows = [
+      {
+        runtime_id: "r-1",
+        date: new Date().toISOString().slice(0, 10),
+        provider: "copilot",
+        model: "gpt-5.5",
+        input_tokens: 34_300,
+        output_tokens: 3_000,
+        cache_read_tokens: 175_700,
+        cache_write_tokens: 0,
+        cost_usd_ticks: 3_500_000_000,
+        uncosted_input_tokens: 0,
+        uncosted_output_tokens: 0,
+        uncosted_cache_read_tokens: 0,
+        uncosted_cache_write_tokens: 0,
+      },
+    ];
+    coverageOverride.rows = null;
+    coverageOverride.error = false;
+    pricingState.pricings = {};
+  });
+
+  it("shows the calculated cost as the final daily breakdown column", () => {
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    const toggle = screen.getByRole("button", { name: "Daily breakdown table" });
+    fireEvent.click(toggle);
+    const breakdown = within(toggle.parentElement!);
+
+    const costHeader = breakdown.getByText("Cost");
+    const costCell = breakdown.getByText("$0.35");
+
+    expect(costHeader.parentElement?.lastElementChild).toBe(costHeader);
+    expect(costCell.parentElement?.lastElementChild).toBe(costCell);
   });
 });
 

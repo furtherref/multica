@@ -459,6 +459,7 @@
     "table_output": "出力",
     "table_cache_r": "キャッシュ R",
     "table_cache_w": "キャッシュ W",
+    "table_cost": "コスト",
     "no_data": "まだ使用量データがありません"
   }
 }
