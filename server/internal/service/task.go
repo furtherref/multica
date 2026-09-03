@@ -1242,6 +1242,9 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		slog.Warn("task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
 		return db.AgentTaskQueue{}, err
 	}
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -1392,6 +1395,9 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
 	if err != nil {
 		slog.Warn("mention task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
+		return db.AgentTaskQueue{}, err
+	}
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	originatorUserID := attr.UserID
@@ -1593,6 +1599,9 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	}
 	if !agent.RuntimeID.Valid {
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
+	}
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
+		return db.AgentTaskQueue{}, err
 	}
 
 	payload := QuickCreateContext{
@@ -2008,6 +2017,9 @@ func (s *TaskService) enqueueChatTaskTx(
 	if !agent.RuntimeID.Valid {
 		return db.AgentTaskQueue{}, ErrChatTaskAgentNoRuntime
 	}
+	if err := s.checkRuntimeCostBudget(ctx, qtx, agent, time.Now()); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 
 	binding, bindingErr := qtx.LockChannelChatSessionBindingForContext(ctx, chatSession.ID)
 	if bindingErr != nil && !errors.Is(bindingErr, pgx.ErrNoRows) {
@@ -2353,6 +2365,12 @@ func (s *TaskService) SendDirectChatMessage(
 		}
 		if !carrier.RuntimeID.Valid {
 			return ErrChatTaskAgentNoRuntime
+		}
+		// Direct chat creates its task here rather than through
+		// enqueueChatTaskTx, so it needs its own budget gate; without it the
+		// handler's budget_exceeded mapping for this call would be unreachable.
+		if err := s.checkRuntimeCostBudget(ctx, qtx, carrier, time.Now()); err != nil {
+			return err
 		}
 
 		// The database status of every newly-created task is "queued" until a

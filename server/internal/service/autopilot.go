@@ -629,6 +629,10 @@ func dispatchFailReasonCode(err error) dispatch.ReasonCode {
 	if errors.Is(err, ErrAttributionFailClosed) {
 		return dispatch.ReasonAttributionBlocked
 	}
+	var budget *RuntimeBudgetExceededError
+	if errors.As(err, &budget) {
+		return dispatch.ReasonBudgetExceeded
+	}
 	return dispatch.ReasonInternalError
 }
 
