@@ -462,5 +462,41 @@
     "table_cache_w": "캐시 W",
     "table_cost": "비용",
     "no_data": "아직 사용량 데이터가 없습니다"
+  },
+  "budget": {
+    "title": "비용 예산",
+    "description": "한도는 UTC 기준 매일, 매주(월요일), 매월 00:00에 초기화됩니다. 서버가 가격을 산정할 수 없는 사용량은 집계되지 않으므로 지출액은 최솟값입니다.",
+    "edit_button": "예산 편집",
+    "set_button": "예산 설정",
+    "empty_title": "설정된 한도 없음",
+    "empty_body": "이 런타임에서는 모든 사용자가 한도 없이 사용할 수 있습니다.",
+    "col_scope": "범위",
+    "col_daily": "일간",
+    "col_weekly": "주간",
+    "col_monthly": "월간",
+    "runtime_total": "런타임 전체",
+    "runtime_total_hint": "이 런타임의 모든 사용자",
+    "member_hint": "멤버",
+    "unlimited": "무제한",
+    "used_of_limit": "{{used}} / {{limit}}",
+    "resets_at": "{{when}} 초기화",
+    "limit_reached": "한도 도달",
+    "show_members_other": "멤버 예산 {{count}}개 보기",
+    "hide_members": "멤버 예산 숨기기",
+    "reached_badge_other": "한도 도달 {{count}}건",
+    "former_member": "탈퇴한 멤버",
+    "dialog": {
+      "title": "비용 예산 편집",
+      "description": "기간별 USD 금액입니다. 비워 두면 한도가 없습니다. 한도에 도달하면 기간이 초기화될 때까지 새 실행이 거부됩니다.",
+      "runtime_hint": "도달 시 모든 사용자를 차단",
+      "add_member": "멤버 추가",
+      "remove_aria": "멤버 예산 제거",
+      "clear_hint": "멤버 행의 모든 항목을 비우면 해당 행이 삭제됩니다.",
+      "no_limit_placeholder": "무제한",
+      "invalid_amount": "소수점 두 자리 이하의 양수 USD 금액을 입력하세요.",
+      "save_failed": "예산을 저장하지 못했습니다.",
+      "cancel": "취소",
+      "save": "저장"
+    }
   }
 }

@@ -85,6 +85,7 @@
     "./squads": "./squads/index.ts",
     "./squads/stores": "./squads/stores/index.ts",
     "./permissions": "./permissions/index.ts",
+    "./permissions/use-current-member": "./permissions/use-current-member.ts",
     "./search/cancelled-rank": "./search/cancelled-rank.ts",
     "./projects": "./projects/index.ts",
     "./projects/queries": "./projects/queries.ts",

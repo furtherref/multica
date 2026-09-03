@@ -462,5 +462,41 @@
     "table_cache_w": "缓存写",
     "table_cost": "费用",
     "no_data": "还没有使用数据"
+  },
+  "budget": {
+    "title": "费用额度",
+    "description": "额度按 UTC 每日、每周（周一）、每月 00:00 重置。服务端无法计价的用量不计入，因此已用金额是下限。",
+    "edit_button": "编辑额度",
+    "set_button": "设置额度",
+    "empty_title": "未设置额度",
+    "empty_body": "所有用户在此运行时上均不受额度限制。",
+    "col_scope": "范围",
+    "col_daily": "每日",
+    "col_weekly": "每周",
+    "col_monthly": "每月",
+    "runtime_total": "运行时总额度",
+    "runtime_total_hint": "此运行时上的全部用户",
+    "member_hint": "成员",
+    "unlimited": "不限",
+    "used_of_limit": "{{used}} / {{limit}}",
+    "resets_at": "{{when}} 重置",
+    "limit_reached": "已达上限",
+    "show_members_other": "展开 {{count}} 位成员额度",
+    "hide_members": "收起成员额度",
+    "reached_badge_other": "{{count}} 项已达上限",
+    "former_member": "已离开的成员",
+    "dialog": {
+      "title": "编辑费用额度",
+      "description": "单位为每周期美元。留空表示不限额。达到上限后新任务将被拒绝，直到周期重置。",
+      "runtime_hint": "达到上限时阻断所有用户",
+      "add_member": "添加成员",
+      "remove_aria": "移除成员额度",
+      "clear_hint": "清空成员行的全部字段即移除该行。",
+      "no_limit_placeholder": "不限",
+      "invalid_amount": "请输入最多两位小数的正数美元金额。",
+      "save_failed": "额度保存失败。",
+      "cancel": "取消",
+      "save": "保存"
+    }
   }
 }
