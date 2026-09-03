@@ -237,3 +237,70 @@ func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Que
 		}
 	}
 }
+
+// RuntimeBudgetPeriodStatus is one configured period of one scope.
+type RuntimeBudgetPeriodStatus struct {
+	LimitTicks  int64
+	UsedTicks   int64
+	PeriodStart time.Time
+	ResetAt     time.Time
+	Reached     bool
+}
+
+// RuntimeBudgetScopeStatus is the runtime total (UserID invalid) or one user.
+type RuntimeBudgetScopeStatus struct {
+	UserID  pgtype.UUID
+	Periods map[pricing.Period]*RuntimeBudgetPeriodStatus
+}
+
+// RuntimeBudgetStatus is the read model behind GET /api/runtimes/{id}/budget.
+type RuntimeBudgetStatus struct {
+	Runtime *RuntimeBudgetScopeStatus
+	Users   []RuntimeBudgetScopeStatus
+}
+
+// scopeStatus reports every period of one budget row. A period with no
+// configured limit maps to a nil entry, which the API renders as null.
+func scopeStatus(ctx context.Context, q *db.Queries, row db.RuntimeCostBudget, now time.Time) (RuntimeBudgetScopeStatus, error) {
+	out := RuntimeBudgetScopeStatus{UserID: row.UserID, Periods: map[pricing.Period]*RuntimeBudgetPeriodStatus{}}
+	for _, p := range pricing.AllPeriods {
+		limit, ok := budgetLimit(row, p)
+		if !ok {
+			out.Periods[p] = nil
+			continue
+		}
+		start := pricing.PeriodStart(now, p)
+		used, err := runtimeSpendTicks(ctx, q, row.RuntimeID, row.UserID, start)
+		if err != nil {
+			return out, err
+		}
+		out.Periods[p] = &RuntimeBudgetPeriodStatus{
+			LimitTicks: limit, UsedTicks: used, PeriodStart: start,
+			ResetAt: pricing.NextPeriodStart(now, p), Reached: used >= limit,
+		}
+	}
+	return out, nil
+}
+
+// RuntimeCostBudgetStatus loads every budget row of a runtime with its
+// current-period spend. Spend is computed on demand, never stored.
+func (s *TaskService) RuntimeCostBudgetStatus(ctx context.Context, runtimeID pgtype.UUID, now time.Time) (RuntimeBudgetStatus, error) {
+	rows, err := s.Queries.ListRuntimeCostBudgets(ctx, runtimeID)
+	if err != nil {
+		return RuntimeBudgetStatus{}, fmt.Errorf("list runtime cost budgets: %w", err)
+	}
+	status := RuntimeBudgetStatus{Users: []RuntimeBudgetScopeStatus{}}
+	for _, row := range rows {
+		sc, err := scopeStatus(ctx, s.Queries, row, now)
+		if err != nil {
+			return RuntimeBudgetStatus{}, err
+		}
+		if row.UserID.Valid {
+			status.Users = append(status.Users, sc)
+		} else {
+			total := sc
+			status.Runtime = &total
+		}
+	}
+	return status, nil
+}

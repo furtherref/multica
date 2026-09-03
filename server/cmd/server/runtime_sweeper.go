@@ -560,6 +560,11 @@ func gcRuntime(ctx context.Context, txStarter runtimeGCTxStarter, queries *db.Qu
 		}
 		return result, fmt.Errorf("teardown runtime: %w", err)
 	}
+	// Budget rows carry no foreign key (repository rule), so the collected
+	// runtime's scopes are removed explicitly inside the same transaction.
+	if err := qtx.DeleteRuntimeCostBudgetsForRuntime(ctx, runtimeID); err != nil {
+		return result, fmt.Errorf("delete runtime budgets: %w", err)
+	}
 	if err := qtx.DeleteAgentRuntime(ctx, runtimeID); err != nil {
 		return result, fmt.Errorf("delete runtime: %w", err)
 	}

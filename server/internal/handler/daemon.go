@@ -871,6 +871,11 @@ func (h *Handler) mergeLegacyRuntime(ctx context.Context, newRuntimeID, oldRunti
 	}); err != nil {
 		return fmt.Errorf("record legacy daemon_id: %w", err)
 	}
+	// The merged-away runtime keeps no budget scopes: limits belong to the
+	// runtime row, and nothing else deletes them (no foreign key).
+	if err := qtx.DeleteRuntimeCostBudgetsForRuntime(ctx, oldRuntimeID); err != nil {
+		return fmt.Errorf("delete old runtime budgets: %w", err)
+	}
 	if err := qtx.DeleteAgentRuntime(ctx, oldRuntimeID); err != nil {
 		return fmt.Errorf("delete old runtime: %w", err)
 	}
