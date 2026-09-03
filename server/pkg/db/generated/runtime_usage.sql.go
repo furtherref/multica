@@ -311,3 +311,88 @@ func (q *Queries) ListRuntimeUsageByAgent(ctx context.Context, arg ListRuntimeUs
 	}
 	return items, nil
 }
+
+const listRuntimeUsageCoverage = `-- name: ListRuntimeUsageCoverage :many
+WITH per_task AS (
+    SELECT
+        atq.id,
+        DATE(atq.completed_at AT TIME ZONE $1::text) AS date,
+        COALESCE(SUM(tu.input_tokens), 0)::bigint AS input_tokens,
+        COALESCE(SUM(tu.output_tokens), 0)::bigint AS output_tokens,
+        COALESCE(SUM(tu.cache_read_tokens), 0)::bigint AS cache_read_tokens,
+        COALESCE(SUM(tu.cache_write_tokens), 0)::bigint AS cache_write_tokens,
+        COALESCE(SUM(tu.cost_usd_ticks), 0)::bigint AS cost_usd_ticks
+    FROM agent_task_queue atq
+    LEFT JOIN task_usage tu ON tu.task_id = atq.id
+    WHERE atq.runtime_id = $2
+      AND atq.status = 'completed'
+      AND atq.completed_at >= $3::timestamptz
+    GROUP BY atq.id, DATE(atq.completed_at AT TIME ZONE $1::text)
+)
+SELECT
+    date,
+    COUNT(*)::bigint AS completed_runs,
+    COUNT(*) FILTER (
+        WHERE input_tokens + cache_read_tokens + cache_write_tokens > 0
+           OR cost_usd_ticks > 0
+    )::bigint AS complete_runs,
+    COUNT(*) FILTER (
+        WHERE input_tokens + cache_read_tokens + cache_write_tokens = 0
+          AND cost_usd_ticks = 0
+          AND output_tokens > 0
+    )::bigint AS output_only_runs,
+    COUNT(*) FILTER (
+        WHERE input_tokens + output_tokens + cache_read_tokens + cache_write_tokens = 0
+          AND cost_usd_ticks = 0
+    )::bigint AS missing_runs
+FROM per_task
+GROUP BY date
+ORDER BY date DESC
+`
+
+type ListRuntimeUsageCoverageParams struct {
+	Tz        string             `json:"tz"`
+	RuntimeID pgtype.UUID        `json:"runtime_id"`
+	Since     pgtype.Timestamptz `json:"since"`
+}
+
+type ListRuntimeUsageCoverageRow struct {
+	Date           pgtype.Date `json:"date"`
+	CompletedRuns  int64       `json:"completed_runs"`
+	CompleteRuns   int64       `json:"complete_runs"`
+	OutputOnlyRuns int64       `json:"output_only_runs"`
+	MissingRuns    int64       `json:"missing_runs"`
+}
+
+// Classifies completed runs by whether their stored task_usage contains a
+// complete input-side breakdown, output-only telemetry, or no token telemetry.
+// Failed/cancelled runs are excluded because they may have ended before the
+// provider was invoked; a completed run without usage is the billing hole this
+// report is meant to surface. A run the provider priced itself
+// (cost_usd_ticks > 0) is complete regardless of its token buckets: adapters
+// that only report a dollar amount leave every token column at zero.
+func (q *Queries) ListRuntimeUsageCoverage(ctx context.Context, arg ListRuntimeUsageCoverageParams) ([]ListRuntimeUsageCoverageRow, error) {
+	rows, err := q.db.Query(ctx, listRuntimeUsageCoverage, arg.Tz, arg.RuntimeID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRuntimeUsageCoverageRow{}
+	for rows.Next() {
+		var i ListRuntimeUsageCoverageRow
+		if err := rows.Scan(
+			&i.Date,
+			&i.CompletedRuns,
+			&i.CompleteRuns,
+			&i.OutputOnlyRuns,
+			&i.MissingRuns,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

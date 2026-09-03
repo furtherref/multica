@@ -1028,7 +1028,6 @@ func TestCopilotEventLoopToolOnlyTurnClearsPendingDelta(t *testing.T) {
 }
 
 func TestCopilotExecuteSurfacesStderrOnNonZeroResult(t *testing.T) {
-	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fixture is POSIX-only")
 	}
@@ -1047,7 +1046,7 @@ func TestCopilotExecuteSurfacesStderrOnNonZeroResult(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -1264,7 +1263,6 @@ func runCopilotExecute(t *testing.T, fakePath string, opts ExecOptions) Result {
 }
 
 func TestCopilotExecutePassesAdditionalMcpConfig(t *testing.T) {
-	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fixture is POSIX-only")
 	}
@@ -1272,10 +1270,7 @@ func TestCopilotExecutePassesAdditionalMcpConfig(t *testing.T) {
 	fakePath, argsDump, mcpDump := startCopilotMcpFixture(t)
 	mcpConfig := json.RawMessage(`{"mcpServers":{"fetch":{"command":"uvx","args":["mcp-server-fetch"]}}}`)
 
-	result := runCopilotExecute(t, fakePath, ExecOptions{
-		Timeout:   5 * time.Second,
-		McpConfig: mcpConfig,
-	})
+	result := runCopilotExecute(t, fakePath, ExecOptions{McpConfig: mcpConfig})
 	if result.Status != "completed" {
 		t.Fatalf("expected status=completed, got %q (error=%q)", result.Status, result.Error)
 	}
@@ -1331,14 +1326,13 @@ func TestCopilotExecutePassesAdditionalMcpConfig(t *testing.T) {
 }
 
 func TestCopilotExecuteOmitsAdditionalMcpConfigWhenUnset(t *testing.T) {
-	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fixture is POSIX-only")
 	}
 
 	fakePath, argsDump, _ := startCopilotMcpFixture(t)
 
-	result := runCopilotExecute(t, fakePath, ExecOptions{Timeout: 5 * time.Second})
+	result := runCopilotExecute(t, fakePath, ExecOptions{})
 	if result.Status != "completed" {
 		t.Fatalf("expected status=completed, got %q (error=%q)", result.Status, result.Error)
 	}

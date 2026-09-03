@@ -1652,7 +1652,7 @@ export const DashboardFailureByAgentListSchema = z.array(
 );
 
 // ---------------------------------------------------------------------------
-// Runtime usage schemas — the runtime-detail page's four usage endpoints
+// Runtime usage schemas — the runtime-detail page's usage endpoints
 // (`/api/runtimes/:id/usage*`). Same leniency rules as the dashboard
 // schemas above: numbers default to 0, strings to "", `.loose()` passes
 // unknown fields.
@@ -1671,6 +1671,18 @@ const RuntimeUsageSchema = z.object({
 }).loose();
 
 export const RuntimeUsageListSchema = z.array(RuntimeUsageSchema);
+
+const RuntimeUsageCoverageSchema = z.object({
+  date: z.string().default(""),
+  completed_runs: z.number().default(0),
+  complete_runs: z.number().default(0),
+  output_only_runs: z.number().default(0),
+  missing_runs: z.number().default(0),
+}).loose();
+
+export const RuntimeUsageCoverageListSchema = z.array(
+  RuntimeUsageCoverageSchema,
+);
 
 const RuntimeHourlyActivitySchema = z.object({
   hour: z.number().default(0),

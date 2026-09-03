@@ -21,6 +21,9 @@ const runtimeUsageOptions = vi.hoisted(() =>
 const runtimeUsageByAgentOptions = vi.hoisted(() =>
   vi.fn((..._args: unknown[]) => ({ kind: "by-agent" as const })),
 );
+const runtimeUsageCoverageOptions = vi.hoisted(() =>
+  vi.fn((..._args: unknown[]) => ({ kind: "coverage" as const })),
+);
 
 vi.mock("../../common/use-viewing-timezone", () => ({
   useViewingTimezone: () => VIEWER_TZ,
@@ -29,6 +32,7 @@ vi.mock("../../common/use-viewing-timezone", () => ({
 vi.mock("@multica/core/runtimes/queries", () => ({
   runtimeUsageOptions,
   runtimeUsageByAgentOptions,
+  runtimeUsageCoverageOptions,
 }));
 
 vi.mock("@multica/core/workspace/queries", () => ({
@@ -73,6 +77,10 @@ vi.mock("@multica/core/runtimes/custom-pricing-store", () => {
 // Lets a test swap in its own usage rows (e.g. an unpriced model) without
 // re-mocking the whole query layer. `null` keeps the default fixture.
 const usageOverride = vi.hoisted(() => ({ rows: null as unknown[] | null }));
+const coverageOverride = vi.hoisted(() => ({
+  rows: null as unknown[] | null,
+  error: false,
+}));
 
 // useQuery is mocked so the component renders synchronously with canned
 // data — the `kind` tag on each query-options object routes the response.
@@ -108,6 +116,15 @@ vi.mock("@tanstack/react-query", async () => {
       cache_write_tokens: 0,
     },
   ];
+  const coverageRows = [
+    {
+      date: dateDaysAgo(0),
+      completed_runs: 1,
+      complete_runs: 1,
+      output_only_runs: 0,
+      missing_runs: 0,
+    },
+  ];
   const byAgentTokens = {
     provider: "anthropic",
     model: "claude-sonnet-4-6",
@@ -136,6 +153,7 @@ vi.mock("@tanstack/react-query", async () => {
   ];
   const dataByKind: Record<string, unknown> = {
     usage: usageRows,
+    coverage: coverageRows,
     "by-agent": byAgentRows,
     agents,
     members,
@@ -146,8 +164,11 @@ vi.mock("@tanstack/react-query", async () => {
       data:
         opts?.kind === "usage"
           ? (usageOverride.rows ?? usageRows)
+          : opts?.kind === "coverage"
+            ? (coverageOverride.rows ?? coverageRows)
           : (opts?.kind && dataByKind[opts.kind]) || [],
       isLoading: false,
+      isError: opts?.kind === "coverage" && coverageOverride.error,
     }),
   };
 });
@@ -300,6 +321,8 @@ describe("UsageSection — custom-pricing entry point", () => {
 
   beforeEach(() => {
     usageOverride.rows = null;
+    coverageOverride.rows = null;
+    coverageOverride.error = false;
     pricingState.pricings = {};
   });
 
@@ -341,5 +364,114 @@ describe("UsageSection — custom-pricing entry point", () => {
     expect(
       screen.getByRole("button", { name: "Edit custom prices" }),
     ).toBeInTheDocument();
+  });
+
+  it("does not claim an unused saved custom price is active", () => {
+    pricingState.pricings = {
+      "unused/model": { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 },
+    };
+
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    expect(
+      screen.getByText("Saved custom prices are not used in this period."),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("UsageSection — telemetry coverage", () => {
+  beforeEach(() => {
+    usageOverride.rows = null;
+    coverageOverride.rows = null;
+    coverageOverride.error = false;
+    pricingState.pricings = {};
+  });
+
+  it("marks output-only cost and input/cache as incomplete", () => {
+    usageOverride.rows = [
+      {
+        runtime_id: "r-1",
+        date: new Date().toISOString().slice(0, 10),
+        provider: "copilot",
+        model: "gpt-5.5",
+        input_tokens: 0,
+        output_tokens: 1_000,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+      },
+    ];
+    coverageOverride.rows = [
+      {
+        date: new Date().toISOString().slice(0, 10),
+        completed_runs: 1,
+        complete_runs: 0,
+        output_only_runs: 1,
+        missing_runs: 0,
+      },
+    ];
+
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "1 output-only, 0 missing",
+    );
+    expect(screen.getByText("Recorded cost lower bound · 30D")).toBeInTheDocument();
+    expect(screen.getByLabelText("At least $0.03")).toBeInTheDocument();
+    expect(
+      screen.getByText("Input/cache incomplete · output 1K"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the no-usage page when the only incomplete runs fall outside the window", () => {
+    const outsideWindow = new Date();
+    outsideWindow.setUTCDate(outsideWindow.getUTCDate() - 60);
+    usageOverride.rows = [];
+    coverageOverride.rows = [
+      {
+        date: outsideWindow.toISOString().slice(0, 10),
+        completed_runs: 2,
+        complete_runs: 0,
+        output_only_runs: 0,
+        missing_runs: 2,
+      },
+    ];
+
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    expect(screen.getByText("No usage data yet")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("says so when coverage could not be loaded instead of implying complete telemetry", () => {
+    coverageOverride.rows = [];
+    coverageOverride.error = true;
+
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    expect(
+      screen.getByText(/Telemetry coverage could not be loaded/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("renders missing-only coverage instead of the generic no-usage page", () => {
+    usageOverride.rows = [];
+    coverageOverride.rows = [
+      {
+        date: new Date().toISOString().slice(0, 10),
+        completed_runs: 2,
+        complete_runs: 0,
+        output_only_runs: 0,
+        missing_runs: 2,
+      },
+    ];
+
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "0 output-only, 2 missing",
+    );
+    expect(screen.queryByText("No usage data yet")).toBeNull();
+    expect(screen.getByText("Recorded cost lower bound · 30D")).toBeInTheDocument();
   });
 });

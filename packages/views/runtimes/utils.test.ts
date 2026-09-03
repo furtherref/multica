@@ -1,6 +1,10 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { useCustomPricingStore } from "@multica/core/runtimes/custom-pricing-store";
-import type { AgentRuntime, RuntimeUsage } from "@multica/core/types";
+import type {
+  AgentRuntime,
+  RuntimeUsage,
+  RuntimeUsageCoverage,
+} from "@multica/core/types";
 
 import {
   addDaysIso,
@@ -10,6 +14,8 @@ import {
   aggregateCostByOwner,
   NO_OWNER_KEY,
   collectUnmappedModels,
+  collectActiveCustomPricingModels,
+  aggregateUsageCoverage,
   computeCostInWindow,
   estimateCost,
   estimateCostBreakdown,
@@ -1034,6 +1040,72 @@ describe("user-supplied custom pricing", () => {
     ).toBeCloseTo(3, 5); // maintained input rate, not the 999 override
   });
 
+  it("reports only custom prices that are active in the selected rows", () => {
+    useCustomPricingStore.getState().setCustomPricing("acme/custom-model", {
+      input: 1,
+      output: 2,
+      cacheRead: 0.1,
+      cacheWrite: 1,
+    });
+    useCustomPricingStore.getState().setCustomPricing("unused/model", {
+      input: 1,
+      output: 2,
+      cacheRead: 0.1,
+      cacheWrite: 1,
+    });
+    useCustomPricingStore.getState().setCustomPricing("claude-sonnet-4-6", {
+      input: 999,
+      output: 999,
+      cacheRead: 999,
+      cacheWrite: 999,
+    });
+
+    expect(
+      collectActiveCustomPricingModels([
+        {
+          ...zeroUsage,
+          provider: "acme",
+          model: "custom-model",
+          input_tokens: 1,
+        },
+        {
+          ...zeroUsage,
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          input_tokens: 1,
+        },
+      ]),
+    ).toEqual(["acme/custom-model"]);
+  });
+
+  it("does not count a custom price as active when nothing was estimated with it", () => {
+    useCustomPricingStore.getState().setCustomPricing("acme/custom-model", {
+      input: 1,
+      output: 2,
+      cacheRead: 0.1,
+      cacheWrite: 1,
+    });
+
+    expect(
+      collectActiveCustomPricingModels([
+        // Provider-priced in full: estimateCost never consults the override.
+        {
+          ...zeroUsage,
+          provider: "acme",
+          model: "custom-model",
+          input_tokens: 5_000,
+          cost_usd_ticks: 1_500,
+          uncosted_input_tokens: 0,
+          uncosted_output_tokens: 0,
+          uncosted_cache_read_tokens: 0,
+          uncosted_cache_write_tokens: 0,
+        },
+        // No tokens at all: nothing to price.
+        { ...zeroUsage, provider: "acme", model: "custom-model" },
+      ]),
+    ).toEqual([]);
+  });
+
   it("falls back to a stripped dated snapshot in the custom store", () => {
     useCustomPricingStore.getState().setCustomPricing("brand-new-model", {
       input: 2,
@@ -1344,6 +1416,37 @@ describe("sliceWindow (timezone-aware)", () => {
     const { filtered, prevFiltered } = sliceWindow(usage, 7, "UTC");
     expect(filtered.map((u) => u.date)).toEqual(["2026-05-15", "2026-05-19"]);
     expect(prevFiltered.map((u) => u.date)).toEqual(["2026-05-08"]);
+  });
+});
+
+describe("aggregateUsageCoverage", () => {
+  function row(
+    date: string,
+    complete: number,
+    outputOnly: number,
+    missing: number,
+  ): RuntimeUsageCoverage {
+    return {
+      date,
+      completed_runs: complete + outputOnly + missing,
+      complete_runs: complete,
+      output_only_runs: outputOnly,
+      missing_runs: missing,
+    };
+  }
+
+  it("sums complete, output-only, and missing completed runs", () => {
+    expect(
+      aggregateUsageCoverage([
+        row("2026-08-27", 2, 3, 4),
+        row("2026-08-28", 5, 6, 7),
+      ]),
+    ).toEqual({
+      completedRuns: 27,
+      completeRuns: 7,
+      outputOnlyRuns: 9,
+      missingRuns: 11,
+    });
   });
 });
 

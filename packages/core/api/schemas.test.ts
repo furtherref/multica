@@ -51,6 +51,7 @@ import {
   RuntimeHourlyActivityListSchema,
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
+  RuntimeUsageCoverageListSchema,
   RuntimeUsageListSchema,
   SendChatMessageResponseSchema,
   SquadListSchema,
@@ -1069,6 +1070,15 @@ describe("dashboard + runtime usage schema drift", () => {
     expect(RuntimeHourlyActivityListSchema.parse([{ hour: 9 }])[0]?.count).toBe(0);
     expect(RuntimeUsageByAgentListSchema.parse([{ model: "x" }])[0]?.agent_id).toBe("");
     expect(RuntimeUsageByHourListSchema.parse([{ hour: 9 }])[0]?.model).toBe("");
+    expect(
+      RuntimeUsageCoverageListSchema.parse([{ date: "2026-08-29" }])[0],
+    ).toEqual({
+      date: "2026-08-29",
+      completed_runs: 0,
+      complete_runs: 0,
+      output_only_runs: 0,
+      missing_runs: 0,
+    });
   });
 
   it("defaults a missing provider to \"\" so an older server's rows still price by bare model", () => {

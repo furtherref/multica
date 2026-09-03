@@ -16,6 +16,7 @@ import type { RuntimeUsage, AgentRuntime } from "@multica/core/types";
 import {
   runtimeUsageOptions,
   runtimeUsageByAgentOptions,
+  runtimeUsageCoverageOptions,
 } from "@multica/core/runtimes/queries";
 import { useCustomPricingStore } from "@multica/core/runtimes/custom-pricing-store";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
@@ -30,6 +31,8 @@ import {
   aggregateCostByModel,
   aggregateCostByOwner,
   collectUnmappedModels,
+  collectActiveCustomPricingModels,
+  aggregateUsageCoverage,
   pctChange,
   sliceWindow,
   NO_OWNER_KEY,
@@ -141,6 +144,11 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
   const { data: usage = [], isLoading: loading } = useQuery(
     runtimeUsageOptions(runtimeId, 180, tz),
   );
+  const {
+    data: coverage = [],
+    isLoading: coverageLoading,
+    isError: coverageUnavailable,
+  } = useQuery(runtimeUsageCoverageOptions(runtimeId, 180, tz));
   const [dim, setDim] = useState<Exclude<WhenTab, "heatmap">>("daily");
   const [days, setDays] = useState<TimeRange>(30);
   // Subscribe so the KPI cards (which call estimateCost at render-time, not
@@ -149,8 +157,7 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
   // subscribe on their own and pass pricings as a memo dep there.
   useCustomPricingStore((s) => s.pricings);
 
-  if (loading) return <UsageSkeleton />;
-  if (usage.length === 0) return <UsageEmpty />;
+  if (loading || coverageLoading) return <UsageSkeleton />;
 
   // Slice the cached 180-day window into the user's selected sub-window AND
   // the immediately prior window of equal length. The KPI delta ("+18% vs
@@ -158,6 +165,17 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
   // all of history". Tz-aware so the cutoff lands on the same calendar
   // boundary the backend used when bucketing rows.
   const { filtered, prevFiltered } = sliceWindow(usage, days, tz);
+  const coverageTotals = aggregateUsageCoverage(
+    sliceWindow(coverage, days, tz).filtered,
+  );
+  const incompleteRuns =
+    coverageTotals.outputOnlyRuns + coverageTotals.missingRuns;
+  const coverageIncomplete = incompleteRuns > 0;
+
+  // A runtime with no usage at all stays on the empty page unless the
+  // selected window has runs whose telemetry is missing: those must surface
+  // as a warning, not as a dashboard that reads "$0.00".
+  if (usage.length === 0 && !coverageIncomplete) return <UsageEmpty />;
 
   const allowedRanges = rangesForDim(dim);
   const handleDimChange = (next: Exclude<WhenTab, "heatmap">) => {
@@ -225,20 +243,55 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
           the chart would render normally and the unmapped tokens would silently
           contribute $0 to totals. Stays reachable once every model is priced
           if the user has saved overrides, so those rates remain editable. */}
+      {coverageUnavailable && (
+        <p className="rounded-lg border bg-muted/20 px-3 py-2 text-caption text-muted-foreground">
+          {t(($) => $.usage.coverage_unavailable)}
+        </p>
+      )}
+      {coverageIncomplete && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-caption"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+          <p className="text-foreground">
+            {t(($) => $.usage.coverage_warning, {
+              completed: coverageTotals.completedRuns,
+              outputOnly: coverageTotals.outputOnlyRuns,
+              missing: coverageTotals.missingRuns,
+            })}
+          </p>
+        </div>
+      )}
       <CustomPricingBar usage={filtered} />
 
       <div className="grid grid-cols-3 divide-x rounded-lg border bg-card">
         <KpiCard
-          label={t(($) => $.usage.kpi_cost_label, { days })}
+          label={t(
+            ($) =>
+              coverageIncomplete
+                ? $.usage.kpi_cost_lower_bound_label
+                : $.usage.kpi_cost_label,
+            { days },
+          )}
           value={
-            <CurrencyNumberFlow
-              value={totals.cost}
-              locales={locales}
-              aria-label={formatUsd(totals.cost)}
-            />
+            <div className="flex items-baseline gap-1">
+              {coverageIncomplete && <span aria-hidden="true">≥</span>}
+              <CurrencyNumberFlow
+                value={totals.cost}
+                locales={locales}
+                aria-label={
+                  coverageIncomplete
+                    ? t(($) => $.usage.kpi_cost_lower_bound_aria, {
+                        cost: formatUsd(totals.cost),
+                      })
+                    : formatUsd(totals.cost)
+                }
+              />
+            </div>
           }
           hint={
-            costDelta == null ? undefined : (
+            coverageIncomplete || costDelta == null ? undefined : (
               <span
                 className={
                   costDelta > 0
@@ -286,10 +339,14 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
           }
           hint={
             <span>
-              {t(($) => $.usage.kpi_tokens_hint, {
-                input: formatTokens(totals.input),
-                output: formatTokens(totals.output),
-              })}
+              {coverageIncomplete
+                ? t(($) => $.usage.kpi_tokens_incomplete_hint, {
+                    output: formatTokens(totals.output),
+                  })
+                : t(($) => $.usage.kpi_tokens_hint, {
+                    input: formatTokens(totals.input),
+                    output: formatTokens(totals.output),
+                  })}
             </span>
           }
         />
@@ -566,6 +623,7 @@ function CustomPricingBar({ usage }: { usage: RuntimeUsage[] }) {
     (s) => Object.keys(s.pricings).length > 0,
   );
   const unmapped = collectUnmappedModels(usage);
+  const activeOverrides = collectActiveCustomPricingModels(usage);
   if (unmapped.length === 0 && !hasOverrides) return null;
 
   const hasGap = unmapped.length > 0;
@@ -591,7 +649,9 @@ function CustomPricingBar({ usage }: { usage: RuntimeUsage[] }) {
         </>
       ) : (
         <p className="min-w-0 flex-1 text-muted-foreground">
-          {t(($) => $.usage.custom_pricing.active_notice)}
+          {activeOverrides.length > 0
+            ? t(($) => $.usage.custom_pricing.active_notice)
+            : t(($) => $.usage.custom_pricing.inactive_notice)}
         </p>
       )}
       <Button

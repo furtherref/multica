@@ -26,6 +26,12 @@ func TestRuntimeHandlersRejectMalformedRuntimeID(t *testing.T) {
 			handle: testHandler.GetRuntimeUsage,
 		},
 		{
+			name:   "usage coverage",
+			method: "GET",
+			path:   "/api/runtimes/not-a-uuid/usage/coverage",
+			handle: testHandler.GetRuntimeUsageCoverage,
+		},
+		{
 			name:   "task activity",
 			method: "GET",
 			path:   "/api/runtimes/not-a-uuid/task-activity",

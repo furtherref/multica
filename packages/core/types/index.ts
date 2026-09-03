@@ -59,6 +59,7 @@ export type {
   UpdateSkillRequest,
   SetAgentSkillsRequest,
   RuntimeUsage,
+  RuntimeUsageCoverage,
   RuntimeHourlyActivity,
   RuntimeUsageByAgent,
   RuntimeUsageByHour,

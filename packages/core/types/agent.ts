@@ -931,6 +931,14 @@ export interface RuntimeUsage {
   uncosted_cache_write_tokens?: number;
 }
 
+export interface RuntimeUsageCoverage {
+  date: string;
+  completed_runs: number;
+  complete_runs: number;
+  output_only_runs: number;
+  missing_runs: number;
+}
+
 export interface RuntimeHourlyActivity {
   hour: number;
   count: number;
