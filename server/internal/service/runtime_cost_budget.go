@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/pricing"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -156,7 +157,7 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 // auto-commit s.Queries, and the implementation must keep using the handle it is
 // given rather than reaching for a transaction of the enqueue.
 func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Queries, row db.RuntimeCostBudget, exceeded *RuntimeBudgetExceededError) {
-	rt, err := q.GetAgentRuntime(ctx, row.RuntimeID)
+	rt, err := RuntimeLookup{Queries: q, Metrics: s.Metrics, Source: obsmetrics.RuntimeLookupSourceBudgetNotice}.Get(ctx, row.RuntimeID)
 	if err != nil {
 		slog.Warn("runtime budget notice: load runtime failed", "runtime_id", util.UUIDToString(row.RuntimeID), "error", err)
 		return
