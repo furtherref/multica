@@ -1209,6 +1209,22 @@ type QuickAction struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
+type RuntimeCostBudget struct {
+	ID                         pgtype.UUID        `json:"id"`
+	WorkspaceID                pgtype.UUID        `json:"workspace_id"`
+	RuntimeID                  pgtype.UUID        `json:"runtime_id"`
+	UserID                     pgtype.UUID        `json:"user_id"`
+	DailyLimitUsdTicks         pgtype.Int8        `json:"daily_limit_usd_ticks"`
+	WeeklyLimitUsdTicks        pgtype.Int8        `json:"weekly_limit_usd_ticks"`
+	MonthlyLimitUsdTicks       pgtype.Int8        `json:"monthly_limit_usd_ticks"`
+	DailyNotifiedPeriodStart   pgtype.Timestamptz `json:"daily_notified_period_start"`
+	WeeklyNotifiedPeriodStart  pgtype.Timestamptz `json:"weekly_notified_period_start"`
+	MonthlyNotifiedPeriodStart pgtype.Timestamptz `json:"monthly_notified_period_start"`
+	UpdatedBy                  pgtype.UUID        `json:"updated_by"`
+	CreatedAt                  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                  pgtype.Timestamptz `json:"updated_at"`
+}
+
 type RuntimeProfile struct {
 	ID             pgtype.UUID        `json:"id"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
