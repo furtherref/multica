@@ -140,10 +140,14 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 }
 
 // notifyRuntimeBudgetExceeded creates one "limit reached" inbox item per
-// period for the scope that refused the run. MarkRuntimeCostBudgetNotified
-// claims the period first, so concurrent refusals produce one notice.
-// Recipients: the blocked user (per-user scope) and the runtime owner,
-// de-duplicated. Failures are logged; the refusal itself is already decided.
+// period for the scope that refused the run. Recipients: the blocked user
+// (per-user scope) and the runtime owner, de-duplicated. The recipient set
+// and notice details are built first, and MarkRuntimeCostBudgetNotified only
+// claims the period once a recipient is known — an empty recipient set (a
+// runtime-scope budget on a runtime with no owner) or a lookup/marshal
+// failure must not burn the claim, or a later refusal that could resolve a
+// recipient would never retry. Once claimed, concurrent refusals produce one
+// notice. Failures are logged; the refusal itself is already decided.
 //
 // It must NOT use the caller's transaction. checkRuntimeCostBudget refuses the
 // enqueue right after calling this, and on the chat paths that refusal rolls the
@@ -152,18 +156,6 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 // auto-commit s.Queries, and the implementation must keep using the handle it is
 // given rather than reaching for a transaction of the enqueue.
 func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Queries, row db.RuntimeCostBudget, exceeded *RuntimeBudgetExceededError) {
-	claimed, err := q.MarkRuntimeCostBudgetNotified(ctx, db.MarkRuntimeCostBudgetNotifiedParams{
-		Period:      string(exceeded.Period),
-		PeriodStart: pgtype.Timestamptz{Time: exceeded.PeriodStart, Valid: true},
-		ID:          row.ID,
-	})
-	if err != nil {
-		slog.Warn("runtime budget notice claim failed", "budget_id", util.UUIDToString(row.ID), "error", err)
-		return
-	}
-	if claimed == 0 {
-		return
-	}
 	rt, err := q.GetAgentRuntime(ctx, row.RuntimeID)
 	if err != nil {
 		slog.Warn("runtime budget notice: load runtime failed", "runtime_id", util.UUIDToString(row.RuntimeID), "error", err)
@@ -175,6 +167,11 @@ func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Que
 	}
 	if rt.OwnerID.Valid {
 		recipients[util.UUIDToString(rt.OwnerID)] = rt.OwnerID
+	}
+	if len(recipients) == 0 {
+		slog.Debug("runtime budget notice: no recipients, not claiming period",
+			"runtime_id", util.UUIDToString(row.RuntimeID), "scope", exceeded.Scope, "period", exceeded.Period)
+		return
 	}
 	var userID *string
 	if exceeded.UserID.Valid {
@@ -189,6 +186,18 @@ func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Que
 	})
 	if err != nil {
 		slog.Warn("runtime budget notice: marshal details failed", "error", err)
+		return
+	}
+	claimed, err := q.MarkRuntimeCostBudgetNotified(ctx, db.MarkRuntimeCostBudgetNotifiedParams{
+		Period:      string(exceeded.Period),
+		PeriodStart: pgtype.Timestamptz{Time: exceeded.PeriodStart, Valid: true},
+		ID:          row.ID,
+	})
+	if err != nil {
+		slog.Warn("runtime budget notice claim failed", "budget_id", util.UUIDToString(row.ID), "error", err)
+		return
+	}
+	if claimed == 0 {
 		return
 	}
 	scopeLabel := "This runtime"
