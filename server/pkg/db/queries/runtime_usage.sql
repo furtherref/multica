@@ -29,6 +29,44 @@ WHERE runtime_id = $1
 GROUP BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text), LOWER(provider), model
 ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provider), model;
 
+-- name: ListRuntimeUsageCoverage :many
+-- Classifies completed runs by whether their stored task_usage contains a
+-- complete input-side breakdown, output-only telemetry, or no token telemetry.
+-- Failed/cancelled runs are excluded because they may have ended before the
+-- provider was invoked; a completed run without usage is the billing hole this
+-- report is meant to surface.
+WITH per_task AS (
+    SELECT
+        atq.id,
+        DATE(atq.completed_at AT TIME ZONE sqlc.arg('tz')::text) AS date,
+        COALESCE(SUM(tu.input_tokens), 0)::bigint AS input_tokens,
+        COALESCE(SUM(tu.output_tokens), 0)::bigint AS output_tokens,
+        COALESCE(SUM(tu.cache_read_tokens), 0)::bigint AS cache_read_tokens,
+        COALESCE(SUM(tu.cache_write_tokens), 0)::bigint AS cache_write_tokens
+    FROM agent_task_queue atq
+    LEFT JOIN task_usage tu ON tu.task_id = atq.id
+    WHERE atq.runtime_id = sqlc.arg('runtime_id')
+      AND atq.status = 'completed'
+      AND atq.completed_at >= sqlc.arg('since')::timestamptz
+    GROUP BY atq.id, DATE(atq.completed_at AT TIME ZONE sqlc.arg('tz')::text)
+)
+SELECT
+    date,
+    COUNT(*)::bigint AS completed_runs,
+    COUNT(*) FILTER (
+        WHERE input_tokens + cache_read_tokens + cache_write_tokens > 0
+    )::bigint AS complete_runs,
+    COUNT(*) FILTER (
+        WHERE input_tokens + cache_read_tokens + cache_write_tokens = 0
+          AND output_tokens > 0
+    )::bigint AS output_only_runs,
+    COUNT(*) FILTER (
+        WHERE input_tokens + output_tokens + cache_read_tokens + cache_write_tokens = 0
+    )::bigint AS missing_runs
+FROM per_task
+GROUP BY date
+ORDER BY date DESC;
+
 -- name: GetRuntimeTaskHourlyActivity :many
 -- Hour-of-day distribution for queue starts. Bucketed in the viewer's
 -- tz so "this runtime is busy in the afternoon" actually means

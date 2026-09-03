@@ -161,6 +161,61 @@ func (h *Handler) listRuntimeUsage(ctx context.Context, runtimeID pgtype.UUID, t
 	return resp, nil
 }
 
+type RuntimeUsageCoverageResponse struct {
+	Date           string `json:"date"`
+	CompletedRuns  int64  `json:"completed_runs"`
+	CompleteRuns   int64  `json:"complete_runs"`
+	OutputOnlyRuns int64  `json:"output_only_runs"`
+	MissingRuns    int64  `json:"missing_runs"`
+}
+
+// GetRuntimeUsageCoverage reports whether completed runs stored complete,
+// output-only, or missing token telemetry. It is separate from GetRuntimeUsage
+// so installed clients that expect the legacy usage array keep their contract.
+func (h *Handler) GetRuntimeUsageCoverage(w http.ResponseWriter, r *http.Request) {
+	runtimeID := chi.URLParam(r, "runtimeId")
+	rt, _, ok := h.requireRuntimeReadAccess(w, r, obsmetrics.RuntimeLookupSourceRuntimeAPI, runtimeID)
+	if !ok {
+		return
+	}
+
+	viewTZ := h.resolveViewingTZ(r)
+	since := parseSinceParamInTZ(r, 90, viewTZ)
+	resp, err := h.listRuntimeUsageCoverage(r.Context(), rt.ID, viewTZ, since)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list usage coverage")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) listRuntimeUsageCoverage(
+	ctx context.Context,
+	runtimeID pgtype.UUID,
+	tz string,
+	since pgtype.Timestamptz,
+) ([]RuntimeUsageCoverageResponse, error) {
+	rows, err := h.Queries.ListRuntimeUsageCoverage(ctx, db.ListRuntimeUsageCoverageParams{
+		RuntimeID: runtimeID,
+		Since:     since,
+		Tz:        tz,
+	})
+	if err != nil {
+		return nil, err
+	}
+	resp := make([]RuntimeUsageCoverageResponse, len(rows))
+	for i, row := range rows {
+		resp[i] = RuntimeUsageCoverageResponse{
+			Date:           row.Date.Time.Format("2006-01-02"),
+			CompletedRuns:  row.CompletedRuns,
+			CompleteRuns:   row.CompleteRuns,
+			OutputOnlyRuns: row.OutputOnlyRuns,
+			MissingRuns:    row.MissingRuns,
+		}
+	}
+	return resp, nil
+}
+
 // GetRuntimeTaskActivity returns hourly task activity distribution for a runtime.
 func (h *Handler) GetRuntimeTaskActivity(w http.ResponseWriter, r *http.Request) {
 	runtimeID := chi.URLParam(r, "runtimeId")
