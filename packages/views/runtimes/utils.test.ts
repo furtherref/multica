@@ -12,6 +12,7 @@ import {
   aggregateByWeek,
   aggregateCostByModel,
   aggregateCostByOwner,
+  aggregateCostByOwnerModel,
   NO_OWNER_KEY,
   collectUnmappedModels,
   collectActiveCustomPricingModels,
@@ -1308,6 +1309,85 @@ describe("aggregateCostByOwner", () => {
     const rows = [byAgentRow("a-3", 1_000_000), byAgentRow("a-1", 3_000_000)];
     const byOwner = aggregateCostByOwner(rows, agents);
     expect(byOwner.map((r) => r.key)).toEqual(["u-1", NO_OWNER_KEY]);
+  });
+});
+
+describe("aggregateCostByOwnerModel", () => {
+  const agents = [
+    { id: "a-1", owner_id: "u-1" },
+    { id: "a-2", owner_id: "u-1" },
+    { id: "a-3", owner_id: null },
+  ];
+
+  function byAgentRow(
+    agentId: string,
+    model: string,
+    inputTokens: number,
+    provider = "anthropic",
+  ) {
+    return {
+      agent_id: agentId,
+      provider,
+      model,
+      ...zeroUsage,
+      input_tokens: inputTokens,
+      task_count: 1,
+    };
+  }
+
+  it("returns an empty map for no rows", () => {
+    expect(aggregateCostByOwnerModel([], agents).size).toBe(0);
+  });
+
+  it("folds the same model across an owner's agents into one model row", () => {
+    const rows = [
+      byAgentRow("a-1", "claude-sonnet-4-6", 1_000_000),
+      byAgentRow("a-2", "claude-sonnet-4-6", 1_000_000),
+    ];
+    const models = aggregateCostByOwnerModel(rows, agents).get("u-1");
+    expect(models).toHaveLength(1);
+    expect(models?.[0]?.key).toBe("claude-sonnet-4-6");
+    expect(models?.[0]?.tokens).toBe(2_000_000);
+    expect(models?.[0]?.cost).toBeCloseTo(6, 5);
+    expect(models?.[0]?.taskCount).toBe(2);
+  });
+
+  it("sorts an owner's models by cost desc and sums to the owner total", () => {
+    const rows = [
+      byAgentRow("a-1", "claude-haiku-4-5", 1_000_000),
+      byAgentRow("a-2", "claude-sonnet-4-6", 1_000_000),
+    ];
+    const models = aggregateCostByOwnerModel(rows, agents).get("u-1") ?? [];
+    expect(models.map((m) => m.key)).toEqual(["claude-sonnet-4-6", "claude-haiku-4-5"]);
+    const owner = aggregateCostByOwner(rows, agents)[0];
+    const sum = models.reduce((acc, m) => acc + m.cost, 0);
+    expect(sum).toBeCloseTo(owner?.cost ?? -1, 5);
+  });
+
+  it("buckets ownerless and deleted agents under NO_OWNER_KEY", () => {
+    const rows = [
+      byAgentRow("a-3", "claude-sonnet-4-6", 1_000_000),
+      byAgentRow("a-gone", "claude-sonnet-4-6", 1_000_000),
+    ];
+    const map = aggregateCostByOwnerModel(rows, agents);
+    expect([...map.keys()]).toEqual([NO_OWNER_KEY]);
+    expect(map.get(NO_OWNER_KEY)?.[0]?.tokens).toBe(2_000_000);
+  });
+
+  it("groups models with the same key the By-model tab uses", () => {
+    // A generic id stays provider-qualified so two providers' "auto" do not
+    // merge; the grouping must match aggregateCostByModel exactly.
+    const rows = [
+      byAgentRow("a-1", "auto", 1_000, "cursor"),
+      byAgentRow("a-1", "auto", 1_000, "copilot"),
+    ];
+    const models = aggregateCostByOwnerModel(rows, agents).get("u-1") ?? [];
+    const byModel = aggregateCostByModel(
+      rows.map((r) => ({ ...r, runtime_id: "r-1", date: "2026-05-01" })),
+    );
+    expect(models.map((m) => m.key).toSorted()).toEqual(
+      byModel.map((m) => m.key).toSorted(),
+    );
   });
 });
 

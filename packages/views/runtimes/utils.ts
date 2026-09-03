@@ -1348,6 +1348,37 @@ export function aggregateCostByOwner(
   return Array.from(map.values()).toSorted((a, b) => b.cost - a.cost);
 }
 
+// Per-(agent, model) rows → per-owner, per-model totals. Backs the
+// expand-to-models affordance on each By-owner row: the same agent → owner
+// fold as aggregateCostByOwner, then grouped by the By-model tab's model
+// key so the two views agree on what counts as one model. Each owner's list
+// is sorted by cost desc and its costs sum to that owner's row.
+export function aggregateCostByOwnerModel(
+  rows: RuntimeUsageByAgent[],
+  agents: readonly Pick<Agent, "id" | "owner_id">[],
+): Map<string, CostByKey[]> {
+  const ownerByAgent = new Map<string, string | null>();
+  for (const a of agents) ownerByAgent.set(a.id, a.owner_id);
+  const byOwner = new Map<string, Map<string, CostByKey>>();
+  for (const r of rows) {
+    const owner = ownerByAgent.get(r.agent_id) || NO_OWNER_KEY;
+    const models = byOwner.get(owner) ?? new Map<string, CostByKey>();
+    const key = modelGroupingKey(r.model, r.provider);
+    const entry = models.get(key) ?? { key, tokens: 0, cost: 0, taskCount: 0 };
+    entry.tokens +=
+      r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_write_tokens;
+    entry.cost += estimateCost(r);
+    entry.taskCount += r.task_count;
+    models.set(key, entry);
+    byOwner.set(owner, models);
+  }
+  const out = new Map<string, CostByKey[]>();
+  for (const [owner, models] of byOwner) {
+    out.set(owner, Array.from(models.values()).toSorted((a, b) => b.cost - a.cost));
+  }
+  return out;
+}
+
 // Per-(date, model) rows → per-model totals (the "By model" tab reuses the
 // daily-grain data we already cache, so no extra request is needed).
 export function aggregateCostByModel(rows: RuntimeUsage[]): CostByKey[] {

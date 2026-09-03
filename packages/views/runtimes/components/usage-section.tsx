@@ -30,6 +30,7 @@ import {
   aggregateCostByAgent,
   aggregateCostByModel,
   aggregateCostByOwner,
+  aggregateCostByOwnerModel,
   collectUnmappedModels,
   collectActiveCustomPricingModels,
   aggregateUsageCoverage,
@@ -745,6 +746,10 @@ function CostByBlock({
     () => aggregateCostByOwner(byAgentRows, agents),
     [byAgentRows, agents, pricings],
   );
+  const byOwnerModel = useMemo(
+    () => aggregateCostByOwnerModel(byAgentRows, agents),
+    [byAgentRows, agents, pricings],
+  );
   const byAgent = useMemo(
     () => aggregateCostByAgent(byAgentRows),
     [byAgentRows, pricings],
@@ -790,6 +795,7 @@ function CostByBlock({
         {tab === "owner" && (
           <CostByList
             rows={byOwner}
+            detailRows={(key) => byOwnerModel.get(key) ?? []}
             renderKey={(key) => {
               if (key === NO_OWNER_KEY) {
                 // Ownerless agents + usage from since-deleted agents. No
@@ -850,19 +856,27 @@ function CostByBlock({
   );
 }
 
-// Generic horizontal-bar list shared by both Cost-by tabs. Each row scales
+// Generic horizontal-bar list shared by the Cost-by tabs. Each row scales
 // its bar relative to the heaviest row in the set, so the visual ranking
 // is always 0..max and the biggest spender visually fills the column.
+//
+// `detailRows` opts a tab into per-row expansion: when given, every row
+// grows a chevron that toggles a nested list of the row's constituent
+// parts (By owner → that owner's models). Expansion state is local and
+// resets with the tab, so switching tabs or periods starts collapsed.
 function CostByList({
   rows,
   renderKey,
+  detailRows,
   emptyHint,
 }: {
   rows: CostByKey[];
   renderKey: (key: string) => React.ReactNode;
+  detailRows?: (key: string) => CostByKey[];
   emptyHint?: string;
 }) {
   const { t } = useT("runtimes");
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   if (rows.length === 0) {
     return (
       <p className="py-4 text-center text-caption text-muted-foreground">
@@ -870,27 +884,98 @@ function CostByList({
       </p>
     );
   }
+  const toggle = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   const maxCost = rows.reduce((m, r) => Math.max(m, r.cost), 0);
   return (
     <div className="space-y-2">
       {rows.map((row) => {
         const pct = maxCost > 0 ? (row.cost / maxCost) * 100 : 0;
+        const isOpen = detailRows !== undefined && expanded.has(row.key);
+        return (
+          <div key={row.key}>
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_5rem_5rem] items-center gap-3 py-1">
+              <div className="flex min-w-0 items-center gap-1">
+                {detailRows && (
+                  <button
+                    type="button"
+                    aria-label={t(($) => $.usage.cost_by_model_breakdown_aria)}
+                    aria-expanded={isOpen}
+                    onClick={() => toggle(row.key)}
+                    className="-ml-1 shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <ChevronRight
+                      className={cn("h-3.5 w-3.5 transition-transform", isOpen && "rotate-90")}
+                    />
+                  </button>
+                )}
+                <div className="min-w-0 flex-1">{renderKey(row.key)}</div>
+              </div>
+              <div className="relative h-2 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-chart-1"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <div className="text-right text-caption tabular-nums text-muted-foreground">
+                {formatTokens(row.tokens)}
+              </div>
+              <div className="text-right text-body font-medium tabular-nums">
+                ${row.cost.toFixed(2)}
+              </div>
+            </div>
+            {isOpen && <CostByDetailList rows={detailRows(row.key)} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Nested breakdown under an expanded CostByList row. Same four-column grid
+// as the parent so the token/cost columns line up; the bar is scaled to
+// the heaviest entry *within this row* so the sub-ranking is readable on
+// its own rather than dwarfed by the parent's max.
+function CostByDetailList({ rows }: { rows: CostByKey[] }) {
+  const { t } = useT("runtimes");
+  if (rows.length === 0) {
+    return (
+      <p className="py-2 pl-6 text-caption text-muted-foreground">
+        {t(($) => $.usage.empty_no_usage)}
+      </p>
+    );
+  }
+  const maxCost = rows.reduce((m, r) => Math.max(m, r.cost), 0);
+  return (
+    <div className="mb-1 space-y-0.5">
+      {rows.map((row) => {
+        const pct = maxCost > 0 ? (row.cost / maxCost) * 100 : 0;
         return (
           <div
             key={row.key}
-            className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_5rem_5rem] items-center gap-3 py-1"
+            data-model-row
+            className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_5rem_5rem] items-center gap-3 py-0.5"
           >
-            <div className="min-w-0">{renderKey(row.key)}</div>
-            <div className="relative h-2 overflow-hidden rounded-full bg-muted">
+            <div className="min-w-0 pl-6">
+              <span className="block truncate font-mono text-caption text-muted-foreground">
+                {row.key}
+              </span>
+            </div>
+            <div className="relative h-1.5 overflow-hidden rounded-full bg-muted">
               <div
-                className="h-full rounded-full bg-chart-1"
+                className="h-full rounded-full bg-chart-1/60"
                 style={{ width: `${pct}%` }}
               />
             </div>
             <div className="text-right text-caption tabular-nums text-muted-foreground">
               {formatTokens(row.tokens)}
             </div>
-            <div className="text-right text-body font-medium tabular-nums">
+            <div className="text-right text-caption tabular-nums text-muted-foreground">
               ${row.cost.toFixed(2)}
             </div>
           </div>
