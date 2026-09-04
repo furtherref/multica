@@ -140,7 +140,10 @@ func validBudgetAmount(v *float64) (pgtype.Int8, bool) {
 // PutRuntimeCostBudget replaces the whole budget set of a runtime. Runtime
 // owner only (canManageRuntimeBudget): the budget caps the owner's own machine
 // and credentials, so workspace owners and admins are excluded exactly as they
-// are from changing the runtime's visibility.
+// are from changing the runtime's visibility. That gate is also what lets the
+// response echo the GET body unconditionally: the owner always passes
+// canUseRuntimeForAgent, so the reply never hands out spend the GET gate would
+// deny. Widening the gate again would need that 204-without-body branch back.
 func (h *Handler) PutRuntimeCostBudget(w http.ResponseWriter, r *http.Request) {
 	runtimeID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "runtimeId"), "runtime_id")
 	if !ok {

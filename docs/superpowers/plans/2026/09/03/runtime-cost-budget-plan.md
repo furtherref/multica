@@ -1,5 +1,7 @@
 # Runtime Cost Budget Implementation Plan
 
+> Superseded on the budget permission: only the runtime owner may set budgets since 2026-09-04. See the amendment in the design spec; the listings below still show the original owner/admin gate.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let workspace owners and admins cap a runtime's estimated model spend per day, week and month, both as a runtime total and per user, and refuse new agent runs at enqueue time once a limit is reached.
