@@ -85,6 +85,7 @@ WHERE atq.issue_id = $1;
 -- instead of forming a separate case-variant bucket.
 SELECT
     DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) AS date,
+    DATE(bucket_hour AT TIME ZONE 'UTC') AS pricing_date,
     LOWER(provider) AS provider,
     model,
     SUM(input_tokens)::bigint        AS input_tokens,
@@ -101,8 +102,8 @@ FROM task_usage_hourly
 WHERE workspace_id = $1
   AND bucket_hour >= sqlc.arg('since')::timestamptz
   AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id'))
-GROUP BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text), LOWER(provider), model
-ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provider), model;
+GROUP BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text), DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model
+ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model;
 
 -- name: ListDashboardUsageByAgent :many
 -- Per-(agent, provider, model) token aggregates from `task_usage_hourly`. No
@@ -121,6 +122,7 @@ ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provide
 -- new rows (see ListDashboardUsageDaily).
 SELECT
     agent_id,
+    DATE(bucket_hour AT TIME ZONE 'UTC') AS pricing_date,
     LOWER(provider) AS provider,
     model,
     SUM(input_tokens)::bigint        AS input_tokens,
@@ -137,8 +139,8 @@ FROM task_usage_hourly
 WHERE workspace_id = $1
   AND bucket_hour >= @since::timestamptz
   AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id'))
-GROUP BY agent_id, LOWER(provider), model
-ORDER BY agent_id, LOWER(provider), model;
+GROUP BY agent_id, DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model
+ORDER BY agent_id, DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model;
 
 -- name: ListDashboardRunTimeDaily :many
 -- Daily per-date run time + task counts for the workspace, optionally

@@ -12,6 +12,7 @@
 -- (same reason as ListRuntimeUsageByAgent below).
 SELECT
     DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) AS date,
+    DATE(bucket_hour AT TIME ZONE 'UTC') AS pricing_date,
     LOWER(provider) AS provider,
     model,
     SUM(input_tokens)::bigint        AS input_tokens,
@@ -26,8 +27,8 @@ SELECT
 FROM task_usage_hourly
 WHERE runtime_id = $1
   AND bucket_hour >= sqlc.arg('since')::timestamptz
-GROUP BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text), LOWER(provider), model
-ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provider), model;
+GROUP BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text), DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model
+ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model;
 
 -- name: ListRuntimeUsageCoverage :many
 -- Classifies completed runs by whether their stored task_usage contains a
@@ -98,6 +99,7 @@ ORDER BY hour;
 -- new rows (see ListDashboardUsageDaily in task_usage.sql).
 SELECT
     atq.agent_id,
+    DATE(tu.created_at AT TIME ZONE 'UTC') AS pricing_date,
     LOWER(tu.provider) AS provider,
     tu.model,
     SUM(tu.input_tokens)::bigint AS input_tokens,
@@ -114,8 +116,8 @@ FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.runtime_id = $1
   AND tu.created_at >= @since::timestamptz
-GROUP BY atq.agent_id, LOWER(tu.provider), tu.model
-ORDER BY atq.agent_id, LOWER(tu.provider), tu.model;
+GROUP BY atq.agent_id, DATE(tu.created_at AT TIME ZONE 'UTC'), LOWER(tu.provider), tu.model
+ORDER BY atq.agent_id, DATE(tu.created_at AT TIME ZONE 'UTC'), LOWER(tu.provider), tu.model;
 
 -- name: GetRuntimeUsageByHour :many
 -- Per-(hour, model) token aggregates (hour ∈ 0..23) for a runtime since a
@@ -127,7 +129,9 @@ ORDER BY atq.agent_id, LOWER(tu.provider), tu.model;
 -- Hours are extracted in the viewer's tz via @tz so afternoon
 -- work bucketed at UTC 06:00 lands in 14:00 for a UTC+8 viewer.
 SELECT
+    DATE(tu.created_at AT TIME ZONE 'UTC') AS pricing_date,
     EXTRACT(HOUR FROM tu.created_at AT TIME ZONE @tz::text)::int AS hour,
+    LOWER(tu.provider) AS provider,
     tu.model,
     SUM(tu.input_tokens)::bigint AS input_tokens,
     SUM(tu.output_tokens)::bigint AS output_tokens,
@@ -143,5 +147,5 @@ FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.runtime_id = $1
   AND tu.created_at >= @since::timestamptz
-GROUP BY EXTRACT(HOUR FROM tu.created_at AT TIME ZONE @tz::text), tu.model
-ORDER BY hour, tu.model;
+GROUP BY DATE(tu.created_at AT TIME ZONE 'UTC'), EXTRACT(HOUR FROM tu.created_at AT TIME ZONE @tz::text), LOWER(tu.provider), tu.model
+ORDER BY hour, DATE(tu.created_at AT TIME ZONE 'UTC'), LOWER(tu.provider), tu.model;

@@ -1096,6 +1096,18 @@ describe("dashboard + runtime usage schema drift", () => {
     expect(RuntimeUsageByAgentListSchema.parse([{ model: "x" }])[0]?.provider).toBe("");
   });
 
+  it("defaults a missing UTC pricing date on every client-priced usage row", () => {
+    expect(RuntimeUsageListSchema.parse([{ date: "2026-09-04" }])[0]?.pricing_date).toBe("");
+    expect(DashboardUsageDailyListSchema.parse([{ date: "2026-09-04" }])[0]?.pricing_date).toBe("");
+    expect(DashboardUsageByAgentListSchema.parse([{ model: "x" }])[0]?.pricing_date).toBe("");
+    expect(RuntimeUsageByAgentListSchema.parse([{ model: "x" }])[0]?.pricing_date).toBe("");
+    expect(RuntimeUsageByHourListSchema.parse([{ hour: 9 }])[0]?.pricing_date).toBe("");
+  });
+
+  it("defaults a missing provider on runtime usage-by-hour rows", () => {
+    expect(RuntimeUsageByHourListSchema.parse([{ hour: 9, model: "x" }])[0]?.provider).toBe("");
+  });
+
   it("parses a runtime cost budget and defaults missing scopes", () => {
     const full = RuntimeCostBudgetSchema.parse({
       runtime: { daily: { limit_usd: 20, used_usd: 3.42, period_start: "a", reset_at: "b", reached: false }, weekly: null, monthly: null },

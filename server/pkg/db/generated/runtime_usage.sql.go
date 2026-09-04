@@ -55,7 +55,9 @@ func (q *Queries) GetRuntimeTaskHourlyActivity(ctx context.Context, arg GetRunti
 
 const getRuntimeUsageByHour = `-- name: GetRuntimeUsageByHour :many
 SELECT
+    DATE(tu.created_at AT TIME ZONE 'UTC') AS pricing_date,
     EXTRACT(HOUR FROM tu.created_at AT TIME ZONE $2::text)::int AS hour,
+    LOWER(tu.provider) AS provider,
     tu.model,
     SUM(tu.input_tokens)::bigint AS input_tokens,
     SUM(tu.output_tokens)::bigint AS output_tokens,
@@ -71,8 +73,8 @@ FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.runtime_id = $1
   AND tu.created_at >= $3::timestamptz
-GROUP BY EXTRACT(HOUR FROM tu.created_at AT TIME ZONE $2::text), tu.model
-ORDER BY hour, tu.model
+GROUP BY DATE(tu.created_at AT TIME ZONE 'UTC'), EXTRACT(HOUR FROM tu.created_at AT TIME ZONE $2::text), LOWER(tu.provider), tu.model
+ORDER BY hour, DATE(tu.created_at AT TIME ZONE 'UTC'), LOWER(tu.provider), tu.model
 `
 
 type GetRuntimeUsageByHourParams struct {
@@ -82,18 +84,20 @@ type GetRuntimeUsageByHourParams struct {
 }
 
 type GetRuntimeUsageByHourRow struct {
-	Hour                     int32  `json:"hour"`
-	Model                    string `json:"model"`
-	InputTokens              int64  `json:"input_tokens"`
-	OutputTokens             int64  `json:"output_tokens"`
-	CacheReadTokens          int64  `json:"cache_read_tokens"`
-	CacheWriteTokens         int64  `json:"cache_write_tokens"`
-	CostUsdTicks             int64  `json:"cost_usd_ticks"`
-	UncostedInputTokens      int64  `json:"uncosted_input_tokens"`
-	UncostedOutputTokens     int64  `json:"uncosted_output_tokens"`
-	UncostedCacheReadTokens  int64  `json:"uncosted_cache_read_tokens"`
-	UncostedCacheWriteTokens int64  `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32  `json:"task_count"`
+	PricingDate              pgtype.Date `json:"pricing_date"`
+	Hour                     int32       `json:"hour"`
+	Provider                 string      `json:"provider"`
+	Model                    string      `json:"model"`
+	InputTokens              int64       `json:"input_tokens"`
+	OutputTokens             int64       `json:"output_tokens"`
+	CacheReadTokens          int64       `json:"cache_read_tokens"`
+	CacheWriteTokens         int64       `json:"cache_write_tokens"`
+	CostUsdTicks             int64       `json:"cost_usd_ticks"`
+	UncostedInputTokens      int64       `json:"uncosted_input_tokens"`
+	UncostedOutputTokens     int64       `json:"uncosted_output_tokens"`
+	UncostedCacheReadTokens  int64       `json:"uncosted_cache_read_tokens"`
+	UncostedCacheWriteTokens int64       `json:"uncosted_cache_write_tokens"`
+	TaskCount                int32       `json:"task_count"`
 }
 
 // Per-(hour, model) token aggregates (hour ∈ 0..23) for a runtime since a
@@ -114,7 +118,9 @@ func (q *Queries) GetRuntimeUsageByHour(ctx context.Context, arg GetRuntimeUsage
 	for rows.Next() {
 		var i GetRuntimeUsageByHourRow
 		if err := rows.Scan(
+			&i.PricingDate,
 			&i.Hour,
+			&i.Provider,
 			&i.Model,
 			&i.InputTokens,
 			&i.OutputTokens,
@@ -140,6 +146,7 @@ func (q *Queries) GetRuntimeUsageByHour(ctx context.Context, arg GetRuntimeUsage
 const listRuntimeUsage = `-- name: ListRuntimeUsage :many
 SELECT
     DATE(bucket_hour AT TIME ZONE $2::text) AS date,
+    DATE(bucket_hour AT TIME ZONE 'UTC') AS pricing_date,
     LOWER(provider) AS provider,
     model,
     SUM(input_tokens)::bigint        AS input_tokens,
@@ -154,8 +161,8 @@ SELECT
 FROM task_usage_hourly
 WHERE runtime_id = $1
   AND bucket_hour >= $3::timestamptz
-GROUP BY DATE(bucket_hour AT TIME ZONE $2::text), LOWER(provider), model
-ORDER BY DATE(bucket_hour AT TIME ZONE $2::text) DESC, LOWER(provider), model
+GROUP BY DATE(bucket_hour AT TIME ZONE $2::text), DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model
+ORDER BY DATE(bucket_hour AT TIME ZONE $2::text) DESC, DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model
 `
 
 type ListRuntimeUsageParams struct {
@@ -166,6 +173,7 @@ type ListRuntimeUsageParams struct {
 
 type ListRuntimeUsageRow struct {
 	Date                     pgtype.Date `json:"date"`
+	PricingDate              pgtype.Date `json:"pricing_date"`
 	Provider                 string      `json:"provider"`
 	Model                    string      `json:"model"`
 	InputTokens              int64       `json:"input_tokens"`
@@ -201,6 +209,7 @@ func (q *Queries) ListRuntimeUsage(ctx context.Context, arg ListRuntimeUsagePara
 		var i ListRuntimeUsageRow
 		if err := rows.Scan(
 			&i.Date,
+			&i.PricingDate,
 			&i.Provider,
 			&i.Model,
 			&i.InputTokens,
@@ -226,6 +235,7 @@ func (q *Queries) ListRuntimeUsage(ctx context.Context, arg ListRuntimeUsagePara
 const listRuntimeUsageByAgent = `-- name: ListRuntimeUsageByAgent :many
 SELECT
     atq.agent_id,
+    DATE(tu.created_at AT TIME ZONE 'UTC') AS pricing_date,
     LOWER(tu.provider) AS provider,
     tu.model,
     SUM(tu.input_tokens)::bigint AS input_tokens,
@@ -242,8 +252,8 @@ FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.runtime_id = $1
   AND tu.created_at >= $2::timestamptz
-GROUP BY atq.agent_id, LOWER(tu.provider), tu.model
-ORDER BY atq.agent_id, LOWER(tu.provider), tu.model
+GROUP BY atq.agent_id, DATE(tu.created_at AT TIME ZONE 'UTC'), LOWER(tu.provider), tu.model
+ORDER BY atq.agent_id, DATE(tu.created_at AT TIME ZONE 'UTC'), LOWER(tu.provider), tu.model
 `
 
 type ListRuntimeUsageByAgentParams struct {
@@ -253,6 +263,7 @@ type ListRuntimeUsageByAgentParams struct {
 
 type ListRuntimeUsageByAgentRow struct {
 	AgentID                  pgtype.UUID `json:"agent_id"`
+	PricingDate              pgtype.Date `json:"pricing_date"`
 	Provider                 string      `json:"provider"`
 	Model                    string      `json:"model"`
 	InputTokens              int64       `json:"input_tokens"`
@@ -289,6 +300,7 @@ func (q *Queries) ListRuntimeUsageByAgent(ctx context.Context, arg ListRuntimeUs
 		var i ListRuntimeUsageByAgentRow
 		if err := rows.Scan(
 			&i.AgentID,
+			&i.PricingDate,
 			&i.Provider,
 			&i.Model,
 			&i.InputTokens,

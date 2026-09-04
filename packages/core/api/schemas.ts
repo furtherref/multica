@@ -1576,6 +1576,7 @@ const CostSplitShape = {
 
 const DashboardUsageDailySchema = z.object({
   date: z.string().default(""),
+  pricing_date: z.string().default(""),
   provider: z.string().default(""),
   model: z.string().default(""),
   input_tokens: z.number().default(0),
@@ -1590,6 +1591,7 @@ export const DashboardUsageDailyListSchema = z.array(DashboardUsageDailySchema);
 
 const DashboardUsageByAgentSchema = z.object({
   agent_id: z.string().default(""),
+  pricing_date: z.string().default(""),
   provider: z.string().default(""),
   model: z.string().default(""),
   input_tokens: z.number().default(0),
@@ -1661,6 +1663,7 @@ export const DashboardFailureByAgentListSchema = z.array(
 const RuntimeUsageSchema = z.object({
   runtime_id: z.string().default(""),
   date: z.string().default(""),
+  pricing_date: z.string().default(""),
   provider: z.string().default(""),
   model: z.string().default(""),
   input_tokens: z.number().default(0),
@@ -1693,6 +1696,7 @@ export const RuntimeHourlyActivityListSchema = z.array(RuntimeHourlyActivitySche
 
 const RuntimeUsageByAgentSchema = z.object({
   agent_id: z.string().default(""),
+  pricing_date: z.string().default(""),
   provider: z.string().default(""),
   model: z.string().default(""),
   input_tokens: z.number().default(0),
@@ -1706,7 +1710,9 @@ const RuntimeUsageByAgentSchema = z.object({
 export const RuntimeUsageByAgentListSchema = z.array(RuntimeUsageByAgentSchema);
 
 const RuntimeUsageByHourSchema = z.object({
+  pricing_date: z.string().default(""),
   hour: z.number().default(0),
+  provider: z.string().default(""),
   model: z.string().default(""),
   input_tokens: z.number().default(0),
   output_tokens: z.number().default(0),

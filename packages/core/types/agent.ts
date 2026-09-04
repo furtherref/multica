@@ -911,6 +911,7 @@ export interface IssueUsageSummary {
 export interface RuntimeUsage {
   runtime_id: string;
   date: string;
+  pricing_date?: string;
   provider: string;
   model: string;
   input_tokens: number;
@@ -944,6 +945,7 @@ export interface RuntimeHourlyActivity {
 // agent_id and sums cost per agent across models.
 export interface RuntimeUsageByAgent {
   agent_id: string;
+  pricing_date?: string;
   provider: string;
   model: string;
   input_tokens: number;
@@ -962,7 +964,9 @@ export interface RuntimeUsageByAgent {
 // zero activity are omitted by the server; the client fills the gap to
 // render a continuous axis. Model preserved for client-side cost math.
 export interface RuntimeUsageByHour {
+  pricing_date?: string;
   hour: number;
+  provider?: string;
   model: string;
   input_tokens: number;
   output_tokens: number;
@@ -1023,6 +1027,7 @@ export interface RuntimeCostBudgetInput {
 // stays client-side via the model pricing table.
 export interface DashboardUsageDaily {
   date: string;
+  pricing_date?: string;
   provider: string;
   model: string;
   input_tokens: number;
@@ -1042,6 +1047,7 @@ export interface DashboardUsageDaily {
 // sums cost.
 export interface DashboardUsageByAgent {
   agent_id: string;
+  pricing_date?: string;
   provider: string;
   model: string;
   input_tokens: number;

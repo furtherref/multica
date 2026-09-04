@@ -153,6 +153,7 @@ func parseProjectIDParam(w http.ResponseWriter, r *http.Request) (pgtype.UUID, b
 // across providers (e.g. Cursor's `auto`).
 type DashboardUsageDailyResponse struct {
 	Date             string `json:"date"`
+	PricingDate      string `json:"pricing_date"`
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`
@@ -215,6 +216,7 @@ func (h *Handler) listDashboardUsageDaily(
 	for i, row := range rows {
 		resp[i] = DashboardUsageDailyResponse{
 			Date:                     row.Date.Time.Format("2006-01-02"),
+			PricingDate:              row.PricingDate.Time.Format("2006-01-02"),
 			Provider:                 row.Provider,
 			Model:                    row.Model,
 			InputTokens:              row.InputTokens,
@@ -237,6 +239,7 @@ func (h *Handler) listDashboardUsageDaily(
 // response; the client folds by agent_id and sums cost.
 type DashboardUsageByAgentResponse struct {
 	AgentID          string `json:"agent_id"`
+	PricingDate      string `json:"pricing_date"`
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`
@@ -296,7 +299,7 @@ func (h *Handler) GetDashboardUsageByAgent(w http.ResponseWriter, r *http.Reques
 // the client can still price it from its per-model table — without that the
 // bucket's cost is uncomputable and the leaderboard stops summing to the Cost
 // KPI, which is the whole reason these rows are folded rather than dropped.
-type providerModelKey struct{ provider, model string }
+type providerModelKey struct{ pricingDate, provider, model string }
 
 func foldRestrictedUsageByAgent(
 	rows []DashboardUsageByAgentResponse,
@@ -307,7 +310,7 @@ func foldRestrictedUsageByAgent(
 		restricted,
 		func(row DashboardUsageByAgentResponse) string { return row.AgentID },
 		func(row DashboardUsageByAgentResponse) (DashboardUsageByAgentResponse, providerModelKey) {
-			key := providerModelKey{provider: row.Provider, model: row.Model}
+			key := providerModelKey{pricingDate: row.PricingDate, provider: row.Provider, model: row.Model}
 			row.AgentID = restrictedAgentsRowID
 			return row, key
 		},
@@ -345,6 +348,7 @@ func (h *Handler) listDashboardUsageByAgent(
 	for i, row := range rows {
 		resp[i] = DashboardUsageByAgentResponse{
 			AgentID:                  uuidToString(row.AgentID),
+			PricingDate:              row.PricingDate.Time.Format("2006-01-02"),
 			Provider:                 row.Provider,
 			Model:                    row.Model,
 			InputTokens:              row.InputTokens,
