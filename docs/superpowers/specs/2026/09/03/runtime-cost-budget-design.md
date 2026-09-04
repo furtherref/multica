@@ -163,7 +163,9 @@ executing agent is known and before the row is written:
   no child is created, and the log line names the budget as the suppressor.
   The check runs before the transaction on the auto-commit handle, so the
   notice survives; an unreadable budget also suppresses the retry, and never
-  fails the parent's own transition.
+  fails the parent's own transition. An unreadable *agent* suppresses it too:
+  the agent row is what resolves the runtime whose budget gates the retry, so
+  without it the budget was never consulted at all.
 - **Deferred fallback tasks** are checked at **promotion**, not creation.
   **Ruling:** a fallback armed hours earlier is a prediction about a limit
   that may not have been reached yet; the only moment that matters is when it

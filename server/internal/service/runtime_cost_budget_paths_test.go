@@ -235,6 +235,50 @@ func TestDueDeferredTaskFailedWhenBudgetReached(t *testing.T) {
 	}
 }
 
+// The budget gate hangs off the agent row, so a failed GetAgent means the
+// budget was never consulted. Retrying anyway spends against a limit the
+// server did not read, which is the one thing the gate exists to prevent —
+// both entry points must therefore drop the retry instead. An unreadable
+// agent stops the sweeper at the gate: no child, and no error either, because
+// this is the same "no retry this time" class as an unreadable budget.
+func TestRetrySuppressedWhenTheAgentCannotBeLoaded(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, ownerID, agentID, issueID := seedAttributionFixture(t, pool)
+	fx := testutil.New(pool, workspaceID, ownerID)
+	agent, err := q.GetAgent(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("load agent: %v", err)
+	}
+	taskID := fx.Task(t, agentID, testutil.Cols{
+		"runtime_id":     util.UUIDToString(agent.RuntimeID),
+		"issue_id":       issueID,
+		"status":         "failed",
+		"failure_reason": string(taskfailure.ReasonTimeout),
+		"attempt":        1,
+		"max_attempts":   3,
+	})
+	parent, err := q.GetAgentTask(ctx, util.MustParseUUID(taskID))
+	if err != nil {
+		t.Fatalf("load parent: %v", err)
+	}
+
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	unreadable, cancel := context.WithCancel(ctx)
+	cancel()
+	child, err := svc.MaybeRetryFailedTask(unreadable, parent)
+	if err != nil {
+		t.Fatalf("an unreadable agent must stop at the gate, not fall through to the insert: %v", err)
+	}
+	if child != nil {
+		t.Fatalf("retry child created for an unreadable agent: %s", util.UUIDToString(child.ID))
+	}
+	if n := fx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE parent_task_id = $1`, taskID); n != 0 {
+		t.Fatalf("retry children = %d, want 0", n)
+	}
+}
+
 // The retry helper both auto-retry entry points share fails closed: an
 // unreadable budget suppresses the retry rather than spending against a limit
 // the server could not check.

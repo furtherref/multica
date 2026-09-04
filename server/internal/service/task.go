@@ -4866,11 +4866,17 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 				retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
 			}
 			if agent, aerr := s.Queries.GetAgent(ctx, parent.AgentID); aerr != nil {
-				// Best-effort: a missing overlay is not retry-fatal — the child
-				// simply runs without the Composio overlay.
-				slog.Warn("fail task auto-retry: load agent for overlay failed",
+				// Fail closed. The agent row is what resolves the runtime whose
+				// cost budget gates this retry, so an unreadable agent means the
+				// budget was never consulted — and retrying against a limit the
+				// server could not read is exactly what the gate exists to
+				// prevent. Same class as retrySuppressedByRuntimeBudget's own
+				// error branch, and the parent still fails normally with its own
+				// reason; only the automatic retry is dropped.
+				slog.Warn("fail task auto-retry suppressed: load agent failed",
 					"task_id", util.UUIDToString(taskID),
 					"agent_id", util.UUIDToString(parent.AgentID), "error", aerr)
+				wantRetry = false
 			} else if s.retrySuppressedByRuntimeBudget(ctx, parent, agent) {
 				// Pre-computed here, outside the transaction, so the refusal
 				// notice is written on the auto-commit handle and the parent
@@ -5479,18 +5485,23 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 
 	var runtimeMCPOverlay runtimeMCPOverlayData
 	agent, agentErr := s.Queries.GetAgent(ctx, parent.AgentID)
-	if agentErr != nil {
-		// Best-effort: failing to resolve the agent for the overlay is not
-		// retry-fatal. Log and continue — the daemon will reject the claim
-		// later if the agent is genuinely gone.
-		slog.Warn("task auto-retry: load agent for overlay failed",
+	switch {
+	case agentErr != nil:
+		// Fail closed, same as FailTask's in-transaction retry. The agent row
+		// resolves the runtime whose cost budget gates this retry, so without
+		// it the budget was never consulted and a retry would spend against a
+		// limit the server could not read. Returning no child and no error
+		// keeps this in the "no retry this time" class the sweeper already
+		// handles for an unreadable budget.
+		slog.Warn("task auto-retry suppressed: load agent failed",
 			"parent_task_id", util.UUIDToString(parent.ID),
 			"agent_id", util.UUIDToString(parent.AgentID),
 			"error", agentErr,
 		)
-	} else if s.retrySuppressedByRuntimeBudget(ctx, parent, agent) {
 		return nil, nil
-	} else {
+	case s.retrySuppressedByRuntimeBudget(ctx, parent, agent):
+		return nil, nil
+	default:
 		runtimeMCPOverlay = s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent)
 	}
 	// Mirror FailTask's in-tx backoff + effective-budget persistence: defer the
