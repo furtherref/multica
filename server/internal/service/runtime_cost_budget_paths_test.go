@@ -360,7 +360,9 @@ func TestRetrySuppressedWhenTheAgentCannotBeLoaded(t *testing.T) {
 // A chat turn can be deferred (sealed pending media, retry backoff), so the
 // budget sweep can be the thing that kills it. Failing the queue row alone
 // leaves the conversation with a spinner and no reply: a terminal chat failure
-// owes the transcript an assistant message, exactly as FailTask writes one.
+// owes the transcript an assistant message, exactly as FailTask writes one —
+// and in the same transaction as the status flip, which is what
+// TestBudgetRetirementSkipsAChatRowThatLeftDeferred covers from the other side.
 func TestDeferredChatTaskRetiredByBudgetWritesTheAssistantFailure(t *testing.T) {
 	pool := newResolveOriginatorPool(t)
 	ctx := context.Background()
@@ -406,6 +408,120 @@ func TestDeferredChatTaskRetiredByBudgetWritesTheAssistantFailure(t *testing.T) 
 	if strings.ContainsAny(content, "0123456789") {
 		t.Fatalf("assistant failure content %q leaks budget amounts", content)
 	}
+	// One transaction, one outcome: a retirement that wrote the message on a
+	// second pass could also write it twice.
+	if n := fx.Count(t, `SELECT count(*) FROM chat_message WHERE task_id = $1`, chatTaskID); n != 1 {
+		t.Fatalf("assistant messages for the retired turn = %d, want 1", n)
+	}
+}
+
+// The sweep lists due chat rows on the auto-commit handle and retires each one
+// in its own transaction, so a row can leave 'deferred' in between — the claim
+// loop promotes on every poll. The single-row statement re-checks the status
+// for exactly that reason: whatever moved the row owns its outcome now, and
+// retiring it anyway would overwrite a state this sweep never priced and
+// append an assistant failure to a turn that is about to run.
+func TestBudgetRetirementSkipsAChatRowThatLeftDeferred(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, ownerID, agentID, _ := seedAttributionFixture(t, pool)
+	fx := testutil.New(pool, workspaceID, ownerID)
+	agent, err := q.GetAgent(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("load agent: %v", err)
+	}
+
+	sessionID := fx.ChatSession(t, agentID)
+	chatTaskID := fx.Task(t, agentID, testutil.Cols{
+		"runtime_id": util.UUIDToString(agent.RuntimeID), "chat_session_id": sessionID,
+		"status": "deferred", "fire_at": time.Now().Add(-time.Minute),
+	})
+	// What the sweep read while the row was still deferred.
+	listed, err := q.GetAgentTask(ctx, util.MustParseUUID(chatTaskID))
+	if err != nil {
+		t.Fatalf("load listed task: %v", err)
+	}
+	// ...and what a concurrent promotion did to it before the retirement
+	// transaction could run.
+	fx.Exec(t, `UPDATE agent_task_queue SET status = 'queued', fire_at = NULL WHERE id = $1`, chatTaskID)
+
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	task, ok := svc.retireDeferredChatTaskOverBudget(ctx, listed,
+		pgtype.Text{String: string(taskfailure.ReasonBudgetExceeded), Valid: true},
+		pgtype.Text{String: "runtime cost budget reached (runtime daily)", Valid: true})
+	if ok {
+		t.Fatalf("a row that left deferred was reported retired: %+v", task.Status)
+	}
+
+	var status string
+	fx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, chatTaskID).Scan(&status)
+	if status != "queued" {
+		t.Fatalf("promoted chat task = %q, want queued (the sweep must not retire it)", status)
+	}
+	if n := fx.Count(t, `SELECT count(*) FROM chat_message WHERE task_id = $1`, chatTaskID); n != 0 {
+		t.Fatalf("assistant messages for a live turn = %d, want 0", n)
+	}
+}
+
+// The bulk half of the retirement is a terminal write like any other, so it
+// must reach SettleDeliveredDelegatedFailureRecoveries inside its own
+// transaction: a delegated-failure recovery comment the row actually received
+// is otherwise stranded unsettled, and nothing replays it — the pending scan
+// excludes a comment whose covering task is already terminal. Running the bulk
+// statement on the auto-commit handle passes every other assertion in this
+// file and still loses the receipt, which is why this test watches the comment
+// rather than the task.
+func TestBudgetRetirementSettlesDeliveredDelegatedFailureRecoveries(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, ownerID, agentID, issueID := seedAttributionFixture(t, pool)
+	fx := testutil.New(pool, workspaceID, ownerID)
+	cleanupBudgetNotices(t, fx, workspaceID)
+	agent, err := q.GetAgent(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("load agent: %v", err)
+	}
+	runtimeID := util.UUIDToString(agent.RuntimeID)
+	daily := 5.0
+	seedBudget(t, ctx, q, workspaceID, runtimeID, nil, &daily, nil, nil)
+
+	delegatedID := fx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "issue_id": issueID, "status": "failed",
+	})
+	recoveryID := fx.Comment(t, issueID, "delegated task failed", testutil.Cols{
+		// The zero uuid is what the platform authors recovery comments as.
+		"author_type": "system", "author_id": "00000000-0000-0000-0000-000000000000",
+		"type": "progress_update", "source_task_id": delegatedID,
+	})
+	coordinatorID := fx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "status": "deferred",
+		"fire_at":               time.Now().Add(-time.Minute),
+		"delivered_comment_ids": testutil.Raw("ARRAY[" + quoteUUIDLiteral(recoveryID) + "]::uuid[]"),
+	})
+	seedChatlessSpend(t, ctx, pool, agentID, 5, time.Now().Add(-time.Minute))
+
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	if err := svc.PromoteDueDeferredTasksForRuntime(ctx, agent.RuntimeID); err != nil {
+		t.Fatalf("PromoteDueDeferredTasksForRuntime: %v", err)
+	}
+
+	var status string
+	fx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, coordinatorID).Scan(&status)
+	if status != "failed" {
+		t.Fatalf("deferred task = %q, want failed", status)
+	}
+	if n := fx.Count(t, `
+		SELECT count(*) FROM comment WHERE id = $1 AND recovery_settled_at IS NOT NULL`, recoveryID); n != 1 {
+		t.Fatal("the retired row's delivered recovery comment was left unsettled: the bulk fail did not run through terminateTasksInTx")
+	}
+}
+
+// quoteUUIDLiteral renders a UUID for inline SQL, for the array literals the
+// column-value fixtures cannot parameterize.
+func quoteUUIDLiteral(id string) string {
+	return "'" + strings.ReplaceAll(id, "'", "''") + "'"
 }
 
 // A quick-create task is retry-eligible, so it too can be sitting deferred when

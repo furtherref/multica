@@ -4298,18 +4298,12 @@ func (s *TaskService) failDueDeferredTasksOnRuntimeOverBudget(ctx context.Contex
 		// inbox item per (budget row, period) however many agents this sweep
 		// refuses against the same row.
 		s.notifyRuntimeBudgetExceeded(ctx, s.Queries, row, exceeded, c.agent.OwnerID)
-		failed, err := s.Queries.FailDueDeferredTasksForAgentOverBudget(ctx, db.FailDueDeferredTasksForAgentOverBudgetParams{
-			FailureReason: pgtype.Text{String: string(taskfailure.ReasonBudgetExceeded), Valid: true},
-			Error:         pgtype.Text{String: exceeded.PublicReason(), Valid: true},
-			AgentID:       c.agent.ID,
-			RuntimeID:     runtimeID,
-		})
-		if err != nil {
-			slog.Warn("deferred promotion budget gate: fail due tasks failed",
-				"agent_id", util.UUIDToString(c.agent.ID), "error", err)
-			continue
-		}
-		for _, task := range failed {
+		// Every retirement write lands before the loop below, so no chat row
+		// waits on another row's post-commit reporting — reportTerminalTaskFailure
+		// can do network I/O (delegated recovery, inbox fan-out) and the chat
+		// session lock it would sit behind is exactly the lock a live successor
+		// turn needs.
+		for _, task := range s.retireDueDeferredTasksOverBudget(ctx, c.agent.ID, runtimeID, exceeded) {
 			slog.Info("deferred task failed: runtime cost budget reached",
 				"task_id", util.UUIDToString(task.ID),
 				"issue_id", util.UUIDToString(task.IssueID),
@@ -4318,50 +4312,140 @@ func (s *TaskService) failDueDeferredTasksOnRuntimeOverBudget(ctx context.Contex
 				"scope", exceeded.Scope, "period", exceeded.Period,
 			)
 			s.captureTaskFailed(ctx, task)
-			s.finishBudgetRetiredTask(ctx, task)
+			s.reportTerminalTaskFailure(ctx, task, task.Error.String)
 			s.ReconcileAgentStatus(ctx, task.AgentID)
 			s.broadcastTaskFailedEvent(ctx, task, task.Error.String, string(taskfailure.ReasonBudgetExceeded), false)
 		}
 	}
 }
 
-// finishBudgetRetiredTask runs, for one row the budget sweep flipped to
-// 'failed', the terminal side effects FailTask would have run. The sweep
-// retires rows with a bulk UPDATE rather than through FailTask — it has already
-// priced the budget and must not re-derive a retry decision it has just refused
-// — but a task is not terminated by its status column alone.
+// retireDueDeferredTasksOverBudget flips one blocked agent's due deferred rows
+// to 'failed' and returns every row it actually retired, so the caller can run
+// the terminal side effects FailTask would have run. The sweep does not go
+// through FailTask itself — it has already priced the budget and must not
+// re-derive a retry decision it has just refused — but a task is not
+// terminated by its status column alone.
 //
 // A deferred row is not only an issue fallback: DeferChatTaskForSealedPending-
 // Media and the retry backoff both park chat turns there, and quick-create
 // tasks are retry-eligible, so both can be sitting deferred when a limit is
-// reached. Without this, a budget-refused chat turn ends with a spinner and no
-// assistant reply, and a quick-create requester's pending state is never
-// resolved by anything.
+// reached. Without the follow-up work, a budget-refused chat turn ends with a
+// spinner and no assistant reply, and a quick-create requester's pending state
+// is never resolved by anything.
 //
-// The chat outcome keeps FailTask's transactional shape: its own transaction,
-// session lock first, so a successor turn cannot be claimed between the bulk
-// UPDATE and this row and land its user input before the failure it follows.
-// The row is already committed as failed, so it is out of the visible-head
-// status set by the time createAssistantChatMessage reanchors the next head.
+// The retirement is split by row kind, and the split is the correctness
+// boundary:
+//
+//   - A row with a chat session gets its own transaction: session lock, fail
+//     that single row only while it is still 'deferred', write the assistant
+//     outcome, commit. What that guarantees is exactly this — for one chat row,
+//     the status flip and its outcome message are atomic. A reader never sees
+//     the turn terminated with no reply, a crash cannot strand it that way
+//     forever, and no successor turn can be claimed in the gap and land its
+//     user input ahead of the failure it follows. The row leaves the
+//     visible-head status set inside the same transaction, so
+//     createAssistantChatMessage's reanchor still sees the next head.
+//   - Rows without a chat session keep the bulk statement, which owes no
+//     per-row write. Those rows carry no atomicity claim beyond their own
+//     UPDATE: a row promoted or claimed by a concurrent tick between the price
+//     and the statement simply is not retired this tick, which is the
+//     best-effort behaviour the design already specifies for the gate.
+//
 // Failures are logged, never propagated — the refusal itself is already
-// decided, and one unwritable transcript row must not stop the rest of the
-// sweep.
-func (s *TaskService) finishBudgetRetiredTask(ctx context.Context, task db.AgentTaskQueue) {
-	errMsg := task.Error.String
-	if task.ChatSessionID.Valid {
-		if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-			if err := lockChatSessionForTaskWrite(ctx, qtx, task.ID); err != nil {
-				return err
-			}
-			return writeTerminalChatFailureOutcome(ctx, qtx, task, errMsg, string(taskfailure.ReasonBudgetExceeded))
-		}); err != nil {
-			slog.Warn("deferred promotion budget gate: write chat failure outcome failed",
-				"task_id", util.UUIDToString(task.ID),
-				"chat_session_id", util.UUIDToString(task.ChatSessionID),
-				"error", err)
+// decided, and one unwritable row must not stop the rest of the sweep.
+func (s *TaskService) retireDueDeferredTasksOverBudget(
+	ctx context.Context,
+	agentID, runtimeID pgtype.UUID,
+	exceeded *RuntimeBudgetExceededError,
+) []db.AgentTaskQueue {
+	failureReason := pgtype.Text{String: string(taskfailure.ReasonBudgetExceeded), Valid: true}
+	// The persisted text names the cause without the amounts, which task:failed
+	// republishes to every workspace subscriber.
+	errText := pgtype.Text{String: exceeded.PublicReason(), Valid: true}
+
+	var retired []db.AgentTaskQueue
+	chatRows, err := s.Queries.ListDueDeferredChatTasksForAgentOverBudget(ctx, db.ListDueDeferredChatTasksForAgentOverBudgetParams{
+		AgentID:   agentID,
+		RuntimeID: runtimeID,
+	})
+	if err != nil {
+		// Leave the chat rows deferred for the next tick rather than retiring
+		// them through the bulk statement, which cannot write their outcome.
+		slog.Warn("deferred promotion budget gate: list due chat tasks failed",
+			"agent_id", util.UUIDToString(agentID), "error", err)
+	}
+	for _, chat := range chatRows {
+		if task, ok := s.retireDeferredChatTaskOverBudget(ctx, chat, failureReason, errText); ok {
+			retired = append(retired, task)
 		}
 	}
-	s.reportTerminalTaskFailure(ctx, task, errMsg)
+
+	// terminateTasksInTx, never the bare query: every terminal write must reach
+	// SettleDeliveredDelegatedFailureRecoveries with the same qtx (see its
+	// INVARIANT), or a delegated-failure recovery comment this batch delivered
+	// is stranded unsettled with nothing left to replay it.
+	failed, err := s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.FailDueDeferredTasksForAgentOverBudget(ctx, db.FailDueDeferredTasksForAgentOverBudgetParams{
+			FailureReason: failureReason,
+			Error:         errText,
+			AgentID:       agentID,
+			RuntimeID:     runtimeID,
+		})
+	})
+	if err != nil {
+		slog.Warn("deferred promotion budget gate: fail due tasks failed",
+			"agent_id", util.UUIDToString(agentID), "error", err)
+		return retired
+	}
+	return append(retired, failed...)
+}
+
+// retireDeferredChatTaskOverBudget retires one deferred chat row and writes the
+// assistant outcome it owes, in a single transaction. Reports whether the row
+// was retired here; a row that is no longer 'deferred' is skipped, and so is
+// one whose transaction failed — both stay untouched rather than half-retired.
+func (s *TaskService) retireDeferredChatTaskOverBudget(
+	ctx context.Context,
+	task db.AgentTaskQueue,
+	failureReason, errText pgtype.Text,
+) (db.AgentTaskQueue, bool) {
+	var failed db.AgentTaskQueue
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		// chat_session -> agent_task_queue, the repo-wide lock order.
+		if err := lockChatSessionForTaskWrite(ctx, qtx, task.ID); err != nil {
+			return err
+		}
+		row, err := qtx.FailDeferredTaskOverBudget(ctx, db.FailDeferredTaskOverBudgetParams{
+			ID:            task.ID,
+			FailureReason: failureReason,
+			Error:         errText,
+		})
+		if err != nil {
+			return err
+		}
+		failed = row
+		if err := SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, row); err != nil {
+			return err
+		}
+		return writeTerminalChatFailureOutcome(ctx, qtx, row, row.Error.String, string(taskfailure.ReasonBudgetExceeded))
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The row left 'deferred' between the listing and this transaction:
+			// promoted by a concurrent claim, cancelled, or superseded. Whatever
+			// moved it owns its outcome now, and this sweep priced a state that
+			// no longer exists.
+			slog.Info("deferred promotion budget gate: chat task no longer deferred, leaving it to its new owner",
+				"task_id", util.UUIDToString(task.ID),
+				"chat_session_id", util.UUIDToString(task.ChatSessionID))
+			return db.AgentTaskQueue{}, false
+		}
+		slog.Warn("deferred promotion budget gate: retire deferred chat task failed",
+			"task_id", util.UUIDToString(task.ID),
+			"chat_session_id", util.UUIDToString(task.ChatSessionID),
+			"error", err)
+		return db.AgentTaskQueue{}, false
+	}
+	return failed, true
 }
 
 func (s *TaskService) PromoteDueDeferredTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) error {

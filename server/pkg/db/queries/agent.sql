@@ -2337,6 +2337,14 @@ WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
 -- ListDueDeferredTaskAgentsForRuntimes above, never the sweep's whole runtime
 -- set: the budget priced for this agent belongs to that one runtime, so it may
 -- only retire the rows sitting on it.
+--
+-- chat_session_id IS NULL is a hard split, not a filter. A chat row owes its
+-- transcript an assistant outcome that must commit with its own status flip,
+-- so the sweep retires those one at a time through
+-- FailDeferredTaskOverBudget below, under the chat session lock. Letting this
+-- statement touch them too would race the per-row half onto the same rows and
+-- reintroduce exactly the committed-terminal-row-with-no-reply window the
+-- split exists to close.
 UPDATE agent_task_queue
 SET status = 'failed',
     completed_at = now(),
@@ -2347,6 +2355,48 @@ WHERE agent_id = @agent_id
   AND runtime_id = @runtime_id
   AND status = 'deferred'
   AND fire_at <= now()
+  AND chat_session_id IS NULL
+RETURNING *;
+
+-- name: ListDueDeferredChatTasksForAgentOverBudget :many
+-- The chat half of the retirement above: one blocked agent's due deferred rows
+-- that belong to a chat session, which the sweep retires row by row so each
+-- status flip commits together with the assistant message it owes the
+-- transcript. Read on the auto-commit handle immediately before those
+-- transactions, so a row listed here may already have moved on by the time its
+-- own transaction runs — FailDeferredTaskOverBudget re-checks the status and
+-- writes nothing when it has.
+SELECT * FROM agent_task_queue
+WHERE agent_id = @agent_id
+  AND runtime_id = @runtime_id
+  AND status = 'deferred'
+  AND fire_at <= now()
+  AND chat_session_id IS NOT NULL
+ORDER BY fire_at;
+
+-- name: FailDeferredTaskOverBudget :one
+-- Retires ONE still-deferred row against a reached runtime cost budget, with
+-- the same column writes as FailDueDeferredTasksForAgentOverBudget above. The
+-- caller runs it inside the transaction that also writes the row's chat
+-- outcome message, holding the chat session lock, so a reader never sees the
+-- turn terminated without its reply and no successor turn can be claimed in
+-- between.
+--
+-- status = 'deferred' is the concurrency fence. The sweep listed this row on
+-- the auto-commit handle; by the time this statement runs the row may have
+-- been promoted, cancelled or superseded. Returning no row then is the correct
+-- outcome — whatever moved it owns its status now — and the caller skips it
+-- rather than overwriting a state this sweep never priced. fire_at needs no
+-- re-check: nothing ever pushes a deferred row's fire_at forward, it is only
+-- cleared on promotion, which this status check already catches.
+UPDATE agent_task_queue
+SET status = 'failed',
+    completed_at = now(),
+    failure_reason = @failure_reason,
+    error = @error,
+    prepare_lease_expires_at = NULL
+WHERE id = @id
+  AND status = 'deferred'
 RETURNING *;
 
 -- name: PromoteDueDeferredTasksForRuntime :many
