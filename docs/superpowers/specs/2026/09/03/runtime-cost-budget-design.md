@@ -119,6 +119,54 @@ quick-create, rerun and assign paths, and the autopilot attribution branch)
 map the error with `errors.As` to that code; synchronous triggers answer
 `409` through `writeDispatchBlocked`.
 
+The enqueue helpers are not the only writers of `agent_task_queue`. Every
+other path that mints a runnable task carries the same gate, placed where the
+executing agent is known and before the row is written:
+
+- **`dispatchRunOnly`** (autopilot `run_only`) resolves its own leader and
+  calls `CreateAutopilotTask` directly. A reached budget returns
+  `errDispatchSkipped{code: budget_exceeded}`, so the run is recorded
+  `skipped` with that reason code — the same shape as the readiness and
+  attribution gates beside it, and never a `failed` run. The manual
+  "run now" response carries the code on a `200` with the skipped run, as it
+  does for every other post-admission skip; `create_issue` autopilots are
+  refused by the enqueue helper they call and reach `dispatchFailReasonCode`,
+  which types the error as `budget_exceeded` for the same response field.
+- **`RetrySourceContextQuickCreate`** (manual source-context retry) checks
+  after the invoke gate and the issue-capacity preflight, before its
+  transaction, and returns the error unchanged. The retry handler maps it to
+  `409` + `budget_exceeded`, matching `writeSourceContextError` on the
+  capture path.
+- **`dispatchDelegatedFailureRecovery`** checks the coordinator's agent before
+  creating the recovery task. A refusal creates nothing and returns no error:
+  the durable recovery comment stays in the outbox, so a later sweep replays
+  it once the period resets. The sweep counts it as `Blocked` — neither
+  replayed nor exhausted.
+- **Automatic retries** are suppressed by a reached budget, on both entry
+  points (`FailTask`'s in-transaction child and `MaybeRetryFailedTask`), via
+  the shared `retrySuppressedByRuntimeBudget` helper. **Ruling:** a reached
+  budget stops automatic retries. The parent keeps its own failure reason,
+  no child is created, and the log line names the budget as the suppressor.
+  The check runs before the transaction on the auto-commit handle, so the
+  notice survives; an unreadable budget also suppresses the retry, and never
+  fails the parent's own transition.
+- **Deferred fallback tasks** are checked at **promotion**, not creation.
+  **Ruling:** a fallback armed hours earlier is a prediction about a limit
+  that may not have been reached yet; the only moment that matters is when it
+  would start spending. `failDueDeferredTasksOverBudget` runs immediately
+  before `PromoteDueDeferredTasksForRuntime(s)` in both the single- and
+  multi-runtime claim paths: it prices each agent that owns a due deferred
+  row and, for a blocked one, flips that agent's due rows to `failed` with
+  `failure_reason = 'budget_exceeded'` (a new
+  `taskfailure.ReasonBudgetExceeded`, sharing the dispatch reason's wire
+  value) so the task is visible as a terminal outcome instead of held
+  silently. One refusal never stops the sweep — every other agent's rows
+  promote in the same tick — and an unreadable budget leaves that agent's
+  rows to promote rather than retiring a member's work over a transient read.
+  `PromoteDeferredChannelIssueTask` and `PromoteChannelChatTasksIfMediaReady`
+  are untouched: they promote on media readiness, and the same rows' `fire_at`
+  fallback still passes through the gated sweep.
+
 Tasks already queued or running when a limit is reached are not interrupted
 and are not filtered at claim time. Runtime deletion (every path, including
 profile deletion and the offline-runtime sweeper), member revocation and
