@@ -6580,7 +6580,13 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		if err := s.checkRuntimeCostBudget(ctx, s.Queries, target.agent, time.Now()); err != nil {
 			var budgetErr *RuntimeBudgetExceededError
 			if errors.As(err, &budgetErr) {
-				slog.Warn("delegated failure recovery task not created: runtime cost budget reached",
+				// Info, not Warn: this fires once per pending recovery comment on
+				// every sweep tick (~5 min) for as long as the period lasts, and
+				// a refusal is a policy outcome rather than something an operator
+				// must act on. RecoverPendingDelegatedFailures logs the Blocked
+				// aggregate for the tick, and the owner already has the inbox
+				// notice.
+				slog.Info("delegated failure recovery task not created: runtime cost budget reached",
 					"failed_task_id", util.UUIDToString(target.failed.ID),
 					"source_task_id", util.UUIDToString(target.source.ID),
 					"coordinator_agent_id", util.UUIDToString(target.agent.ID),
