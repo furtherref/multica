@@ -8,8 +8,14 @@
 -- "limit reached" inbox notice so the notice fires once per period.
 -- No foreign keys by repository rule; runtime delete and member revoke remove
 -- rows in application code.
+--
+-- id is NOT declared inline as PRIMARY KEY: the repo convention (migrations
+-- 332-334) builds the table without one, creates the backing unique index
+-- CONCURRENTLY in its own single-statement migration (453), then attaches it
+-- with PRIMARY KEY USING INDEX (454). An inline PRIMARY KEY would build its
+-- index non-concurrently, which the migration rules forbid even on a new table.
 CREATE TABLE IF NOT EXISTS runtime_cost_budget (
-    id                              UUID PRIMARY KEY,
+    id                              UUID NOT NULL,
     workspace_id                    UUID NOT NULL,
     runtime_id                      UUID NOT NULL,
     user_id                         UUID,
