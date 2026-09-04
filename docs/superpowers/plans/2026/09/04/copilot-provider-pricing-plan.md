@@ -4,7 +4,7 @@
 
 **Goal:** Price Copilot GPT-5.6 usage with date-aware GitHub Copilot rates in every UI aggregate and in server-side runtime budgets.
 
-**Architecture:** Add provider-qualified, effective-dated Copilot rules to the existing TypeScript and Go pricing engines. Preserve the usage date in aggregate endpoints so each slice is priced before folding, and change runtime-budget spend to price UTC-dated rows before accumulating daily, weekly, and monthly totals. Long-context rules are represented but selected only when request-level input is explicitly supplied.
+**Architecture:** Add provider-qualified, effective-dated Copilot rules to the existing TypeScript and Go pricing engines. Preserve a UTC `pricing_date` in aggregate endpoints, separate from the viewer-timezone display date, so each slice is priced before folding. Change runtime-budget spend to price UTC-dated rows before accumulating daily, weekly, and monthly totals. Long-context rules are represented but selected only when request-level input is explicitly supplied.
 
 **Tech Stack:** TypeScript, Vitest, Go 1.26, PostgreSQL/sqlc, Zod.
 
@@ -21,9 +21,9 @@
 Add cases equivalent to:
 
 ```ts
-expect(estimateCost({...tokens, provider: "copilot", model: "gpt-5.6-sol", date: "2026-09-03"})).toBeCloseTo(promoCost);
-expect(estimateCost({...tokens, provider: "copilot", model: "gpt-5.6-sol", date: "2026-09-04"})).toBeCloseTo(standardCost);
-expect(estimateCost({...tokens, provider: "codex", model: "gpt-5.6-sol", date: "2026-09-04"})).toBeCloseTo(openAICost);
+expect(estimateCost({...tokens, provider: "copilot", model: "gpt-5.6-sol", pricing_date: "2026-09-03"})).toBeCloseTo(promoCost);
+expect(estimateCost({...tokens, provider: "copilot", model: "gpt-5.6-sol", pricing_date: "2026-09-04"})).toBeCloseTo(standardCost);
+expect(estimateCost({...tokens, provider: "codex", model: "gpt-5.6-sol", pricing_date: "2026-09-04"})).toBeCloseTo(openAICost);
 ```
 
 Also call the pure rule resolver with request input exactly at and one token
@@ -41,7 +41,7 @@ Expected: the Copilot cases receive the existing bare OpenAI prices and fail.
 - [ ] **Step 3: Implement provider-qualified rules**
 
 Add a small `CopilotPriceRule` catalog containing effective periods, default
-rates, and optional long-context rates. Extend `Priceable` with optional `date`
+rates, and optional long-context rates. Extend `Priceable` with optional `pricing_date`
 and request-level input metadata. Resolve the qualified rule first, use the
 usage date when present, and never derive the long tier from aggregate token
 totals.
@@ -50,7 +50,7 @@ totals.
 
 Run the command from Step 2 and expect all tests to pass.
 
-### Task 2: Preserve dates in client-priced aggregate endpoints
+### Task 2: Preserve UTC pricing dates in client-priced aggregate endpoints
 
 **Files:**
 - Modify: `server/pkg/db/queries/runtime_usage.sql`
@@ -67,9 +67,10 @@ Run the command from Step 2 and expect all tests to pass.
 
 - [ ] **Step 1: Write failing SQL/handler and schema tests**
 
-Assert by-agent and by-hour rows on opposite sides of midnight remain separate
-and return `date` plus `provider`. Assert old responses with either field
-missing still parse to empty strings.
+Assert usage rows on opposite sides of UTC midnight remain separate by
+`pricing_date`, even when they share one viewer-timezone display date. Assert
+by-agent and by-hour rows return `pricing_date` plus `provider`. Assert old
+responses with either field missing still parse to empty strings.
 
 - [ ] **Step 2: Verify RED**
 
@@ -78,14 +79,15 @@ cd server && go test ./internal/handler -run 'Test.*Usage.*Date' -count=1
 pnpm --filter @multica/core exec vitest run api/schemas.test.ts
 ```
 
-Expected: date/provider fields or date grouping are absent.
+Expected: pricing-date/provider fields or UTC-date grouping are absent.
 
 - [ ] **Step 3: Add date dimensions and regenerate sqlc**
 
-Group runtime by-agent and by-hour rows by
-`DATE(created_at AT TIME ZONE @tz)`, and dashboard by-agent rows by
-`DATE(bucket_hour AT TIME ZONE @tz)`. Return the date/provider fields from the
-handlers, add them to client types and fallback schemas, and run:
+Add `DATE(bucket_hour AT TIME ZONE 'UTC') AS pricing_date` to hourly-rollup
+queries and `DATE(created_at AT TIME ZONE 'UTC') AS pricing_date` to raw usage
+queries, then include that expression in each grouping. Keep the existing
+viewer-timezone `date`/`hour` dimensions unchanged. Return `pricing_date` and
+provider from handlers, add them to client types and fallback schemas, and run:
 
 ```bash
 make sqlc
@@ -166,4 +168,3 @@ effective-date decisions in TypeScript and Go tests.
 git add docs/superpowers packages/views/runtimes packages/core server
 git commit -m "feat(usage): add Copilot provider pricing"
 ```
-

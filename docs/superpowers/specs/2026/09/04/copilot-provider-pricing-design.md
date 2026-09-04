@@ -22,8 +22,8 @@ dedicated Copilot runtime:
 | GPT-5.6 Luna | all dates | 0.2 / 0.02 / 0.25 / 1.2 | >200K: 0.4 / 0.04 / 0.5 / 1.8 |
 
 Rates are USD per million tokens. Sol's 50% promotion ended after September 3,
-2026. The effective date is selected from the usage timestamp, never from the
-viewer's current clock when a timestamp is available.
+2026. The effective date is selected from the usage timestamp in UTC, never
+from the viewer's current clock or viewing-timezone date.
 
 ## Price resolution
 
@@ -39,17 +39,18 @@ The three GPT-5.6 Copilot models are strict provider-scoped SKUs: if their
 qualified rule is missing, a Copilot row must not silently borrow the bare
 OpenAI API price. Codex/OpenAI rows continue using the existing bare rates.
 
-## Date-preserving aggregates
+## Pricing-date-preserving aggregates
 
-Daily trend rows already carry a date. The runtime by-agent, runtime by-hour,
-and dashboard by-agent endpoints currently collapse dates, which would blend
-Sol's promotional and standard periods before client-side pricing. These
-queries will add a viewing-date bucket and group by it. The UI continues to
-fold rows by owner/model/hour after pricing each dated slice, so the response
-change is additive and old clients can ignore the field.
+Every client-priced aggregate will add `pricing_date`, derived as the UTC date
+of `task_usage.created_at` or the UTC hourly bucket. This is intentionally
+separate from the existing display `date`, which follows the viewer's timezone:
+a viewing day can straddle a UTC pricing boundary. Queries group by the UTC
+pricing date before client-side pricing. The UI continues to fold rows by
+display date/owner/model/hour after pricing each UTC-dated slice, so the
+response change is additive and old clients can ignore the field.
 
 Runtime-budget spend is server-side. Its query will likewise group raw usage by
-UTC date instead of pre-summing three periods. Go prices each dated row using
+UTC pricing date instead of pre-summing three periods. Go prices each dated row using
 the same Copilot rules, then folds it into every configured daily, weekly, and
 monthly window. This prevents the budget gate from disagreeing with the UI
 across the Sol promotion boundary.
@@ -86,4 +87,3 @@ be inferred from session totals.
   an aggregate without that signal stays on the default tier.
 - Dated by-agent and by-hour rows sum to the daily cost for the same fixtures.
 - Runtime budget spend matches the frontend estimate for dated Copilot rows.
-
