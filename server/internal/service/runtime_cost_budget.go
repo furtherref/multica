@@ -123,7 +123,7 @@ func budgetPeriods(rows []db.RuntimeCostBudget) []pricing.Period {
 // about today. The three FILTER starts are unchanged, so each requested period
 // still picks its own rows out of that scan.
 //
-// The database returns raw sums per (owner, provider, model); pricing stays in
+// The database returns raw sums per (owner, UTC pricing date, provider, model); pricing stays in
 // Go so the rate table, not the query, decides what an uncosted token costs.
 // Grouping by owner splits a provider/model bucket that the per-scope query
 // used to sum whole, so the runtime total rounds the rate-table estimate once

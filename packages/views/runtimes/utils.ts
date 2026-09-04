@@ -163,6 +163,7 @@ export function formatUsd(n: number): string {
 //   Moonshot:  https://www.kimi.com/resources/kimi-k2-6-pricing
 //   Zhipu:     https://docs.z.ai/guides/overview/pricing
 //   xAI:       https://docs.x.ai/developers/pricing
+//   Copilot:   https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing
 //
 // Anthropic's cacheWrite reflects the 5-minute cache TTL (1.25× input); the
 // daemon reports cache_creation_input_tokens without TTL metadata, so 5m is

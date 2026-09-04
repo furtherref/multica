@@ -147,7 +147,8 @@ func parseProjectIDParam(w http.ResponseWriter, r *http.Request) (pgtype.UUID, b
 	return u, true
 }
 
-// DashboardUsageDailyResponse is one (date, provider, model) bucket. Cost-side
+// DashboardUsageDailyResponse is one (display date, UTC pricing date, provider,
+// model) bucket. Cost-side
 // math happens on the client from a per-model pricing table; provider + model
 // stay on the wire so the client can disambiguate bare model ids that collide
 // across providers (e.g. Cursor's `auto`).
@@ -234,7 +235,8 @@ func (h *Handler) listDashboardUsageDaily(
 	return resp, nil
 }
 
-// DashboardUsageByAgentResponse is one (agent, provider, model) row. provider
+// DashboardUsageByAgentResponse is one (agent, UTC pricing date, provider,
+// model) row. provider
 // rides along for the same cross-provider pricing disambiguation as the daily
 // response; the client folds by agent_id and sums cost.
 type DashboardUsageByAgentResponse struct {
@@ -276,8 +278,9 @@ func (h *Handler) GetDashboardUsageByAgent(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	// "By agent" has no date grouping in the SQL — tz only determines
-	// the cutoff boundary, not the bucket axis. Which is exactly why the
+	// "By agent" has no viewing-date grouping in the SQL — its UTC
+	// pricing_date cannot trim a viewer-local window. tz therefore only
+	// determines the cutoff boundary. Which is exactly why the
 	// cutoff must be the EXACT N-day one: the client trims the surplus day
 	// `parseSinceParamInTZ` hands back with `-(days-1)`, and a response
 	// carrying no date cannot be trimmed that way. On the N+1 cutoff this

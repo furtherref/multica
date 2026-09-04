@@ -66,7 +66,7 @@ JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.issue_id = $1;
 
 -- name: ListDashboardUsageDaily :many
--- Daily per-(date, provider, model) token aggregates for the workspace, served
+-- Daily per-(display date, UTC pricing date, provider, model) token aggregates for the workspace, served
 -- from the UTC-bucketed `task_usage_hourly` table and
 -- sliced to calendar days under the caller-supplied @tz. Optionally
 -- scoped to a single project via sqlc.narg('project_id'). Powers the
@@ -106,8 +106,8 @@ GROUP BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text), DATE(bucket_hour A
 ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model;
 
 -- name: ListDashboardUsageByAgent :many
--- Per-(agent, provider, model) token aggregates from `task_usage_hourly`. No
--- date grouping in the result, so this query takes no `@tz` — the
+-- Per-(agent, UTC pricing date, provider, model) token aggregates from
+-- `task_usage_hourly`. Pricing dates are UTC, so this query takes no `@tz` — the
 -- @since cutoff is a raw timestamptz the Go layer has already computed
 -- in the viewer's tz. Model dimension is preserved so the client can
 -- compute cost from its per-model pricing table; the client folds rows

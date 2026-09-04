@@ -1,7 +1,7 @@
 -- name: ListRuntimeUsage :many
 -- Reads from the UTC-bucketed `task_usage_hourly` rollup table,
--- aggregated to per-(date, provider, model) under the
--- caller-supplied @tz. Powers the trend chart on the runtime detail
+-- aggregated to per-(display date, UTC pricing date, provider, model) under
+-- the caller-supplied @tz. Powers the trend chart on the runtime detail
 -- page and the per-row cost cell on the runtimes list.
 --
 -- @tz is required, even if the caller intends "UTC", so the bucket
@@ -86,15 +86,15 @@ GROUP BY hour
 ORDER BY hour;
 
 -- name: ListRuntimeUsageByAgent :many
--- Per-(agent, provider, model) token aggregates for a runtime since a cutoff. Powers
+-- Per-(agent, UTC pricing date, provider, model) token aggregates for a runtime since a cutoff. Powers
 -- the runtime-detail "Cost by agent" tab. task_usage only carries task_id,
 -- so we join the queue to expose agent_id. The model dimension is kept on
 -- purpose: cost is computed client-side from a per-model pricing table, so
 -- collapsing models server-side would erase the information needed to do
 -- that arithmetic. The client groups by agent_id and sums cost per agent.
 --
--- This view doesn't bucket by date, so it doesn't need @tz; only the
--- @since cutoff is provided in runtime-local terms (computed in Go).
+-- The UTC pricing date keeps effective-dated rates separate. It does not need
+-- @tz; only the @since cutoff is provided in viewer-local terms (computed in Go).
 -- provider is LOWER()-normalized so mixed-case historical rows merge with
 -- new rows (see ListDashboardUsageDaily in task_usage.sql).
 SELECT
@@ -120,7 +120,7 @@ GROUP BY atq.agent_id, DATE(tu.created_at AT TIME ZONE 'UTC'), LOWER(tu.provider
 ORDER BY atq.agent_id, DATE(tu.created_at AT TIME ZONE 'UTC'), LOWER(tu.provider), tu.model;
 
 -- name: GetRuntimeUsageByHour :many
--- Per-(hour, model) token aggregates (hour ∈ 0..23) for a runtime since a
+-- Per-(UTC pricing date, viewing hour, provider, model) token aggregates for a runtime since a
 -- cutoff. Powers the "By hour" tab — shows when in the day this runtime is
 -- doing real work, with model preserved for client-side cost calculation
 -- (same reason as ListRuntimeUsageByAgent above). Hours with zero activity

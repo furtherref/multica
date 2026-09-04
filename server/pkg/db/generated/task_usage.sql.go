@@ -450,8 +450,8 @@ type ListDashboardUsageByAgentRow struct {
 	TaskCount                int32       `json:"task_count"`
 }
 
-// Per-(agent, provider, model) token aggregates from `task_usage_hourly`. No
-// date grouping in the result, so this query takes no `@tz` — the
+// Per-(agent, UTC pricing date, provider, model) token aggregates from
+// `task_usage_hourly`. Pricing dates are UTC, so this query takes no `@tz` — the
 // @since cutoff is a raw timestamptz the Go layer has already computed
 // in the viewer's tz. Model dimension is preserved so the client can
 // compute cost from its per-model pricing table; the client folds rows
@@ -547,7 +547,7 @@ type ListDashboardUsageDailyRow struct {
 	TaskCount                int32       `json:"task_count"`
 }
 
-// Daily per-(date, provider, model) token aggregates for the workspace, served
+// Daily per-(display date, UTC pricing date, provider, model) token aggregates for the workspace, served
 // from the UTC-bucketed `task_usage_hourly` table and
 // sliced to calendar days under the caller-supplied @tz. Optionally
 // scoped to a single project via sqlc.narg('project_id'). Powers the

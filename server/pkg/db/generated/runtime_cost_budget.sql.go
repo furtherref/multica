@@ -130,7 +130,7 @@ type ListRuntimeSpendByOwnerRow struct {
 }
 
 // Every budget scope and period of one runtime in a single pass. Rows are
-// grouped by the agent's owner and by provider/model, so Go can price the
+// grouped by the agent's owner, UTC pricing date, and provider/model, so Go can price the
 // uncosted tokens with the server rate table and then fold the groups into a
 // runtime total and a per-owner total for each period. owner_id is NULL for
 // agents nobody owns: their spend counts toward the runtime total only.
