@@ -652,6 +652,31 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 	if err != nil {
 		return fmt.Errorf("resolve leader: %w", err)
 	}
+	// The runtime cost budget is checked BEFORE any write here, unlike
+	// dispatchRunOnly where it is the last gate in front of the single row that
+	// path inserts. create_issue commits the issue, its subscribers and the
+	// quota reservation in one transaction and only then enqueues, so a refusal
+	// discovered at the enqueue would leave behind a committed issue with no
+	// task, a consumed reservation, and — because the enqueue error falls
+	// through to failRun — a `failed` run feeding the failure-rate auto-pause
+	// monitor in cmd/server/autopilot_failure_monitor.go. Nothing about a
+	// reached budget is that autopilot's fault.
+	//
+	// The leader resolved above is the agent that will actually execute: a
+	// squad-assigned autopilot creates the issue against the squad and the
+	// issue listener routes it to this same leader, so it is the scope to
+	// price either way. A refusal takes the errDispatchSkipped shape run_only
+	// uses, landing as a `skipped` run carrying budget_exceeded; a non-budget
+	// error from the check is a real read failure and stays a dispatch failure.
+	// The enqueue helpers keep their own gate, which still catches a limit
+	// crossed in the window between this check and the enqueue below.
+	if err := s.TaskSvc.checkRuntimeCostBudget(ctx, s.TaskSvc.Queries, leader, time.Now()); err != nil {
+		var budgetErr *RuntimeBudgetExceededError
+		if errors.As(err, &budgetErr) {
+			return &errDispatchSkipped{reason: formatAdmissionReason(ap, budgetErr.PublicReason()), code: dispatch.ReasonBudgetExceeded}
+		}
+		return fmt.Errorf("check runtime cost budget: %w", err)
+	}
 	issueCountPolicy := ResolveIssueCountPolicy(ctx, s.Entitlements, ap.WorkspaceID)
 
 	tx, err := s.TxStarter.Begin(ctx)
@@ -1006,6 +1031,10 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 	// attribution refusal above and lands as a `skipped` run carrying
 	// budget_exceeded. A non-budget error from the check is a real read failure
 	// and stays a dispatch failure so the run is not silently marked skipped.
+	//
+	// dispatchCreateIssue runs the same check at the TOP of the function instead:
+	// this path writes exactly one row and nothing before it, while that one
+	// commits an issue before it ever reaches an enqueue.
 	if err := s.TaskSvc.checkRuntimeCostBudget(ctx, s.TaskSvc.Queries, agent, time.Now()); err != nil {
 		var budgetErr *RuntimeBudgetExceededError
 		if errors.As(err, &budgetErr) {

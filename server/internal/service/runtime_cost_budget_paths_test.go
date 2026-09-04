@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -76,6 +77,82 @@ func TestAutopilotRunOnlyRefusedWhenBudgetReached(t *testing.T) {
 	// total that GET /budget gates behind runtime read access.
 	if strings.ContainsAny(updated.FailureReason.String, "0123456789") {
 		t.Fatalf("skipped run reason %q leaks budget amounts", updated.FailureReason.String)
+	}
+}
+
+// seedCreateIssueAutopilot creates an active create_issue autopilot
+// (agent-assigned) plus a running autopilot_run, mirroring
+// seedRunOnlyAutopilot for the other execution mode.
+func seedCreateIssueAutopilot(t *testing.T, pool *pgxpool.Pool, workspaceID, agentID, creatorID string) (autopilotID, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO autopilot (workspace_id, title, assignee_type, assignee_id, status, execution_mode, created_by_type, created_by_id)
+		VALUES ($1, 'create-issue ap', 'agent', $2, 'active', 'create_issue', 'member', $3) RETURNING id`,
+		workspaceID, agentID, creatorID).Scan(&autopilotID); err != nil {
+		t.Fatalf("seed autopilot: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, autopilotID) })
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO autopilot_run (autopilot_id, source, status) VALUES ($1, 'manual', 'running') RETURNING id`,
+		autopilotID).Scan(&runID); err != nil {
+		t.Fatalf("seed autopilot run: %v", err)
+	}
+	return autopilotID, runID
+}
+
+// A create_issue autopilot writes the issue first and enqueues afterwards, so
+// a refusal at the enqueue would leave a committed issue nobody will ever work
+// and a `failed` run feeding the failure-rate auto-pause monitor. The budget is
+// therefore checked before any write, and lands as the same `skipped` run
+// run_only records.
+func TestAutopilotCreateIssueRefusedWhenBudgetReached(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, creatorID, agentID, issueID := seedAttributionFixture(t, pool)
+	fx := testutil.New(pool, workspaceID, creatorID)
+	cleanupBudgetNotices(t, fx, workspaceID)
+	agent, err := q.GetAgent(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("load agent: %v", err)
+	}
+	autopilotID, runID := seedCreateIssueAutopilot(t, pool, workspaceID, agentID, creatorID)
+	daily := 5.0
+	seedBudget(t, ctx, q, workspaceID, util.UUIDToString(agent.RuntimeID), nil, &daily, nil, nil)
+	seedSpend(t, ctx, pool, agentID, issueID, 5, time.Now().Add(-time.Minute))
+
+	svc := &AutopilotService{
+		Queries: q, TxStarter: pool, Bus: events.New(),
+		TaskSvc: &TaskService{Queries: q, TxStarter: pool, Bus: events.New()},
+	}
+	ap, err := q.GetAutopilot(ctx, util.MustParseUUID(autopilotID))
+	if err != nil {
+		t.Fatalf("get autopilot: %v", err)
+	}
+	run, err := q.GetAutopilotRun(ctx, util.MustParseUUID(runID))
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+
+	updated, code, err := svc.dispatchAutopilotRun(ctx, ap, pgtype.UUID{}, "manual", &run, util.MustParseUUID(creatorID))
+	if err != nil {
+		t.Fatalf("a budget refusal must not be a dispatch error: %v", err)
+	}
+	if code != dispatch.ReasonBudgetExceeded {
+		t.Fatalf("reason code = %q, want %q", code, dispatch.ReasonBudgetExceeded)
+	}
+	if updated.Status != "skipped" {
+		t.Fatalf("run status = %q, want skipped", updated.Status)
+	}
+	if strings.ContainsAny(updated.FailureReason.String, "0123456789") {
+		t.Fatalf("skipped run reason %q leaks budget amounts", updated.FailureReason.String)
+	}
+	if n := fx.Count(t, `SELECT count(*) FROM issue WHERE origin_type = 'autopilot' AND origin_id = $1`, autopilotID); n != 0 {
+		t.Fatalf("refused create_issue dispatch committed %d issues, want 0", n)
+	}
+	if n := fx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE autopilot_run_id = $1`, runID); n != 0 {
+		t.Fatalf("refused create_issue dispatch queued %d tasks, want 0", n)
 	}
 }
 

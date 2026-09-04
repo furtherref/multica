@@ -143,9 +143,18 @@ executing agent is known and before the row is written:
   `skipped` with that reason code — the same shape as the readiness and
   attribution gates beside it, and never a `failed` run. The manual
   "run now" response carries the code on a `200` with the skipped run, as it
-  does for every other post-admission skip; `create_issue` autopilots are
-  refused by the enqueue helper they call and reach `dispatchFailReasonCode`,
-  which types the error as `budget_exceeded` for the same response field.
+  does for every other post-admission skip.
+- **`dispatchCreateIssue`** (autopilot `create_issue`) checks the resolved
+  leader's budget at the TOP of the function, before any write, and returns the
+  same `errDispatchSkipped{code: budget_exceeded}`. **Ruling:** the gate cannot
+  wait for the enqueue helper this path calls. That path commits the issue, its
+  subscriber fan-out and the quota reservation in one transaction and only then
+  enqueues, so a refusal seen at the enqueue would leave a committed issue with
+  no task, a consumed reservation, and a `failed` run feeding the failure-rate
+  auto-pause monitor — for an autopilot that did nothing wrong. The leader is
+  the right scope either way: a squad-assigned autopilot creates the issue
+  against the squad and the issue listener routes it to that same leader. The
+  enqueue helper keeps its own gate for the window between the two.
 - **`RetrySourceContextQuickCreate`** (manual source-context retry) checks
   after the invoke gate and the issue-capacity preflight, before its
   transaction, and returns the error unchanged. The retry handler maps it to
