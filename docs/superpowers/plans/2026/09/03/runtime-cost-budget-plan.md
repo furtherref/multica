@@ -65,6 +65,13 @@
 
 ### Task 1: Schema and sqlc queries
 
+> **As built:** the migration set is 452-455, not 452-453. The plan's inline
+> `PRIMARY KEY` on `id` had to be split the way migrations 332-334 do it —
+> 452 creates the table with no primary key, 453 builds
+> `runtime_cost_budget_pkey_uidx` `CONCURRENTLY`, 454 attaches it with
+> `PRIMARY KEY USING INDEX`, and the scope index this section calls 453 shipped
+> as 455. The rest of the section stands as written.
+
 **Files:**
 - Create: `server/migrations/452_runtime_cost_budget.up.sql`, `server/migrations/452_runtime_cost_budget.down.sql`
 - Create: `server/migrations/453_runtime_cost_budget_scope_index.up.sql`, `server/migrations/453_runtime_cost_budget_scope_index.down.sql`

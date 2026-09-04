@@ -3722,12 +3722,18 @@ type FailDueDeferredTasksForAgentOverBudgetParams struct {
 }
 
 // Retires one agent's due deferred tasks when its runtime cost budget is spent.
-// Runs BEFORE promotion, so the rows never become claimable: a task failed here
-// was never dispatched and never reached a provider. The reason is the same
-// wire value the API returns for a refused trigger, so the queue and the
-// dispatch response name one cause. Scoped to the same (runtime, deferred, due)
-// predicate the promotion query reads, so it can never retire a row that was
-// not about to be promoted.
+// Runs BEFORE promotion, so a retired row does not become claimable: a task
+// failed here was never dispatched and never reached a provider. The reason is
+// the same wire value the API returns for a refused trigger, so the queue and
+// the dispatch response name one cause.
+//
+// This retires EVERY due deferred row of a blocked agent on that runtime,
+// whether or not this tick would have promoted it. The promotion query below
+// is strictly narrower — it also needs the runtime online and fresh, an
+// unoccupied (issue, agent) slot, and at most one row per (issue, agent) — and
+// that difference is deliberate: a reached budget refuses the work regardless
+// of runtime state or slot occupancy, so leaving a due row deferred would only
+// hide a task nobody will ever run until its issue is closed.
 func (q *Queries) FailDueDeferredTasksForAgentOverBudget(ctx context.Context, arg FailDueDeferredTasksForAgentOverBudgetParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, failDueDeferredTasksForAgentOverBudget,
 		arg.FailureReason,

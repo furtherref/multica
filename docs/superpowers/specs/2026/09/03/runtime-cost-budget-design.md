@@ -196,6 +196,13 @@ executing agent is known and before the row is written:
   silently. One refusal never stops the sweep — every other agent's rows
   promote in the same tick — and an unreadable budget leaves that agent's
   rows to promote rather than retiring a member's work over a transient read.
+  **Ruling:** the fail is scoped wider than the promotion it precedes. It
+  retires every due deferred row of a blocked agent on that runtime, while
+  promotion additionally requires the runtime online and fresh, an unoccupied
+  `(issue, agent)` slot, and at most one row per `(issue, agent)`. A reached
+  budget refuses the work regardless of runtime state or slot occupancy, so a
+  due row left deferred would only be a task nobody will ever run, held
+  silently until its issue closes.
   `PromoteDeferredChannelIssueTask` and `PromoteChannelChatTasksIfMediaReady`
   are untouched: they promote on media readiness, and the same rows' `fire_at`
   fallback still passes through the gated sweep.
