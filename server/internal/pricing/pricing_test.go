@@ -1,6 +1,9 @@
 package pricing
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestPriceForModelAliasAnthropicCurrentGeneration(t *testing.T) {
 	cases := []struct {
@@ -106,6 +109,66 @@ func TestPriceForModelAliasCodexGPT56(t *testing.T) {
 		if got, ok := PriceForModelAlias(model); ok {
 			t.Fatalf("PriceForModelAlias(%q) unexpectedly resolved to %+v; want unmapped", model, got)
 		}
+	}
+}
+
+func TestPriceForUsageCopilotGPT56(t *testing.T) {
+	promoDay := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	standardDay := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name               string
+		provider           string
+		model              string
+		at                 time.Time
+		requestInputTokens int64
+		want               ModelPrice
+	}{
+		{
+			name:     "Sol promotion",
+			provider: "copilot", model: "gpt-5.6-sol", at: promoDay,
+			want: ModelPrice{Provider: "copilot", Model: "gpt-5.6-sol", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, OutputPerM: 10},
+		},
+		{
+			name:     "Sol standard",
+			provider: "Copilot", model: "gpt-5.6-sol", at: standardDay,
+			want: ModelPrice{Provider: "copilot", Model: "gpt-5.6-sol", InputPerM: 4, CacheReadPerM: 0.4, CacheWritePerM: 5, OutputPerM: 20},
+		},
+		{
+			name:     "Terra default threshold",
+			provider: "copilot", model: "gpt-5.6-terra", at: standardDay, requestInputTokens: 272_000,
+			want: ModelPrice{Provider: "copilot", Model: "gpt-5.6-terra", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, OutputPerM: 12},
+		},
+		{
+			name:     "Terra long context",
+			provider: "copilot", model: "gpt-5.6-terra", at: standardDay, requestInputTokens: 272_001,
+			want: ModelPrice{Provider: "copilot", Model: "gpt-5.6-terra", InputPerM: 4, CacheReadPerM: 0.4, CacheWritePerM: 5, OutputPerM: 18},
+		},
+		{
+			name:     "Luna default",
+			provider: "copilot", model: "gpt-5.6-luna", at: standardDay,
+			want: ModelPrice{Provider: "copilot", Model: "gpt-5.6-luna", InputPerM: 0.2, CacheReadPerM: 0.02, CacheWritePerM: 0.25, OutputPerM: 1.2},
+		},
+		{
+			name:     "Codex remains OpenAI",
+			provider: "codex", model: "gpt-5.6-sol", at: standardDay,
+			want: ModelPrice{Provider: "openai", Model: "gpt-5.6-sol", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, OutputPerM: 30},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := PriceForUsage(tc.provider, tc.model, tc.at, tc.requestInputTokens)
+			if !ok || got != tc.want {
+				t.Fatalf("PriceForUsage() = %+v, %v; want %+v, true", got, ok, tc.want)
+			}
+		})
+	}
+
+	// A task aggregate can cross the threshold by summing many short requests.
+	// Zero means the caller has no per-request signal and must stay default.
+	got, ok := PriceForUsage("copilot", "gpt-5.6-terra", standardDay, 0)
+	if !ok || got.InputPerM != 2 {
+		t.Fatalf("aggregate without request size = %+v, %v; want default tier", got, ok)
 	}
 }
 

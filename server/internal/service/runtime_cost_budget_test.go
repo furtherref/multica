@@ -214,6 +214,55 @@ func TestCheckRuntimeCostBudgetUnpricedTokensCountAsZero(t *testing.T) {
 	}
 }
 
+func TestLoadRuntimeSpendPricesCopilotAcrossPromotionBoundary(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	_, _, agentID, issueID := seedAttributionFixture(t, pool)
+	agent, err := q.GetAgent(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	insert := func(at time.Time) {
+		var taskID string
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO agent_task_queue (
+				agent_id, runtime_id, issue_id, status, priority, originator_source, completed_at
+			) VALUES ($1, $2, $3, 'completed', 0, 'delegation', $4)
+			RETURNING id
+		`, agentID, agent.RuntimeID, issueID, at).Scan(&taskID); err != nil {
+			t.Fatalf("seed task: %v", err)
+		}
+		t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO task_usage (
+				task_id, provider, model, input_tokens, output_tokens,
+				cache_read_tokens, cache_write_tokens, created_at
+			) VALUES ($1, 'copilot', 'gpt-5.6-sol', 0, 1000000, 0, 0, $2)
+		`, taskID, at); err != nil {
+			t.Fatalf("seed usage: %v", err)
+		}
+		t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM task_usage WHERE task_id = $1`, taskID) })
+	}
+	insert(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)) // $10 promo output
+	insert(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)) // $20 standard output
+
+	now := time.Date(2026, 9, 4, 18, 0, 0, 0, time.UTC)
+	spend, err := loadRuntimeSpend(ctx, q, agent.RuntimeID, now, []pricing.Period{
+		pricing.PeriodDaily,
+		pricing.PeriodMonthly,
+	})
+	if err != nil {
+		t.Fatalf("loadRuntimeSpend: %v", err)
+	}
+	if got, want := spend.ticks(pricing.PeriodDaily, pgtype.UUID{}), pricing.USDToTicks(20); got != want {
+		t.Fatalf("daily spend = %d, want %d", got, want)
+	}
+	if got, want := spend.ticks(pricing.PeriodMonthly, pgtype.UUID{}), pricing.USDToTicks(30); got != want {
+		t.Fatalf("monthly spend = %d, want %d", got, want)
+	}
+}
+
 func TestEnqueueTaskForIssueRefusedWhenBudgetReached(t *testing.T) {
 	pool := newResolveOriginatorPool(t)
 	ctx := context.Background()

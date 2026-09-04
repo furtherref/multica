@@ -1,6 +1,9 @@
 package pricing
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestEstimateCostTicksPricesUncostedTokensOfKnownModel(t *testing.T) {
 	// claude-sonnet-5: input 2.00, output 10.00, cache read 0.20, cache write 2.50 per 1M.
@@ -21,6 +24,23 @@ func TestEstimateCostTicksKeepsProviderCostAndIgnoresUnpricedTokens(t *testing.T
 func TestEstimateCostTicksAddsProviderCostToEstimate(t *testing.T) {
 	got := EstimateCostTicks("claude-sonnet-5", USDToTicks(1), 1_000_000, 0, 0, 0)
 	if want := USDToTicks(3); got != want {
+		t.Fatalf("ticks = %d, want %d", got, want)
+	}
+}
+
+func TestEstimateCostTicksForUsageUsesCopilotProviderAndDate(t *testing.T) {
+	got := EstimateCostTicksForUsage(
+		"copilot",
+		"gpt-5.6-sol",
+		time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC),
+		0,
+		0,
+		1_000_000,
+		1_000_000,
+		1_000_000,
+		1_000_000,
+	)
+	if want := USDToTicks(2 + 10 + 0.2 + 2.5); got != want {
 		t.Fatalf("ticks = %d, want %d", got, want)
 	}
 }

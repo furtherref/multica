@@ -3,6 +3,7 @@ package pricing
 import (
 	"regexp"
 	"strings"
+	"time"
 )
 
 // CostUSDTicksPerUSD is the scale of provider-reported costs: xAI reports
@@ -19,6 +20,48 @@ type ModelPrice struct {
 	CacheWritePerM float64
 	OutputPerM     float64
 }
+
+type copilotPricePeriod struct {
+	ValidFrom       time.Time
+	ValidThrough    time.Time
+	Default         ModelPrice
+	LongThreshold   int64
+	LongContextRate ModelPrice
+}
+
+var copilotModelPrices = map[string][]copilotPricePeriod{
+	"gpt-5.6-sol": {
+		{
+			ValidThrough:    time.Date(2026, 9, 3, 23, 59, 59, int(time.Second-time.Nanosecond), time.UTC),
+			Default:         ModelPrice{Provider: "copilot", Model: "gpt-5.6-sol", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, OutputPerM: 10},
+			LongThreshold:   272_000,
+			LongContextRate: ModelPrice{Provider: "copilot", Model: "gpt-5.6-sol", InputPerM: 4, CacheReadPerM: 0.4, CacheWritePerM: 5, OutputPerM: 15},
+		},
+		{
+			ValidFrom:       time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC),
+			Default:         ModelPrice{Provider: "copilot", Model: "gpt-5.6-sol", InputPerM: 4, CacheReadPerM: 0.4, CacheWritePerM: 5, OutputPerM: 20},
+			LongThreshold:   272_000,
+			LongContextRate: ModelPrice{Provider: "copilot", Model: "gpt-5.6-sol", InputPerM: 8, CacheReadPerM: 0.8, CacheWritePerM: 10, OutputPerM: 30},
+		},
+	},
+	"gpt-5.6-terra": {
+		{
+			Default:         ModelPrice{Provider: "copilot", Model: "gpt-5.6-terra", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, OutputPerM: 12},
+			LongThreshold:   272_000,
+			LongContextRate: ModelPrice{Provider: "copilot", Model: "gpt-5.6-terra", InputPerM: 4, CacheReadPerM: 0.4, CacheWritePerM: 5, OutputPerM: 18},
+		},
+	},
+	"gpt-5.6-luna": {
+		{
+			Default:         ModelPrice{Provider: "copilot", Model: "gpt-5.6-luna", InputPerM: 0.2, CacheReadPerM: 0.02, CacheWritePerM: 0.25, OutputPerM: 1.2},
+			LongThreshold:   200_000,
+			LongContextRate: ModelPrice{Provider: "copilot", Model: "gpt-5.6-luna", InputPerM: 0.4, CacheReadPerM: 0.04, CacheWritePerM: 0.5, OutputPerM: 1.8},
+		},
+	},
+}
+
+var copilotGPT56ModelRe = regexp.MustCompile(`(?:^|/|:)(gpt-5\.6-(?:sol|terra|luna))(?:\[[^\]]+\])?$`)
+var copilotGPT56FamilyRe = regexp.MustCompile(`(?:^|/|:)gpt-5\.6-`)
 
 var modelPrices = map[string]ModelPrice{
 	// GPT-5.6 series (Codex `codex` provider). Official rates from OpenAI's
@@ -246,6 +289,45 @@ func PriceForModelAlias(model string) (ModelPrice, bool) {
 			return ModelPrice{}, false
 		}
 		return matchModelAlias(stripped)
+	}
+	return ModelPrice{}, false
+}
+
+// PriceForUsage resolves a model in its billing-provider context. Copilot's
+// GPT-5.6 rates differ from direct OpenAI API rates, and Sol changed when its
+// promotion ended after 2026-09-03. requestInputTokens is one request's input
+// size; zero means the caller only has an aggregate and must use the default
+// tier rather than guessing that the whole aggregate was one long prompt.
+func PriceForUsage(provider, model string, occurredAt time.Time, requestInputTokens int64) (ModelPrice, bool) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	model = strings.ToLower(strings.TrimSpace(model))
+	if provider != "copilot" {
+		return PriceForModelAlias(model)
+	}
+
+	match := copilotGPT56ModelRe.FindStringSubmatch(model)
+	if len(match) != 2 {
+		if copilotGPT56FamilyRe.MatchString(model) {
+			return ModelPrice{}, false
+		}
+		return PriceForModelAlias(model)
+	}
+	periods := copilotModelPrices[match[1]]
+	if occurredAt.IsZero() {
+		occurredAt = time.Now()
+	}
+	occurredAt = occurredAt.UTC()
+	for _, period := range periods {
+		if !period.ValidFrom.IsZero() && occurredAt.Before(period.ValidFrom) {
+			continue
+		}
+		if !period.ValidThrough.IsZero() && occurredAt.After(period.ValidThrough) {
+			continue
+		}
+		if requestInputTokens > period.LongThreshold {
+			return period.LongContextRate, true
+		}
+		return period.Default, true
 	}
 	return ModelPrice{}, false
 }

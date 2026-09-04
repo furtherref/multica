@@ -144,9 +144,6 @@ func loadRuntimeSpend(ctx context.Context, q *db.Queries, runtimeID pgtype.UUID,
 	if len(periods) == 0 {
 		return spend, nil
 	}
-	periodStart := func(p pricing.Period) pgtype.Timestamptz {
-		return pgtype.Timestamptz{Time: pricing.PeriodStart(now, p), Valid: true}
-	}
 	scanFloor := pricing.PeriodStart(now, periods[0])
 	for _, p := range periods[1:] {
 		if start := pricing.PeriodStart(now, p); start.Before(scanFloor) {
@@ -154,11 +151,8 @@ func loadRuntimeSpend(ctx context.Context, q *db.Queries, runtimeID pgtype.UUID,
 		}
 	}
 	rows, err := q.ListRuntimeSpendByOwner(ctx, db.ListRuntimeSpendByOwnerParams{
-		RuntimeID:    runtimeID,
-		ScanFloor:    pgtype.Timestamptz{Time: scanFloor, Valid: true},
-		DailyStart:   periodStart(pricing.PeriodDaily),
-		WeeklyStart:  periodStart(pricing.PeriodWeekly),
-		MonthlyStart: periodStart(pricing.PeriodMonthly),
+		RuntimeID: runtimeID,
+		ScanFloor: pgtype.Timestamptz{Time: scanFloor, Valid: true},
 	})
 	if err != nil {
 		return runtimeSpend{}, fmt.Errorf("list runtime spend: %w", err)
@@ -170,12 +164,23 @@ func loadRuntimeSpend(ctx context.Context, q *db.Queries, runtimeID pgtype.UUID,
 		}
 	}
 	for _, r := range rows {
-		add(pricing.PeriodDaily, r.OwnerID, pricing.EstimateCostTicks(r.Model, r.DailyCostUsdTicks,
-			r.DailyUncostedInputTokens, r.DailyUncostedOutputTokens, r.DailyUncostedCacheReadTokens, r.DailyUncostedCacheWriteTokens))
-		add(pricing.PeriodWeekly, r.OwnerID, pricing.EstimateCostTicks(r.Model, r.WeeklyCostUsdTicks,
-			r.WeeklyUncostedInputTokens, r.WeeklyUncostedOutputTokens, r.WeeklyUncostedCacheReadTokens, r.WeeklyUncostedCacheWriteTokens))
-		add(pricing.PeriodMonthly, r.OwnerID, pricing.EstimateCostTicks(r.Model, r.MonthlyCostUsdTicks,
-			r.MonthlyUncostedInputTokens, r.MonthlyUncostedOutputTokens, r.MonthlyUncostedCacheReadTokens, r.MonthlyUncostedCacheWriteTokens))
+		occurredAt := r.PricingDate.Time
+		ticks := pricing.EstimateCostTicksForUsage(
+			r.Provider,
+			r.Model,
+			occurredAt,
+			0,
+			r.CostUsdTicks,
+			r.UncostedInputTokens,
+			r.UncostedOutputTokens,
+			r.UncostedCacheReadTokens,
+			r.UncostedCacheWriteTokens,
+		)
+		for _, p := range pricing.AllPeriods {
+			if !occurredAt.Before(pricing.PeriodStart(now, p)) {
+				add(p, r.OwnerID, ticks)
+			}
+		}
 	}
 	return spend, nil
 }
