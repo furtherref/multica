@@ -3700,6 +3700,114 @@ func (q *Queries) FailAgentTask(ctx context.Context, arg FailAgentTaskParams) (A
 	return i, err
 }
 
+const failDueDeferredTasksForAgentOverBudget = `-- name: FailDueDeferredTasksForAgentOverBudget :many
+UPDATE agent_task_queue
+SET status = 'failed',
+    completed_at = now(),
+    failure_reason = $1,
+    error = $2,
+    prepare_lease_expires_at = NULL
+WHERE agent_id = $3
+  AND runtime_id = ANY($4::uuid[])
+  AND status = 'deferred'
+  AND fire_at <= now()
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision
+`
+
+type FailDueDeferredTasksForAgentOverBudgetParams struct {
+	FailureReason pgtype.Text   `json:"failure_reason"`
+	Error         pgtype.Text   `json:"error"`
+	AgentID       pgtype.UUID   `json:"agent_id"`
+	RuntimeIds    []pgtype.UUID `json:"runtime_ids"`
+}
+
+// Retires one agent's due deferred tasks when its runtime cost budget is spent.
+// Runs BEFORE promotion, so the rows never become claimable: a task failed here
+// was never dispatched and never reached a provider. The reason is the same
+// wire value the API returns for a refused trigger, so the queue and the
+// dispatch response name one cause. Scoped to the same (runtime, deferred, due)
+// predicate the promotion query reads, so it can never retire a row that was
+// not about to be promoted.
+func (q *Queries) FailDueDeferredTasksForAgentOverBudget(ctx context.Context, arg FailDueDeferredTasksForAgentOverBudgetParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, failDueDeferredTasksForAgentOverBudget,
+		arg.FailureReason,
+		arg.Error,
+		arg.AgentID,
+		arg.RuntimeIds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+			&i.BranchName,
+			&i.DurableWorkDir,
+			&i.ChannelContextRevision,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const failExpiredRuntimeReconnectRetries = `-- name: FailExpiredRuntimeReconnectRetries :many
 WITH victims AS (
     SELECT retry.id
@@ -5796,6 +5904,41 @@ func (q *Queries) ListChatFinalizeDeferredExpired(ctx context.Context, arg ListC
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDueDeferredTaskAgentsForRuntimes = `-- name: ListDueDeferredTaskAgentsForRuntimes :many
+SELECT DISTINCT t.agent_id
+FROM agent_task_queue t
+WHERE t.runtime_id = ANY($1::uuid[])
+  AND t.status = 'deferred'
+  AND t.fire_at <= now()
+`
+
+// The agents that own at least one deferred task whose fire_at has passed on
+// one of these runtimes. Read immediately before promotion so a reached runtime
+// cost budget can retire those rows instead of making them claimable. Kept
+// deliberately narrow (no fences, no ordering): it only decides WHICH agents to
+// price, and the promotion query below still owns which rows may be promoted.
+// Returns nothing on the common path, so an idle claim poll pays one index
+// probe and skips the budget work entirely.
+func (q *Queries) ListDueDeferredTaskAgentsForRuntimes(ctx context.Context, runtimeIds []pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listDueDeferredTaskAgentsForRuntimes, runtimeIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var agent_id pgtype.UUID
+		if err := rows.Scan(&agent_id); err != nil {
+			return nil, err
+		}
+		items = append(items, agent_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -2296,6 +2296,40 @@ WHERE r.runtime_id = ANY(@runtime_ids::uuid[])
   )
 RETURNING *;
 
+-- name: ListDueDeferredTaskAgentsForRuntimes :many
+-- The agents that own at least one deferred task whose fire_at has passed on
+-- one of these runtimes. Read immediately before promotion so a reached runtime
+-- cost budget can retire those rows instead of making them claimable. Kept
+-- deliberately narrow (no fences, no ordering): it only decides WHICH agents to
+-- price, and the promotion query below still owns which rows may be promoted.
+-- Returns nothing on the common path, so an idle claim poll pays one index
+-- probe and skips the budget work entirely.
+SELECT DISTINCT t.agent_id
+FROM agent_task_queue t
+WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
+  AND t.status = 'deferred'
+  AND t.fire_at <= now();
+
+-- name: FailDueDeferredTasksForAgentOverBudget :many
+-- Retires one agent's due deferred tasks when its runtime cost budget is spent.
+-- Runs BEFORE promotion, so the rows never become claimable: a task failed here
+-- was never dispatched and never reached a provider. The reason is the same
+-- wire value the API returns for a refused trigger, so the queue and the
+-- dispatch response name one cause. Scoped to the same (runtime, deferred, due)
+-- predicate the promotion query reads, so it can never retire a row that was
+-- not about to be promoted.
+UPDATE agent_task_queue
+SET status = 'failed',
+    completed_at = now(),
+    failure_reason = @failure_reason,
+    error = @error,
+    prepare_lease_expires_at = NULL
+WHERE agent_id = @agent_id
+  AND runtime_id = ANY(@runtime_ids::uuid[])
+  AND status = 'deferred'
+  AND fire_at <= now()
+RETURNING *;
+
 -- name: PromoteDueDeferredTasksForRuntime :many
 -- Promotion is fenced against the single queued/dispatched slot
 -- idx_one_pending_task_per_issue_agent_v2 allows per (issue, agent). A deferred

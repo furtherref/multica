@@ -208,6 +208,11 @@ func sweepPendingDelegatedFailureRecoveries(ctx context.Context, taskSvc *servic
 	if result.Exhausted > 0 {
 		slog.Warn("delegated failure recovery sweeper: automatic attempts exhausted", "count", result.Exhausted)
 	}
+	// Not counted in stats.changed: a budget-blocked entry stays pending and
+	// changed nothing this tick. It replays once the period resets.
+	if result.Blocked > 0 {
+		slog.Info("delegated failure recovery sweeper: held by a reached runtime cost budget", "count", result.Blocked)
+	}
 	return
 }
 

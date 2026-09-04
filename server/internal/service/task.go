@@ -1766,6 +1766,12 @@ func (s *TaskService) RetrySourceContextQuickCreate(ctx context.Context, workspa
 	if err := CheckIssueCreateCapacity(ctx, s.Queries, s.Entitlements, workspaceID); err != nil {
 		return nil, fmt.Errorf("preflight quick-create issue capacity: %w", err)
 	}
+	// Before the transaction, on s.Queries: a refusal rolls the tx below back,
+	// which would discard the notice the check writes (see checkRuntimeCostBudget).
+	// The error is returned as-is so the handler maps it to budget_exceeded.
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
+		return nil, err
+	}
 	overlay := s.buildRuntimeMCPOverlay(ctx, requesterID, agent)
 
 	tx, err := s.TxStarter.Begin(ctx)
@@ -3880,6 +3886,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	// promoted task would sit unclaimed until the empty key's TTL. Also emits
 	// the deferred→queued UI event and the enqueue analytics sample.
 	s.cancelSupersededDeferredRetries(ctx, uniqueIDs)
+	s.failDueDeferredTasksOverBudget(ctx, uniqueIDs)
 	promoted, err := s.Queries.PromoteDueDeferredTasksForRuntimes(ctx, db.PromoteDueDeferredTasksForRuntimesParams{
 		RuntimeIds:       uniqueIDs,
 		RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
@@ -4068,8 +4075,80 @@ func (s *TaskService) cancelSupersededDeferredRetries(ctx context.Context, runti
 	}
 }
 
+// failDueDeferredTasksOverBudget retires the due deferred tasks of every agent
+// whose runtime cost budget is already spent, so the promotion that follows
+// cannot make them claimable.
+//
+// The budget is checked at promotion, not at creation: a fallback armed hours
+// ago is a prediction about a limit that may not have been reached yet, and the
+// only moment the answer matters is the moment the task would start spending.
+// Refused rows are failed with budget_exceeded rather than left deferred, so a
+// task nobody will ever run is visible as a terminal outcome instead of sitting
+// silently until its issue is closed. checkRuntimeCostBudget files the
+// per-period notice that explains it.
+//
+// One agent's refusal never stops the sweep: every other agent's rows still
+// promote in the same tick. A non-budget error (an unreadable budget, a missing
+// agent row) is logged and skipped, leaving that agent's rows to promote
+// normally — failing someone's queued work permanently over a transient read is
+// worse than one run against a limit the next tick re-checks, and every enqueue
+// path still fails closed on the same error.
+func (s *TaskService) failDueDeferredTasksOverBudget(ctx context.Context, runtimeIDs []pgtype.UUID) {
+	if len(runtimeIDs) == 0 {
+		return
+	}
+	agentIDs, err := s.Queries.ListDueDeferredTaskAgentsForRuntimes(ctx, runtimeIDs)
+	if err != nil {
+		slog.Warn("deferred promotion budget gate: list due agents failed", "error", err)
+		return
+	}
+	now := time.Now()
+	for _, agentID := range agentIDs {
+		agent, err := s.Queries.GetAgent(ctx, agentID)
+		if err != nil {
+			slog.Warn("deferred promotion budget gate: load agent failed",
+				"agent_id", util.UUIDToString(agentID), "error", err)
+			continue
+		}
+		budgetErr := s.checkRuntimeCostBudget(ctx, s.Queries, agent, now)
+		if budgetErr == nil {
+			continue
+		}
+		var exceeded *RuntimeBudgetExceededError
+		if !errors.As(budgetErr, &exceeded) {
+			slog.Warn("deferred promotion budget gate: budget check failed",
+				"agent_id", util.UUIDToString(agentID), "error", budgetErr)
+			continue
+		}
+		failed, err := s.Queries.FailDueDeferredTasksForAgentOverBudget(ctx, db.FailDueDeferredTasksForAgentOverBudgetParams{
+			FailureReason: pgtype.Text{String: string(taskfailure.ReasonBudgetExceeded), Valid: true},
+			Error:         pgtype.Text{String: exceeded.Error(), Valid: true},
+			AgentID:       agentID,
+			RuntimeIds:    runtimeIDs,
+		})
+		if err != nil {
+			slog.Warn("deferred promotion budget gate: fail due tasks failed",
+				"agent_id", util.UUIDToString(agentID), "error", err)
+			continue
+		}
+		for _, task := range failed {
+			slog.Info("deferred task failed: runtime cost budget reached",
+				"task_id", util.UUIDToString(task.ID),
+				"issue_id", util.UUIDToString(task.IssueID),
+				"agent_id", util.UUIDToString(task.AgentID),
+				"runtime_id", util.UUIDToString(task.RuntimeID),
+				"scope", exceeded.Scope, "period", exceeded.Period,
+			)
+			s.captureTaskFailed(ctx, task)
+			s.ReconcileAgentStatus(ctx, task.AgentID)
+			s.broadcastTaskFailedEvent(ctx, task, task.Error.String, string(taskfailure.ReasonBudgetExceeded), false)
+		}
+	}
+}
+
 func (s *TaskService) PromoteDueDeferredTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) error {
 	s.cancelSupersededDeferredRetries(ctx, []pgtype.UUID{runtimeID})
+	s.failDueDeferredTasksOverBudget(ctx, []pgtype.UUID{runtimeID})
 	tasks, err := s.Queries.PromoteDueDeferredTasksForRuntime(ctx, db.PromoteDueDeferredTasksForRuntimeParams{
 		RuntimeID:        runtimeID,
 		RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
@@ -4792,6 +4871,11 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 				slog.Warn("fail task auto-retry: load agent for overlay failed",
 					"task_id", util.UUIDToString(taskID),
 					"agent_id", util.UUIDToString(parent.AgentID), "error", aerr)
+			} else if s.retrySuppressedByRuntimeBudget(ctx, parent, agent) {
+				// Pre-computed here, outside the transaction, so the refusal
+				// notice is written on the auto-commit handle and the parent
+				// still fails normally with its own reason.
+				wantRetry = false
 			} else {
 				retryOverlay = s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent)
 			}
@@ -5310,6 +5394,47 @@ func hasRunnableSuccessor(ctx context.Context, q *db.Queries, task db.AgentTaskQ
 	})
 }
 
+// retrySuppressedByRuntimeBudget reports whether an automatic retry of parent
+// must be suppressed because the agent's runtime cost budget is reached. A
+// reached budget stops automatic retries for the same reason it stops a manual
+// trigger: the next attempt spends money the workspace has said it will not
+// spend. The parent keeps its own failure reason — the retry simply never
+// happens — and checkRuntimeCostBudget files the per-period notice so the owner
+// learns why.
+//
+// Always runs on s.Queries, never a caller transaction: FailTask's refusal path
+// would roll a transaction-written notice back (see checkRuntimeCostBudget).
+// Both auto-retry entry points call this after resolving the parent's agent.
+//
+// A non-budget error suppresses the retry too. It is the same class as the
+// parent-load failure the caller already treats as "no retry this time", and
+// failing closed matches the check's own contract of never spending on an
+// unreadable budget. It never propagates: neither caller may fail the parent's
+// own transition over a retry-eligibility read.
+func (s *TaskService) retrySuppressedByRuntimeBudget(ctx context.Context, parent db.AgentTaskQueue, agent db.Agent) bool {
+	err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now())
+	if err == nil {
+		return false
+	}
+	var budgetErr *RuntimeBudgetExceededError
+	if errors.As(err, &budgetErr) {
+		slog.Info("task auto-retry suppressed: runtime cost budget reached",
+			"parent_task_id", util.UUIDToString(parent.ID),
+			"agent_id", util.UUIDToString(parent.AgentID),
+			"runtime_id", util.UUIDToString(agent.RuntimeID),
+			"scope", budgetErr.Scope,
+			"period", budgetErr.Period,
+		)
+		return true
+	}
+	slog.Warn("task auto-retry suppressed: runtime cost budget check failed",
+		"parent_task_id", util.UUIDToString(parent.ID),
+		"agent_id", util.UUIDToString(parent.AgentID),
+		"error", err,
+	)
+	return true
+}
+
 // MaybeRetryFailedTask spawns a fresh queued attempt for a recently-failed
 // task when the failure was infrastructure-shaped (daemon crash, runtime
 // went offline, dispatch/run timeout) and the task hasn't exhausted its
@@ -5363,6 +5488,8 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 			"agent_id", util.UUIDToString(parent.AgentID),
 			"error", agentErr,
 		)
+	} else if s.retrySuppressedByRuntimeBudget(ctx, parent, agent) {
+		return nil, nil
 	} else {
 		runtimeMCPOverlay = s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent)
 	}
@@ -6018,6 +6145,12 @@ const (
 	delegatedFailureRecoveryCovered delegatedFailureRecoveryDispatchOutcome = iota
 	delegatedFailureRecoveryReplayed
 	delegatedFailureRecoveryExhausted
+	// delegatedFailureRecoveryBudgetBlocked: the coordinator's runtime cost
+	// budget is spent, so no recovery task was created. Distinct from Covered,
+	// which asserts another task already carries the obligation: nothing carries
+	// it here. The recovery comment stays pending in the outbox, so the next
+	// sweep after the period resets replays it.
+	delegatedFailureRecoveryBudgetBlocked
 )
 
 // DelegatedFailureRecoverySweepResult separates successful coordinator
@@ -6027,6 +6160,10 @@ type DelegatedFailureRecoverySweepResult struct {
 	Scanned   int
 	Replayed  int
 	Exhausted int
+	// Blocked counts entries a reached runtime cost budget refused this tick.
+	// They are neither replayed nor exhausted: the obligation is still pending
+	// and a later sweep retries it.
+	Blocked int
 }
 
 type delegatedFailureRecoveryTarget struct {
@@ -6424,6 +6561,24 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		if !ruleVersionID.Valid {
 			ruleVersionID = target.source.RuleVersionID
 		}
+		// A reached budget stops the coordinator run here, before the overlay
+		// build's network I/O. Nothing is enqueued and no error is returned: a
+		// refusal is a policy outcome, not an internal failure, and the sweeper
+		// must not log it as one. checkRuntimeCostBudget already filed the
+		// per-period notice, so the owner learns why the recovery stalled.
+		if err := s.checkRuntimeCostBudget(ctx, s.Queries, target.agent, time.Now()); err != nil {
+			var budgetErr *RuntimeBudgetExceededError
+			if errors.As(err, &budgetErr) {
+				slog.Warn("delegated failure recovery task not created: runtime cost budget reached",
+					"failed_task_id", util.UUIDToString(target.failed.ID),
+					"source_task_id", util.UUIDToString(target.source.ID),
+					"coordinator_agent_id", util.UUIDToString(target.agent.ID),
+					"recovery_comment_id", util.UUIDToString(target.comment.ID),
+				)
+				return delegatedFailureRecoveryBudgetBlocked, nil
+			}
+			return delegatedFailureRecoveryCovered, fmt.Errorf("check recovery runtime cost budget: %w", err)
+		}
 		overlay := s.buildRuntimeMCPOverlay(ctx, originator, target.agent)
 		task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 			ID:                   dbid.NewV7(),
@@ -6524,6 +6679,8 @@ func (s *TaskService) RecoverPendingDelegatedFailures(ctx context.Context, maxPe
 			result.Replayed++
 		case delegatedFailureRecoveryExhausted:
 			result.Exhausted++
+		case delegatedFailureRecoveryBudgetBlocked:
+			result.Blocked++
 		}
 	}
 	return result, errors.Join(errs...)

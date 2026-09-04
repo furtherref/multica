@@ -999,6 +999,21 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 	if err != nil {
 		return &errDispatchSkipped{reason: formatAdmissionReason(ap, "workspace fail-closed: no accountable human for autopilot run"), code: dispatch.ReasonAttributionBlocked}
 	}
+	// The runtime cost budget is the last gate before the row is written, for the
+	// same reason attribution is: both need the resolved executing agent. A
+	// reached budget is a skip, not a failure — nothing was attempted and nobody
+	// is at fault — so it takes the same errDispatchSkipped shape as the
+	// attribution refusal above and lands as a `skipped` run carrying
+	// budget_exceeded. A non-budget error from the check is a real read failure
+	// and stays a dispatch failure so the run is not silently marked skipped.
+	if err := s.TaskSvc.checkRuntimeCostBudget(ctx, s.TaskSvc.Queries, agent, time.Now()); err != nil {
+		var budgetErr *RuntimeBudgetExceededError
+		if errors.As(err, &budgetErr) {
+			return &errDispatchSkipped{reason: formatAdmissionReason(ap, budgetErr.Error()), code: dispatch.ReasonBudgetExceeded}
+		}
+		return fmt.Errorf("check runtime cost budget: %w", err)
+	}
+
 	apSource, _, apEvidenceKind, apEvidenceRef := attributionCreateParams(autopilotAttr)
 	task, err := s.Queries.CreateAutopilotTask(ctx, db.CreateAutopilotTaskParams{
 		ID:             dbid.NewV7(),
