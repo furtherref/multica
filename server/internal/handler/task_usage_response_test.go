@@ -55,10 +55,12 @@ func TestListTasksByIssueHydratesUsage(t *testing.T) {
 	// A run that predates usage reporting.
 	unpricedTask := newTask("completed")
 
+	// created_at straddles a UTC midnight so the pricing_date on each row
+	// proves it is the UTC day of the usage, not the viewer's or the server's.
 	if _, err := testPool.Exec(ctx, `
-		INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks)
-		VALUES ($1, 'anthropic', 'claude-opus-5',  96000, 34000, 712000, 50000, NULL),
-		       ($1, 'openai',    'gpt-5.6-terra',  31000, 12000, 158000, 11000, 3310000000)
+		INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, created_at)
+		VALUES ($1, 'anthropic', 'claude-opus-5',  96000, 34000, 712000, 50000, NULL,       '2026-09-03 23:30:00+00'),
+		       ($1, 'openai',    'gpt-5.6-terra',  31000, 12000, 158000, 11000, 3310000000, '2026-09-04 00:30:00+00')
 	`, pricedTask); err != nil {
 		t.Fatalf("insert task usage: %v", err)
 	}
@@ -101,6 +103,9 @@ func TestListTasksByIssueHydratesUsage(t *testing.T) {
 	if opus.Provider != "anthropic" {
 		t.Errorf("opus provider = %q, want anthropic", opus.Provider)
 	}
+	if opus.PricingDate != "2026-09-03" {
+		t.Errorf("opus pricing_date = %q, want 2026-09-03 (UTC day of created_at)", opus.PricingDate)
+	}
 	if opus.InputTokens != 96000 || opus.OutputTokens != 34000 ||
 		opus.CacheReadTokens != 712000 || opus.CacheWriteTokens != 50000 {
 		t.Errorf("opus token counts = %+v, want 96000/34000/712000/50000", opus)
@@ -117,6 +122,9 @@ func TestListTasksByIssueHydratesUsage(t *testing.T) {
 	}
 	if terra.CostUsdTicks == nil || *terra.CostUsdTicks != 3310000000 {
 		t.Errorf("terra cost_usd_ticks = %v, want 3310000000", terra.CostUsdTicks)
+	}
+	if terra.PricingDate != "2026-09-04" {
+		t.Errorf("terra pricing_date = %q, want 2026-09-04 (UTC day of created_at)", terra.PricingDate)
 	}
 
 	unpriced, ok := byID[unpricedTask]

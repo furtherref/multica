@@ -625,6 +625,20 @@ describe("AgentTaskListSchema", () => {
     expect(parsed[0]?.delivered_comment_ids).toBeUndefined();
   });
 
+  it("keeps the UTC pricing date on usage slices and tolerates its absence", () => {
+    const parsed = AgentTaskListSchema.parse([
+      {
+        ...task,
+        usage: [
+          { pricing_date: "2026-09-03", provider: "copilot", model: "gpt-5.6-sol", input_tokens: 1 },
+          { provider: "copilot", model: "gpt-5.6-sol", input_tokens: 1 },
+        ],
+      },
+    ]);
+    expect(parsed[0]?.usage?.[0]?.pricing_date).toBe("2026-09-03");
+    expect(parsed[0]?.usage?.[1]?.pricing_date).toBeUndefined();
+  });
+
   it("degrades malformed optional coverage without dropping task rows", () => {
     const parsed = AgentTaskListSchema.parse([
       {
@@ -1094,6 +1108,18 @@ describe("dashboard + runtime usage schema drift", () => {
       DashboardUsageByAgentListSchema.parse([{ model: "claude-opus-4-7" }])[0]?.provider,
     ).toBe("");
     expect(RuntimeUsageByAgentListSchema.parse([{ model: "x" }])[0]?.provider).toBe("");
+  });
+
+  it("defaults a missing UTC pricing date on every client-priced usage row", () => {
+    expect(RuntimeUsageListSchema.parse([{ date: "2026-09-04" }])[0]?.pricing_date).toBe("");
+    expect(DashboardUsageDailyListSchema.parse([{ date: "2026-09-04" }])[0]?.pricing_date).toBe("");
+    expect(DashboardUsageByAgentListSchema.parse([{ model: "x" }])[0]?.pricing_date).toBe("");
+    expect(RuntimeUsageByAgentListSchema.parse([{ model: "x" }])[0]?.pricing_date).toBe("");
+    expect(RuntimeUsageByHourListSchema.parse([{ hour: 9 }])[0]?.pricing_date).toBe("");
+  });
+
+  it("defaults a missing provider on runtime usage-by-hour rows", () => {
+    expect(RuntimeUsageByHourListSchema.parse([{ hour: 9, model: "x" }])[0]?.provider).toBe("");
   });
 
   it("parses a runtime cost budget and defaults missing scopes", () => {

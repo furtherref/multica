@@ -121,6 +121,103 @@ describe("estimateCost", () => {
     expect(cost).toBeCloseTo(11.5, 5);
   });
 
+  it("prices Copilot GPT-5.6 Sol at the promotional rate through 2026-09-03", () => {
+    const cost = estimateCost({
+      ...zeroUsage,
+      provider: "copilot",
+      model: "gpt-5.6-sol",
+      pricing_date: "2026-09-03",
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 1_000_000,
+      cache_write_tokens: 1_000_000,
+    });
+
+    expect(cost).toBeCloseTo(2 + 10 + 0.2 + 2.5, 5);
+  });
+
+  it("prices Copilot GPT-5.6 Sol at the standard rate from 2026-09-04", () => {
+    const cost = estimateCost({
+      ...zeroUsage,
+      provider: "Copilot",
+      model: "gpt-5.6-sol",
+      pricing_date: "2026-09-04",
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 1_000_000,
+      cache_write_tokens: 1_000_000,
+    });
+
+    expect(cost).toBeCloseTo(4 + 20 + 0.4 + 5, 5);
+  });
+
+  it("keeps the OpenAI API price for the same model outside Copilot", () => {
+    const cost = estimateCost({
+      ...zeroUsage,
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      pricing_date: "2026-09-04",
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 1_000_000,
+      cache_write_tokens: 1_000_000,
+    });
+
+    expect(cost).toBeCloseTo(5 + 30 + 0.5 + 6.25, 5);
+  });
+
+  it("uses Copilot Terra and Luna cache-write rates", () => {
+    expect(
+      estimateCost({
+        ...zeroUsage,
+        provider: "copilot",
+        model: "gpt-5.6-terra",
+        pricing_date: "2026-09-04",
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        cache_read_tokens: 1_000_000,
+        cache_write_tokens: 1_000_000,
+      }),
+    ).toBeCloseTo(2 + 12 + 0.2 + 2.5, 5);
+    expect(
+      estimateCost({
+        ...zeroUsage,
+        provider: "copilot",
+        model: "gpt-5.6-luna",
+        pricing_date: "2026-09-04",
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        cache_read_tokens: 1_000_000,
+        cache_write_tokens: 1_000_000,
+      }),
+    ).toBeCloseTo(0.2 + 1.2 + 0.02 + 0.25, 5);
+  });
+
+  it("selects Copilot long-context pricing only from an explicit request-size signal", () => {
+    const base = {
+      ...zeroUsage,
+      provider: "copilot",
+      model: "gpt-5.6-terra",
+      pricing_date: "2026-09-04",
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 1_000_000,
+      cache_write_tokens: 1_000_000,
+    };
+
+    expect(estimateCost({ ...base, request_input_tokens: 272_000 })).toBeCloseTo(
+      2 + 12 + 0.2 + 2.5,
+      5,
+    );
+    expect(estimateCost({ ...base, request_input_tokens: 272_001 })).toBeCloseTo(
+      4 + 18 + 0.4 + 5,
+      5,
+    );
+    // A whole task can aggregate many requests. Its 1M total must not be used
+    // as though one request crossed GitHub's threshold.
+    expect(estimateCost(base)).toBeCloseTo(2 + 12 + 0.2 + 2.5, 5);
+  });
+
   it("strips dated snapshots before resolving (gpt-5-2025-08-07 → gpt-5)", () => {
     const cost = estimateCost({
       ...zeroUsage,

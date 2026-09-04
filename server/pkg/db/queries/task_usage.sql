@@ -32,11 +32,17 @@ ORDER BY model;
 -- longer be priced at all. The execution log sums the rows per task; the usage
 -- panel shows them split.
 --
+-- pricing_date is the UTC day the usage was recorded, so effective-dated
+-- provider rates (Copilot's Sol promotion) price an old run at the rate that
+-- applied then, not at today's -- the same contract as the runtime and
+-- dashboard usage rows.
+--
 -- Ordering is by task then model so the client can group by task_id in one
 -- pass. Uses idx_agent_task_queue_issue_id (migration 035) + the task_usage
 -- task_id index (migration 032).
 SELECT
     tu.task_id,
+    DATE(tu.created_at AT TIME ZONE 'UTC') AS pricing_date,
     tu.provider,
     tu.model,
     tu.input_tokens,
@@ -66,7 +72,7 @@ JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.issue_id = $1;
 
 -- name: ListDashboardUsageDaily :many
--- Daily per-(date, provider, model) token aggregates for the workspace, served
+-- Daily per-(display date, UTC pricing date, provider, model) token aggregates for the workspace, served
 -- from the UTC-bucketed `task_usage_hourly` table and
 -- sliced to calendar days under the caller-supplied @tz. Optionally
 -- scoped to a single project via sqlc.narg('project_id'). Powers the
@@ -85,6 +91,7 @@ WHERE atq.issue_id = $1;
 -- instead of forming a separate case-variant bucket.
 SELECT
     DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) AS date,
+    DATE(bucket_hour AT TIME ZONE 'UTC') AS pricing_date,
     LOWER(provider) AS provider,
     model,
     SUM(input_tokens)::bigint        AS input_tokens,
@@ -101,12 +108,12 @@ FROM task_usage_hourly
 WHERE workspace_id = $1
   AND bucket_hour >= sqlc.arg('since')::timestamptz
   AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id'))
-GROUP BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text), LOWER(provider), model
-ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provider), model;
+GROUP BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text), DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model
+ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model;
 
 -- name: ListDashboardUsageByAgent :many
--- Per-(agent, provider, model) token aggregates from `task_usage_hourly`. No
--- date grouping in the result, so this query takes no `@tz` — the
+-- Per-(agent, UTC pricing date, provider, model) token aggregates from
+-- `task_usage_hourly`. Pricing dates are UTC, so this query takes no `@tz` — the
 -- @since cutoff is a raw timestamptz the Go layer has already computed
 -- in the viewer's tz. Model dimension is preserved so the client can
 -- compute cost from its per-model pricing table; the client folds rows
@@ -121,6 +128,7 @@ ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provide
 -- new rows (see ListDashboardUsageDaily).
 SELECT
     agent_id,
+    DATE(bucket_hour AT TIME ZONE 'UTC') AS pricing_date,
     LOWER(provider) AS provider,
     model,
     SUM(input_tokens)::bigint        AS input_tokens,
@@ -137,8 +145,8 @@ FROM task_usage_hourly
 WHERE workspace_id = $1
   AND bucket_hour >= @since::timestamptz
   AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id'))
-GROUP BY agent_id, LOWER(provider), model
-ORDER BY agent_id, LOWER(provider), model;
+GROUP BY agent_id, DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model
+ORDER BY agent_id, DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model;
 
 -- name: ListDashboardRunTimeDaily :many
 -- Daily per-date run time + task counts for the workspace, optionally

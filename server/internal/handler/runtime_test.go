@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -294,6 +295,115 @@ func TestListRuntimeUsageByAgent_MergesMixedCaseProvider(t *testing.T) {
 	if got[0].InputTokens != 1500 {
 		t.Errorf("expected merged input_tokens 1500, got %d", got[0].InputTokens)
 	}
+}
+
+func TestRuntimeUsageAggregatesPreserveUTCPricingDate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := handlerTestRuntimeID(t)
+
+	var agentID, issueID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT id FROM agent
+		WHERE workspace_id = $1 AND runtime_id = $2
+		ORDER BY created_at LIMIT 1
+	`, testWorkspaceID, runtimeID).Scan(&agentID); err != nil {
+		t.Fatalf("select agent: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, title, creator_id, creator_type)
+		VALUES ($1, 'pricing date fixture', $2, 'member')
+		RETURNING id
+	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
+		t.Fatalf("insert issue: %v", err)
+	}
+	t.Cleanup(func() { _, _ = testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
+
+	model := "pricing-date-model"
+	usageTimes := []time.Time{
+		time.Date(2026, 9, 3, 23, 30, 0, 0, time.UTC),
+		time.Date(2026, 9, 4, 0, 30, 0, 0, time.UTC),
+	}
+	var taskIDs []string
+	for i, usageAt := range usageTimes {
+		var taskID string
+		if err := testPool.QueryRow(ctx, `
+			INSERT INTO agent_task_queue (
+				agent_id, issue_id, runtime_id, status, created_at, started_at, completed_at
+			) VALUES ($1, $2, $3, 'completed', $4, $4, $4)
+			RETURNING id
+		`, agentID, issueID, runtimeID, usageAt).Scan(&taskID); err != nil {
+			t.Fatalf("insert task %d: %v", i, err)
+		}
+		taskIDs = append(taskIDs, taskID)
+		if _, err := testPool.Exec(ctx, `
+			INSERT INTO task_usage (
+				task_id, provider, model, input_tokens, output_tokens, created_at, updated_at
+			) VALUES ($1, 'copilot', $2, $3, 0, $4, $4)
+		`, taskID, model, int64(100+i), usageAt); err != nil {
+			t.Fatalf("insert task usage %d: %v", i, err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, taskID := range taskIDs {
+			_, _ = testPool.Exec(ctx, `DELETE FROM task_usage WHERE task_id = $1`, taskID)
+			_, _ = testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+		}
+		_, _ = testPool.Exec(ctx, `DELETE FROM task_usage_hourly WHERE runtime_id = $1 AND model = $2`, runtimeID, model)
+	})
+	if _, err := testPool.Exec(ctx, `
+		SELECT rollup_task_usage_hourly_window($1::timestamptz, $2::timestamptz)
+	`, usageTimes[0].Add(-time.Hour), usageTimes[1].Add(time.Hour)); err != nil {
+		t.Fatalf("roll up usage: %v", err)
+	}
+
+	type pricedRow struct {
+		Date        string `json:"date"`
+		PricingDate string `json:"pricing_date"`
+		Provider    string `json:"provider"`
+		Model       string `json:"model"`
+	}
+	assertPricingDates := func(name string, rows []pricedRow) {
+		t.Helper()
+		var got []string
+		for _, row := range rows {
+			if row.Model == model {
+				if row.Provider != "copilot" {
+					t.Errorf("%s provider = %q, want copilot", name, row.Provider)
+				}
+				got = append(got, row.PricingDate)
+			}
+		}
+		slices.Sort(got)
+		if len(got) != 2 || got[0] != "2026-09-03" || got[1] != "2026-09-04" {
+			t.Errorf("%s pricing dates = %v, want [2026-09-03 2026-09-04]; rows=%+v", name, got, rows)
+		}
+	}
+	call := func(name string, handler http.HandlerFunc, requestPath string, runtimeParam bool) {
+		t.Helper()
+		req := newRequest(http.MethodGet, requestPath, nil)
+		if runtimeParam {
+			req = withURLParam(req, "runtimeId", runtimeID)
+		}
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status = %d: %s", name, w.Code, w.Body.String())
+		}
+		var rows []pricedRow
+		if err := json.NewDecoder(w.Body).Decode(&rows); err != nil {
+			t.Fatalf("decode %s: %v", name, err)
+		}
+		assertPricingDates(name, rows)
+	}
+
+	call("runtime daily", testHandler.GetRuntimeUsage, "/api/runtimes/"+runtimeID+"/usage?days=365&tz=Asia/Shanghai", true)
+	call("runtime by-agent", testHandler.GetRuntimeUsageByAgent, "/api/runtimes/"+runtimeID+"/usage/by-agent?days=365&tz=Asia/Shanghai", true)
+	call("runtime by-hour", testHandler.GetRuntimeUsageByHour, "/api/runtimes/"+runtimeID+"/usage/by-hour?days=365&tz=Asia/Shanghai", true)
+	call("dashboard daily", testHandler.GetDashboardUsageDaily, "/api/dashboard/usage/daily?days=365&tz=Asia/Shanghai", false)
+	call("dashboard by-agent", testHandler.GetDashboardUsageByAgent, "/api/dashboard/usage/by-agent?days=365&tz=Asia/Shanghai", false)
 }
 
 // TestListRuntimeUsageBucketsByViewerTimezone proves the runtime trend reads

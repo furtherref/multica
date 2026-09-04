@@ -699,6 +699,9 @@ type CoalescedCommentData struct {
 // ("the provider says this was free") and must stay distinguishable from
 // "the provider said nothing".
 type TaskUsageData struct {
+	// PricingDate is the UTC day the usage was recorded (YYYY-MM-DD). Empty
+	// when the row was not read from the database.
+	PricingDate      string `json:"pricing_date,omitempty"`
 	Provider         string `json:"provider,omitempty"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`

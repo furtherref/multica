@@ -601,7 +601,10 @@ func (m *BusinessMetrics) RecordLLMUsage(source, runtimeMode, rawProvider, model
 	}
 	source = NormalizeTaskSource(source)
 	runtimeMode = NormalizeRuntimeMode(runtimeMode)
-	price, priced := pricing.PriceForModelAlias(modelAlias)
+	// Provider-qualified so Copilot's GPT-5.6 rates (and Sol's effective-dated
+	// promotion) do not fall back to the direct OpenAI API price. Usage is
+	// recorded as it happens, so now is the occurrence time.
+	price, priced := pricing.PriceForUsage(rawProvider, modelAlias, time.Now(), 0)
 	if !priced {
 		provider := NormalizeRuntimeProvider(rawProvider)
 		alias := NormalizeModelAlias(modelAlias)

@@ -163,6 +163,7 @@ export function formatUsd(n: number): string {
 //   Moonshot:  https://www.kimi.com/resources/kimi-k2-6-pricing
 //   Zhipu:     https://docs.z.ai/guides/overview/pricing
 //   xAI:       https://docs.x.ai/developers/pricing
+//   Copilot:   https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing
 //
 // Anthropic's cacheWrite reflects the 5-minute cache TTL (1.25× input); the
 // daemon reports cache_creation_input_tokens without TTL metadata, so 5m is
@@ -190,10 +191,72 @@ export function formatUsd(n: number): string {
 // `${provider}/${model}` (e.g. `cursor/auto`). `resolvePricing` tries the
 // `${provider}/…` form first, then the bare form, so vendor-prefixed SKUs
 // stay unqualified and still resolve.
-const MODEL_PRICING: Record<
-  string,
-  { input: number; output: number; cacheRead: number; cacheWrite: number }
-> = {
+type ModelPricing = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+
+type CopilotPricePeriod = {
+  validFrom?: string;
+  validThrough?: string;
+  default: ModelPricing;
+  longContext: {
+    thresholdInputTokens: number;
+    pricing: ModelPricing;
+  };
+};
+
+// GitHub Copilot prices the same underlying model differently from direct API
+// access. Keep these rules provider-qualified so a Copilot row never borrows
+// the OpenAI API rate. Sol's 50%-off launch promotion ended on 2026-09-03;
+// the UTC pricing date keeps historical rows stable across that boundary.
+//
+// Long-context thresholds apply to one model request, not an aggregate task.
+// Callers only select that tier when they carry an explicit request-size
+// signal. Current daily/owner/hour aggregates do not, so they deliberately use
+// the default tier rather than treating a multi-request total as one prompt.
+const COPILOT_MODEL_PRICING: Record<string, CopilotPricePeriod[]> = {
+  "gpt-5.6-sol": [
+    {
+      validThrough: "2026-09-03",
+      default: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+      longContext: {
+        thresholdInputTokens: 272_000,
+        pricing: { input: 4, output: 15, cacheRead: 0.4, cacheWrite: 5 },
+      },
+    },
+    {
+      validFrom: "2026-09-04",
+      default: { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
+      longContext: {
+        thresholdInputTokens: 272_000,
+        pricing: { input: 8, output: 30, cacheRead: 0.8, cacheWrite: 10 },
+      },
+    },
+  ],
+  "gpt-5.6-terra": [
+    {
+      default: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
+      longContext: {
+        thresholdInputTokens: 272_000,
+        pricing: { input: 4, output: 18, cacheRead: 0.4, cacheWrite: 5 },
+      },
+    },
+  ],
+  "gpt-5.6-luna": [
+    {
+      default: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+      longContext: {
+        thresholdInputTokens: 200_000,
+        pricing: { input: 0.4, output: 1.8, cacheRead: 0.04, cacheWrite: 0.5 },
+      },
+    },
+  ],
+};
+
+const MODEL_PRICING: Record<string, ModelPricing> = {
   // -- Anthropic: current generation. Sonnet 5 uses Anthropic's published
   //    intro launch rate ($2 / $10 through 2026-08-31). This static map has
   //    no future-dated pricing support yet, so update the row when the
@@ -429,10 +492,36 @@ const MODEL_PRICING: Record<
 // every candidate is tried `${provider}/…`-qualified first, then bare, so a
 // `cursor/auto` row wins for a Cursor row while an unqualified `auto` (no
 // provider) stays unmapped instead of silently borrowing Cursor's price.
-function resolvePricing(model: string, provider?: string) {
+function resolvePricing(
+  model: string,
+  provider?: string,
+  pricingDate?: string,
+  requestInputTokens?: number,
+) {
   if (!model) return undefined;
 
   const candidates = pricingCandidates(model, provider);
+  const normalizedProvider = normalizeProvider(provider);
+  if (normalizedProvider === "copilot") {
+    const copilotPricing = resolveCopilotPricing(
+      model,
+      pricingDate,
+      requestInputTokens,
+    );
+    if (copilotPricing) return copilotPricing;
+
+    // GPT-5.6 is a provider-priced family. If a new or malformed member is
+    // absent from the Copilot catalog, fail closed instead of silently using
+    // the direct OpenAI API rate for the same-looking model id.
+    if (canonicalCandidates(model).some((candidate) => candidate.startsWith("gpt-5.6-"))) {
+      for (const candidate of candidates) {
+        if (!candidate.startsWith("copilot/")) continue;
+        const custom = getCustomPricing(candidate);
+        if (custom) return custom;
+      }
+      return undefined;
+    }
+  }
   for (const candidate of candidates) {
     const hit = MODEL_PRICING[candidate];
     if (hit) return hit;
@@ -442,6 +531,34 @@ function resolvePricing(model: string, provider?: string) {
     if (hit) return hit;
   }
   return undefined;
+}
+
+function resolveCopilotPricing(
+  model: string,
+  pricingDate?: string,
+  requestInputTokens?: number,
+): ModelPricing | undefined {
+  const ruleKey = canonicalCandidates(model).find(
+    (candidate) => COPILOT_MODEL_PRICING[candidate] !== undefined,
+  );
+  if (!ruleKey) return undefined;
+
+  const effectiveDate = /^\d{4}-\d{2}-\d{2}$/.test(pricingDate ?? "")
+    ? pricingDate!
+    : new Date().toISOString().slice(0, 10);
+  const period = COPILOT_MODEL_PRICING[ruleKey]?.find(
+    (candidate) =>
+      (!candidate.validFrom || effectiveDate >= candidate.validFrom) &&
+      (!candidate.validThrough || effectiveDate <= candidate.validThrough),
+  );
+  if (!period) return undefined;
+  if (
+    requestInputTokens !== undefined &&
+    requestInputTokens > period.longContext.thresholdInputTokens
+  ) {
+    return period.longContext.pricing;
+  }
+  return period.default;
 }
 
 // Canonical provider token for keying: trimmed + lowercased so lookup keys,
@@ -650,6 +767,12 @@ export type Priceable = Pick<
   | "cache_write_tokens"
 > & {
   provider?: string;
+  // UTC date used to select an effective-dated provider price. Separate from
+  // RuntimeUsage.date, whose calendar boundary follows the viewer's timezone.
+  pricing_date?: string;
+  // Optional per-request input size. Aggregate token totals must never fill
+  // this field because long-context thresholds are evaluated per request.
+  request_input_tokens?: number;
   cost_usd_ticks?: number;
   uncosted_input_tokens?: number;
   uncosted_output_tokens?: number;
@@ -712,7 +835,12 @@ function uncostedTokens(usage: Priceable): {
 // authoritative half is not a guess.
 export function estimateCost(usage: Priceable): number {
   const authoritative = (usage.cost_usd_ticks ?? 0) / COST_USD_TICKS_PER_USD;
-  const pricing = resolvePricing(usage.model, usage.provider);
+  const pricing = resolvePricing(
+    usage.model,
+    usage.provider,
+    usage.pricing_date,
+    usage.request_input_tokens,
+  );
   if (!pricing) return authoritative;
   const uncosted = uncostedTokens(usage);
   return (
@@ -739,7 +867,12 @@ export interface CostBreakdown {
 // this way keeps the stacked chart summing to the headline figure instead of
 // silently under-drawing every Grok row.
 export function estimateCostBreakdown(usage: Priceable): CostBreakdown {
-  const pricing = resolvePricing(usage.model, usage.provider);
+  const pricing = resolvePricing(
+    usage.model,
+    usage.provider,
+    usage.pricing_date,
+    usage.request_input_tokens,
+  );
   if (!pricing) {
     // No rates to split by, but the provider may still have priced the turn
     // itself. Returning zeros here would make the stacked chart disagree with
@@ -861,7 +994,12 @@ export function summarizeTaskUsageAcross(
 // minus what they actually cost at the discounted cache-hit rate. This is a
 // reconstruction of "money the cache saved you", not real-world spend.
 export function estimateCacheSavings(usage: Priceable): number {
-  const pricing = resolvePricing(usage.model, usage.provider);
+  const pricing = resolvePricing(
+    usage.model,
+    usage.provider,
+    usage.pricing_date,
+    usage.request_input_tokens,
+  );
   if (!pricing) return 0;
   const wouldHaveCost = (usage.cache_read_tokens * pricing.input) / 1_000_000;
   const actualCost = (usage.cache_read_tokens * pricing.cacheRead) / 1_000_000;

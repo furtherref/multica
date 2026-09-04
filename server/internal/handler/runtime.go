@@ -86,6 +86,7 @@ func runtimeToResponse(rt db.AgentRuntime) AgentRuntimeResponse {
 type RuntimeUsageResponse struct {
 	RuntimeID        string `json:"runtime_id"`
 	Date             string `json:"date"`
+	PricingDate      string `json:"pricing_date"`
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`
@@ -145,6 +146,7 @@ func (h *Handler) listRuntimeUsage(ctx context.Context, runtimeID pgtype.UUID, t
 		resp[i] = RuntimeUsageResponse{
 			RuntimeID:                resolvedRuntimeID,
 			Date:                     row.Date.Time.Format("2006-01-02"),
+			PricingDate:              row.PricingDate.Time.Format("2006-01-02"),
 			Provider:                 row.Provider,
 			Model:                    row.Model,
 			InputTokens:              row.InputTokens,
@@ -247,13 +249,14 @@ func (h *Handler) GetRuntimeTaskActivity(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// RuntimeUsageByAgentResponse is one (agent, provider, model) row of "Cost by
+// RuntimeUsageByAgentResponse is one (agent, UTC pricing date, provider, model) row of "Cost by
 // agent". provider + model stay on the wire because cost is computed
 // client-side from a model pricing table (intentionally not stored server-side
 // so pricing changes don't require a back-fill); provider disambiguates bare
 // model ids that collide across providers. The client groups by agent_id and sums.
 type RuntimeUsageByAgentResponse struct {
 	AgentID          string `json:"agent_id"`
+	PricingDate      string `json:"pricing_date"`
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`
@@ -282,7 +285,7 @@ func (h *Handler) GetRuntimeUsageByAgent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// No date bucketing — tz only sets the cutoff boundary so "last 30
+	// pricing_date is always UTC; tz only sets the cutoff boundary so "last 30
 	// days" means 30 of the viewer's days.
 	viewTZ := h.resolveViewingTZ(r)
 	since := parseSinceParamInTZ(r, 30, viewTZ)
@@ -300,6 +303,7 @@ func (h *Handler) GetRuntimeUsageByAgent(w http.ResponseWriter, r *http.Request)
 	for i, row := range rows {
 		resp[i] = RuntimeUsageByAgentResponse{
 			AgentID:                  uuidToString(row.AgentID),
+			PricingDate:              row.PricingDate.Time.Format("2006-01-02"),
 			Provider:                 row.Provider,
 			Model:                    row.Model,
 			InputTokens:              row.InputTokens,
@@ -318,11 +322,13 @@ func (h *Handler) GetRuntimeUsageByAgent(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// RuntimeUsageByHourResponse is one (hour, model) row. Hours with zero
-// activity are omitted by the SQL — clients fill the gap to render a
+// RuntimeUsageByHourResponse is one (UTC pricing date, viewing hour, provider,
+// model) row. Hours with zero activity are omitted by the SQL — clients fill the gap to render a
 // continuous 0..23 axis. Model is preserved for client-side cost math.
 type RuntimeUsageByHourResponse struct {
+	PricingDate      string `json:"pricing_date"`
 	Hour             int    `json:"hour"`
+	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`
 	OutputTokens     int64  `json:"output_tokens"`
@@ -370,7 +376,9 @@ func (h *Handler) GetRuntimeUsageByHour(w http.ResponseWriter, r *http.Request) 
 	resp := make([]RuntimeUsageByHourResponse, len(rows))
 	for i, row := range rows {
 		resp[i] = RuntimeUsageByHourResponse{
+			PricingDate:              row.PricingDate.Time.Format("2006-01-02"),
 			Hour:                     int(row.Hour),
+			Provider:                 row.Provider,
 			Model:                    row.Model,
 			InputTokens:              row.InputTokens,
 			OutputTokens:             row.OutputTokens,
