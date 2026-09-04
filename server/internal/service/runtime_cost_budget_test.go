@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -537,5 +539,146 @@ func TestRuntimeBudgetNoticeRuntimeScopeReachesBlockedOwnerAndRuntimeOwner(t *te
 	}
 	if details["used_usd"] != "6.00" || details["limit_usd"] != "5.00" {
 		t.Fatalf("details amounts = %#v / %#v, want \"6.00\" / \"5.00\"", details["used_usd"], details["limit_usd"])
+	}
+}
+
+// TestLoadRuntimeSpendBatchesEveryPeriodAndOwner is the batching contract: one
+// query returns the spend of every period for every owner, plus the runtime
+// total that agents nobody owns contribute to and no per-user scope sees.
+//
+// `now` is a Thursday whose Monday (2026-08-31) falls BEFORE the first of the
+// month (2026-09-01), so a scan floored at the monthly start would silently
+// drop the weekly window. That is why the query floors on the LEAST of the
+// three period starts and lets each period pick its own rows.
+func TestLoadRuntimeSpendBatchesEveryPeriodAndOwner(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, firstOwnerID, firstAgentID, issueID := seedAttributionFixture(t, pool)
+	firstAgent, err := q.GetAgent(ctx, util.MustParseUUID(firstAgentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeID := util.UUIDToString(firstAgent.RuntimeID)
+	secondOwnerID, secondAgentID := seedSecondOwnerAgent(t, ctx, pool, workspaceID, runtimeID)
+
+	var ownerlessAgentID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent (workspace_id, name, runtime_mode, runtime_config, runtime_id, visibility,
+			max_concurrent_tasks, instructions, custom_env, custom_args)
+		VALUES ($1, 'budget-spend-ownerless', 'cloud', '{}'::jsonb, $2, 'workspace', 1, '', '{}'::jsonb, '[]'::jsonb)
+		RETURNING id`, workspaceID, runtimeID).Scan(&ownerlessAgentID); err != nil {
+		t.Fatalf("seed ownerless agent: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, ownerlessAgentID) })
+
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	inDay := time.Date(2026, 9, 3, 6, 0, 0, 0, time.UTC)       // day + week + month
+	inMonth := time.Date(2026, 9, 2, 6, 0, 0, 0, time.UTC)     // week + month
+	inWeekOnly := time.Date(2026, 8, 31, 6, 0, 0, 0, time.UTC) // week only: before the 1st
+	beforeAll := time.Date(2026, 8, 25, 6, 0, 0, 0, time.UTC)  // outside every window
+
+	seedSpend(t, ctx, pool, firstAgentID, issueID, 1, inDay)
+	seedSpend(t, ctx, pool, firstAgentID, issueID, 2, inMonth)
+	seedSpend(t, ctx, pool, firstAgentID, issueID, 4, inWeekOnly)
+	seedSpend(t, ctx, pool, firstAgentID, issueID, 8, beforeAll)
+	seedSpend(t, ctx, pool, secondAgentID, issueID, 10, inDay)
+	seedSpend(t, ctx, pool, secondAgentID, issueID, 20, inWeekOnly)
+	seedSpend(t, ctx, pool, ownerlessAgentID, issueID, 100, inDay)
+
+	spend, err := loadRuntimeSpend(ctx, q, firstAgent.RuntimeID, now)
+	if err != nil {
+		t.Fatalf("loadRuntimeSpend: %v", err)
+	}
+
+	firstOwner := util.MustParseUUID(firstOwnerID)
+	secondOwner := util.MustParseUUID(secondOwnerID)
+	for _, tc := range []struct {
+		name   string
+		period pricing.Period
+		owner  pgtype.UUID
+		usd    float64
+	}{
+		{"first owner daily", pricing.PeriodDaily, firstOwner, 1},
+		{"first owner weekly", pricing.PeriodWeekly, firstOwner, 7},
+		{"first owner monthly", pricing.PeriodMonthly, firstOwner, 3},
+		{"second owner daily", pricing.PeriodDaily, secondOwner, 10},
+		{"second owner weekly", pricing.PeriodWeekly, secondOwner, 30},
+		{"second owner monthly", pricing.PeriodMonthly, secondOwner, 10},
+		// The runtime total adds the ownerless agent's $100 to both owners.
+		{"runtime total daily", pricing.PeriodDaily, pgtype.UUID{}, 111},
+		{"runtime total weekly", pricing.PeriodWeekly, pgtype.UUID{}, 137},
+		{"runtime total monthly", pricing.PeriodMonthly, pgtype.UUID{}, 113},
+	} {
+		got := spend.ticks(tc.period, tc.owner)
+		if want := pricing.USDToTicks(tc.usd); got != want {
+			t.Errorf("%s = $%.2f, want $%.2f", tc.name, pricing.TicksToUSD(got), tc.usd)
+		}
+	}
+
+	// A user with no agent on the runtime spends nothing, rather than
+	// inheriting the total.
+	if got := spend.ticks(pricing.PeriodMonthly, util.MustParseUUID(newAutopilotIdempotencyKey())); got != 0 {
+		t.Errorf("unknown owner monthly = %d ticks, want 0", got)
+	}
+}
+
+// countingDBTX counts the statements a *db.Queries issues whose SQL names the
+// wanted query. sqlc keeps the `-- name: X :many` header inside the generated
+// SQL constant, so matching on the query name is exact. This package had no
+// query-counting helper before; this one stays minimal on purpose.
+type countingDBTX struct {
+	db.DBTX
+	queryName string
+	calls     int
+}
+
+func (c *countingDBTX) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	if strings.Contains(sql, c.queryName) {
+		c.calls++
+	}
+	return c.DBTX.Query(ctx, sql, args...)
+}
+
+// TestRuntimeCostBudgetStatusIssuesOneSpendQuery pins the cost of the budget
+// endpoint: three per-user scopes and a runtime total, each with three
+// configured periods, used to cost 3N+3 aggregates over task_usage. They must
+// now share a single grouped read.
+func TestRuntimeCostBudgetStatusIssuesOneSpendQuery(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, ownerID, agentID, issueID := seedAttributionFixture(t, pool)
+	agent, err := q.GetAgent(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeID := util.UUIDToString(agent.RuntimeID)
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	seedSpend(t, ctx, pool, agentID, issueID, 3, now.Add(-time.Hour))
+
+	daily, weekly, monthly := 5.0, 20.0, 50.0
+	seedBudget(t, ctx, q, workspaceID, runtimeID, nil, &daily, &weekly, &monthly)
+	// The other two scopes belong to members with no spend; runtime_cost_budget
+	// carries no foreign key, so any user id is a valid scope here.
+	userIDs := []string{ownerID, newAutopilotIdempotencyKey(), newAutopilotIdempotencyKey()}
+	for i := range userIDs {
+		seedBudget(t, ctx, q, workspaceID, runtimeID, &userIDs[i], &daily, &weekly, &monthly)
+	}
+
+	counting := &countingDBTX{DBTX: pool, queryName: "ListRuntimeSpendByOwner"}
+	svc := &TaskService{Queries: db.New(counting), TxStarter: pool, Bus: events.New()}
+	status, err := svc.RuntimeCostBudgetStatus(ctx, agent.RuntimeID, now)
+	if err != nil {
+		t.Fatalf("RuntimeCostBudgetStatus: %v", err)
+	}
+	if status.Runtime == nil || len(status.Users) != 3 {
+		t.Fatalf("status = %d user scopes, runtime scope present %t; want 3 and true", len(status.Users), status.Runtime != nil)
+	}
+	if counting.calls != 1 {
+		t.Fatalf("spend queries = %d, want exactly 1 for every scope and period", counting.calls)
+	}
+	if got := status.Runtime.Periods[pricing.PeriodDaily].UsedTicks; got != pricing.USDToTicks(3) {
+		t.Fatalf("runtime daily used = $%.2f, want $3.00", pricing.TicksToUSD(got))
 	}
 }

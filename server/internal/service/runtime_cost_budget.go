@@ -59,53 +59,98 @@ func budgetLimit(row db.RuntimeCostBudget, p pricing.Period) (int64, bool) {
 	return v.Int64, v.Valid
 }
 
-// runtimeSpendTicks sums the priced spend of one scope since `since`.
-// ownerUserID invalid means the runtime total.
-func runtimeSpendTicks(ctx context.Context, q *db.Queries, runtimeID, ownerUserID pgtype.UUID, since time.Time) (int64, error) {
-	rows, err := q.ListRuntimeSpendSince(ctx, db.ListRuntimeSpendSinceParams{
-		RuntimeID:   runtimeID,
-		Since:       pgtype.Timestamptz{Time: since, Valid: true},
-		OwnerUserID: ownerUserID,
-	})
-	if err != nil {
-		return 0, fmt.Errorf("list runtime spend: %w", err)
-	}
-	var total int64
-	for _, r := range rows {
-		total += pricing.EstimateCostTicks(r.Model, r.CostUsdTicks,
-			r.UncostedInputTokens, r.UncostedOutputTokens, r.UncostedCacheReadTokens, r.UncostedCacheWriteTokens)
-	}
-	return total, nil
+// runtimeSpend is the priced spend of one runtime, for every budget period,
+// built once from a single ListRuntimeSpendByOwner query. total covers every
+// task on the runtime including agents nobody owns; byOwner is keyed by the
+// agent owner's uuid string and backs the per-user scopes.
+type runtimeSpend struct {
+	total   map[pricing.Period]int64
+	byOwner map[pricing.Period]map[string]int64
 }
 
-// evaluateBudgetRow checks every configured period of one row and returns the
-// first reached limit.
-func evaluateBudgetRow(ctx context.Context, q *db.Queries, row db.RuntimeCostBudget, scope RuntimeBudgetScope, now time.Time) (*RuntimeBudgetExceededError, error) {
+// ticks returns the spend of one scope in one period. An invalid ownerUserID
+// asks for the runtime total; a user with no spend reads as zero.
+func (s runtimeSpend) ticks(p pricing.Period, ownerUserID pgtype.UUID) int64 {
+	if !ownerUserID.Valid {
+		return s.total[p]
+	}
+	return s.byOwner[p][util.UUIDToString(ownerUserID)]
+}
+
+// loadRuntimeSpend reads the spend of every scope and period of one runtime in
+// one query, so a check or a status read costs one aggregate over task_usage
+// instead of one per (budget row, period).
+//
+// The database returns raw sums per (owner, provider, model); pricing stays in
+// Go so the rate table, not the query, decides what an uncosted token costs.
+// Grouping by owner splits a provider/model bucket that the per-scope query
+// used to sum whole, so the runtime total rounds the rate-table estimate once
+// per owner rather than once overall — a sub-tick (1e-10 USD) difference on
+// unpriced usage only, and provider-reported cost is unaffected.
+func loadRuntimeSpend(ctx context.Context, q *db.Queries, runtimeID pgtype.UUID, now time.Time) (runtimeSpend, error) {
+	spend := runtimeSpend{
+		total:   make(map[pricing.Period]int64, len(pricing.AllPeriods)),
+		byOwner: make(map[pricing.Period]map[string]int64, len(pricing.AllPeriods)),
+	}
+	for _, p := range pricing.AllPeriods {
+		spend.byOwner[p] = map[string]int64{}
+	}
+	periodStart := func(p pricing.Period) pgtype.Timestamptz {
+		return pgtype.Timestamptz{Time: pricing.PeriodStart(now, p), Valid: true}
+	}
+	rows, err := q.ListRuntimeSpendByOwner(ctx, db.ListRuntimeSpendByOwnerParams{
+		RuntimeID:    runtimeID,
+		DailyStart:   periodStart(pricing.PeriodDaily),
+		WeeklyStart:  periodStart(pricing.PeriodWeekly),
+		MonthlyStart: periodStart(pricing.PeriodMonthly),
+	})
+	if err != nil {
+		return runtimeSpend{}, fmt.Errorf("list runtime spend: %w", err)
+	}
+	add := func(p pricing.Period, owner pgtype.UUID, ticks int64) {
+		spend.total[p] += ticks
+		if owner.Valid {
+			spend.byOwner[p][util.UUIDToString(owner)] += ticks
+		}
+	}
+	for _, r := range rows {
+		add(pricing.PeriodDaily, r.OwnerID, pricing.EstimateCostTicks(r.Model, r.DailyCostUsdTicks,
+			r.DailyUncostedInputTokens, r.DailyUncostedOutputTokens, r.DailyUncostedCacheReadTokens, r.DailyUncostedCacheWriteTokens))
+		add(pricing.PeriodWeekly, r.OwnerID, pricing.EstimateCostTicks(r.Model, r.WeeklyCostUsdTicks,
+			r.WeeklyUncostedInputTokens, r.WeeklyUncostedOutputTokens, r.WeeklyUncostedCacheReadTokens, r.WeeklyUncostedCacheWriteTokens))
+		add(pricing.PeriodMonthly, r.OwnerID, pricing.EstimateCostTicks(r.Model, r.MonthlyCostUsdTicks,
+			r.MonthlyUncostedInputTokens, r.MonthlyUncostedOutputTokens, r.MonthlyUncostedCacheReadTokens, r.MonthlyUncostedCacheWriteTokens))
+	}
+	return spend, nil
+}
+
+// evaluateBudgetRow checks every configured period of one row against the
+// already-loaded spend and returns the first reached limit.
+func evaluateBudgetRow(row db.RuntimeCostBudget, scope RuntimeBudgetScope, spend runtimeSpend, now time.Time) *RuntimeBudgetExceededError {
 	for _, p := range pricing.AllPeriods {
 		limit, ok := budgetLimit(row, p)
 		if !ok {
 			continue
 		}
-		start := pricing.PeriodStart(now, p)
-		used, err := runtimeSpendTicks(ctx, q, row.RuntimeID, row.UserID, start)
-		if err != nil {
-			return nil, err
-		}
+		used := spend.ticks(p, row.UserID)
 		if used >= limit {
 			return &RuntimeBudgetExceededError{
 				Scope: scope, Period: p, RuntimeID: row.RuntimeID, UserID: row.UserID,
-				UsedTicks: used, LimitTicks: limit, PeriodStart: start, ResetAt: pricing.NextPeriodStart(now, p),
-			}, nil
+				UsedTicks: used, LimitTicks: limit, PeriodStart: pricing.PeriodStart(now, p),
+				ResetAt: pricing.NextPeriodStart(now, p),
+			}
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 // checkRuntimeCostBudget refuses the enqueue when the agent's runtime total or
 // the agent owner's per-user budget is spent for the current UTC period. It
 // runs after attribution in every enqueue helper. Workspaces without budgets
-// pay one indexed lookup and return immediately. A database error is returned
-// as-is so the enqueue fails closed rather than silently spending.
+// pay one indexed lookup and return immediately; a runtime whose only budgets
+// belong to other owners costs the same, because the spend query is issued
+// only once a row that applies to this agent is known. A database error is
+// returned as-is so the enqueue fails closed rather than silently spending.
 func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries, agent db.Agent, now time.Time) error {
 	if !agent.RuntimeID.Valid {
 		return nil
@@ -117,6 +162,11 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 	if len(rows) == 0 {
 		return nil
 	}
+	type applicableRow struct {
+		row   db.RuntimeCostBudget
+		scope RuntimeBudgetScope
+	}
+	applicable := make([]applicableRow, 0, len(rows))
 	for _, row := range rows {
 		scope := RuntimeBudgetScopeUser
 		if !row.UserID.Valid {
@@ -124,19 +174,27 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 		} else if !agent.OwnerID.Valid || util.UUIDToString(row.UserID) != util.UUIDToString(agent.OwnerID) {
 			continue
 		}
-		exceeded, err := evaluateBudgetRow(ctx, q, row, scope, now)
-		if err != nil {
-			return err
+		applicable = append(applicable, applicableRow{row: row, scope: scope})
+	}
+	if len(applicable) == 0 {
+		return nil
+	}
+	spend, err := loadRuntimeSpend(ctx, q, agent.RuntimeID, now)
+	if err != nil {
+		return err
+	}
+	for _, a := range applicable {
+		exceeded := evaluateBudgetRow(a.row, a.scope, spend, now)
+		if exceeded == nil {
+			continue
 		}
-		if exceeded != nil {
-			slog.Info("task enqueue refused: runtime cost budget reached",
-				"runtime_id", util.UUIDToString(row.RuntimeID), "scope", scope, "period", exceeded.Period,
-				"used_ticks", exceeded.UsedTicks, "limit_ticks", exceeded.LimitTicks)
-			// s.Queries, never q: q may be the caller's transaction, and the
-			// refusal returned below always rolls that transaction back.
-			s.notifyRuntimeBudgetExceeded(ctx, s.Queries, row, exceeded, agent.OwnerID)
-			return exceeded
-		}
+		slog.Info("task enqueue refused: runtime cost budget reached",
+			"runtime_id", util.UUIDToString(a.row.RuntimeID), "scope", a.scope, "period", exceeded.Period,
+			"used_ticks", exceeded.UsedTicks, "limit_ticks", exceeded.LimitTicks)
+		// s.Queries, never q: q may be the caller's transaction, and the
+		// refusal returned below always rolls that transaction back.
+		s.notifyRuntimeBudgetExceeded(ctx, s.Queries, a.row, exceeded, agent.OwnerID)
+		return exceeded
 	}
 	return nil
 }
@@ -270,9 +328,10 @@ type RuntimeBudgetStatus struct {
 	Users   []RuntimeBudgetScopeStatus
 }
 
-// scopeStatus reports every period of one budget row. A period with no
-// configured limit maps to a nil entry, which the API renders as null.
-func scopeStatus(ctx context.Context, q *db.Queries, row db.RuntimeCostBudget, now time.Time) (RuntimeBudgetScopeStatus, error) {
+// scopeStatus reports every period of one budget row from the already-loaded
+// spend. A period with no configured limit maps to a nil entry, which the API
+// renders as null.
+func scopeStatus(row db.RuntimeCostBudget, spend runtimeSpend, now time.Time) RuntimeBudgetScopeStatus {
 	out := RuntimeBudgetScopeStatus{UserID: row.UserID, Periods: map[pricing.Period]*RuntimeBudgetPeriodStatus{}}
 	for _, p := range pricing.AllPeriods {
 		limit, ok := budgetLimit(row, p)
@@ -280,32 +339,34 @@ func scopeStatus(ctx context.Context, q *db.Queries, row db.RuntimeCostBudget, n
 			out.Periods[p] = nil
 			continue
 		}
-		start := pricing.PeriodStart(now, p)
-		used, err := runtimeSpendTicks(ctx, q, row.RuntimeID, row.UserID, start)
-		if err != nil {
-			return out, err
-		}
+		used := spend.ticks(p, row.UserID)
 		out.Periods[p] = &RuntimeBudgetPeriodStatus{
-			LimitTicks: limit, UsedTicks: used, PeriodStart: start,
+			LimitTicks: limit, UsedTicks: used, PeriodStart: pricing.PeriodStart(now, p),
 			ResetAt: pricing.NextPeriodStart(now, p), Reached: used >= limit,
 		}
 	}
-	return out, nil
+	return out
 }
 
 // RuntimeCostBudgetStatus loads every budget row of a runtime with its
-// current-period spend. Spend is computed on demand, never stored.
+// current-period spend. Spend is computed on demand, never stored: one grouped
+// query covers every scope and period, so the cost does not grow with the
+// number of per-user rows.
 func (s *TaskService) RuntimeCostBudgetStatus(ctx context.Context, runtimeID pgtype.UUID, now time.Time) (RuntimeBudgetStatus, error) {
 	rows, err := s.Queries.ListRuntimeCostBudgets(ctx, runtimeID)
 	if err != nil {
 		return RuntimeBudgetStatus{}, fmt.Errorf("list runtime cost budgets: %w", err)
 	}
 	status := RuntimeBudgetStatus{Users: []RuntimeBudgetScopeStatus{}}
+	if len(rows) == 0 {
+		return status, nil
+	}
+	spend, err := loadRuntimeSpend(ctx, s.Queries, runtimeID, now)
+	if err != nil {
+		return RuntimeBudgetStatus{}, err
+	}
 	for _, row := range rows {
-		sc, err := scopeStatus(ctx, s.Queries, row, now)
-		if err != nil {
-			return RuntimeBudgetStatus{}, err
-		}
+		sc := scopeStatus(row, spend, now)
 		if row.UserID.Valid {
 			status.Users = append(status.Users, sc)
 		} else {

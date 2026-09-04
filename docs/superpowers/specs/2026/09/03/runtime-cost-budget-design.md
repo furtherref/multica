@@ -88,13 +88,23 @@ uses for budgets.
 
 ## Spend computation
 
-A sqlc query `ListRuntimeSpendSince(runtime_id, since, owner_user_id NULL)`
-mirrors `ListRuntimeUsageByAgent` but joins `agent` to filter
-`agent.owner_id = owner_user_id` when provided, and groups by provider and
-model only. Spend for a period is the sum of `EstimateCostTicks` over the
-rows. Spend is computed on demand for each check and for the budget
-endpoint; no running counter is stored, so pricing table updates and late
-usage reports never drift from the enforcement figure.
+A sqlc query `ListRuntimeSpendByOwner(runtime_id, daily_start,
+weekly_start, monthly_start)` mirrors `ListRuntimeUsageByAgent` but
+left-joins `agent`, groups by `agent.owner_id` alongside provider and model,
+and computes all three period windows in one pass with
+`FILTER (WHERE tu.created_at >= …)` aggregates. The three starts are not
+ordered against each other — the current Monday can fall before the first of
+the month — so the scan floors on their `LEAST` and each period picks its own
+rows. Go folds the result once into a `runtimeSpend`: per period, a runtime
+total and a map of `EstimateCostTicks` sums keyed by agent owner. Agents
+nobody owns contribute to the total only.
+
+One read therefore answers every scope and every period, instead of one
+aggregate per (budget row, period): the budget endpoint of a runtime with N
+per-user rows costs one spend query rather than 3N+3, and a check costs one
+rather than up to six. Spend is still computed on demand for each check and
+for the budget endpoint; no running counter is stored, so pricing table
+updates and late usage reports never drift from the enforcement figure.
 
 Period start is computed in Go: `pricing.PeriodStart(now, period)`
 returns UTC midnight of today, of the current Monday, or of the first of
@@ -107,9 +117,13 @@ helper right after attribution resolves: `enqueueIssueTaskWithCommentPlan`,
 `enqueueMentionTaskWithCommentPlan`, `enqueueQuickCreateTask`,
 `enqueueChatTaskTx` and `enqueueRerunTask`. It loads the budget rows for
 `agent.runtime_id` in one query. With no rows it returns immediately, so
-workspaces without budgets pay one indexed lookup per enqueue. Otherwise it
-evaluates the runtime total row and the row for `agent.owner_id`, each
-period with a limit, and returns `*RuntimeBudgetExceededError{Scope, Period,
+workspaces without budgets pay one indexed lookup per enqueue; a runtime
+whose budgets all belong to other owners is just as cheap, because the spend
+query is issued only once a row that applies to this agent is known.
+Otherwise it loads the runtime's spend once with `ListRuntimeSpendByOwner`
+and evaluates the runtime total row and the row for `agent.owner_id` against
+it, each period with a limit, and returns
+`*RuntimeBudgetExceededError{Scope, Period,
 UsedTicks, LimitTicks, PeriodStart, ResetAt, UserID}` on the first reached
 limit. Agents with no runtime skip the check.
 
@@ -264,7 +278,10 @@ Locale keys under `runtimes.budget.*` and the inbox and issues bundles in
   provider-costed rows.
 - Service: enqueue refused for runtime total, refused for one user while
   another passes, passes with no rows, passes when spend is unpriced,
-  notification fires once per period.
+  notification fires once per period; the spend loader returns every period
+  and owner from one call (including a week that starts before the month),
+  and the budget endpoint issues exactly one spend query for three per-user
+  scopes.
 - Handler: `PUT` returns 403 for members, 200 for owner and admin, rejects
   invalid amounts and non-members, deletes emptied rows; `GET` reports used
   and reached.

@@ -93,63 +93,107 @@ func (q *Queries) ListRuntimeCostBudgets(ctx context.Context, runtimeID pgtype.U
 	return items, nil
 }
 
-const listRuntimeSpendSince = `-- name: ListRuntimeSpendSince :many
+const listRuntimeSpendByOwner = `-- name: ListRuntimeSpendByOwner :many
 SELECT
+    a.owner_id,
     LOWER(tu.provider) AS provider,
     tu.model,
-    COALESCE(SUM(tu.cost_usd_ticks), 0)::bigint AS cost_usd_ticks,
-    COALESCE(SUM(tu.input_tokens)       FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_input_tokens,
-    COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
-    COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
-    COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens
+    COALESCE(SUM(tu.cost_usd_ticks)     FILTER (WHERE tu.created_at >= $2::timestamptz), 0)::bigint AS daily_cost_usd_ticks,
+    COALESCE(SUM(tu.input_tokens)       FILTER (WHERE tu.cost_usd_ticks IS NULL AND tu.created_at >= $2::timestamptz), 0)::bigint AS daily_uncosted_input_tokens,
+    COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL AND tu.created_at >= $2::timestamptz), 0)::bigint AS daily_uncosted_output_tokens,
+    COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL AND tu.created_at >= $2::timestamptz), 0)::bigint AS daily_uncosted_cache_read_tokens,
+    COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL AND tu.created_at >= $2::timestamptz), 0)::bigint AS daily_uncosted_cache_write_tokens,
+    COALESCE(SUM(tu.cost_usd_ticks)     FILTER (WHERE tu.created_at >= $3::timestamptz), 0)::bigint AS weekly_cost_usd_ticks,
+    COALESCE(SUM(tu.input_tokens)       FILTER (WHERE tu.cost_usd_ticks IS NULL AND tu.created_at >= $3::timestamptz), 0)::bigint AS weekly_uncosted_input_tokens,
+    COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL AND tu.created_at >= $3::timestamptz), 0)::bigint AS weekly_uncosted_output_tokens,
+    COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL AND tu.created_at >= $3::timestamptz), 0)::bigint AS weekly_uncosted_cache_read_tokens,
+    COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL AND tu.created_at >= $3::timestamptz), 0)::bigint AS weekly_uncosted_cache_write_tokens,
+    COALESCE(SUM(tu.cost_usd_ticks)     FILTER (WHERE tu.created_at >= $4::timestamptz), 0)::bigint AS monthly_cost_usd_ticks,
+    COALESCE(SUM(tu.input_tokens)       FILTER (WHERE tu.cost_usd_ticks IS NULL AND tu.created_at >= $4::timestamptz), 0)::bigint AS monthly_uncosted_input_tokens,
+    COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL AND tu.created_at >= $4::timestamptz), 0)::bigint AS monthly_uncosted_output_tokens,
+    COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL AND tu.created_at >= $4::timestamptz), 0)::bigint AS monthly_uncosted_cache_read_tokens,
+    COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL AND tu.created_at >= $4::timestamptz), 0)::bigint AS monthly_uncosted_cache_write_tokens
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 LEFT JOIN agent a ON a.id = atq.agent_id
 WHERE atq.runtime_id = $1
-  AND tu.created_at >= $2::timestamptz
-  AND ($3::uuid IS NULL OR a.owner_id = $3::uuid)
-GROUP BY LOWER(tu.provider), tu.model
+  AND tu.created_at >= LEAST($2::timestamptz, $3::timestamptz, $4::timestamptz)
+GROUP BY a.owner_id, LOWER(tu.provider), tu.model
 `
 
-type ListRuntimeSpendSinceParams struct {
-	RuntimeID   pgtype.UUID        `json:"runtime_id"`
-	Since       pgtype.Timestamptz `json:"since"`
-	OwnerUserID pgtype.UUID        `json:"owner_user_id"`
+type ListRuntimeSpendByOwnerParams struct {
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	DailyStart   pgtype.Timestamptz `json:"daily_start"`
+	WeeklyStart  pgtype.Timestamptz `json:"weekly_start"`
+	MonthlyStart pgtype.Timestamptz `json:"monthly_start"`
 }
 
-type ListRuntimeSpendSinceRow struct {
-	Provider                 string `json:"provider"`
-	Model                    string `json:"model"`
-	CostUsdTicks             int64  `json:"cost_usd_ticks"`
-	UncostedInputTokens      int64  `json:"uncosted_input_tokens"`
-	UncostedOutputTokens     int64  `json:"uncosted_output_tokens"`
-	UncostedCacheReadTokens  int64  `json:"uncosted_cache_read_tokens"`
-	UncostedCacheWriteTokens int64  `json:"uncosted_cache_write_tokens"`
+type ListRuntimeSpendByOwnerRow struct {
+	OwnerID                         pgtype.UUID `json:"owner_id"`
+	Provider                        string      `json:"provider"`
+	Model                           string      `json:"model"`
+	DailyCostUsdTicks               int64       `json:"daily_cost_usd_ticks"`
+	DailyUncostedInputTokens        int64       `json:"daily_uncosted_input_tokens"`
+	DailyUncostedOutputTokens       int64       `json:"daily_uncosted_output_tokens"`
+	DailyUncostedCacheReadTokens    int64       `json:"daily_uncosted_cache_read_tokens"`
+	DailyUncostedCacheWriteTokens   int64       `json:"daily_uncosted_cache_write_tokens"`
+	WeeklyCostUsdTicks              int64       `json:"weekly_cost_usd_ticks"`
+	WeeklyUncostedInputTokens       int64       `json:"weekly_uncosted_input_tokens"`
+	WeeklyUncostedOutputTokens      int64       `json:"weekly_uncosted_output_tokens"`
+	WeeklyUncostedCacheReadTokens   int64       `json:"weekly_uncosted_cache_read_tokens"`
+	WeeklyUncostedCacheWriteTokens  int64       `json:"weekly_uncosted_cache_write_tokens"`
+	MonthlyCostUsdTicks             int64       `json:"monthly_cost_usd_ticks"`
+	MonthlyUncostedInputTokens      int64       `json:"monthly_uncosted_input_tokens"`
+	MonthlyUncostedOutputTokens     int64       `json:"monthly_uncosted_output_tokens"`
+	MonthlyUncostedCacheReadTokens  int64       `json:"monthly_uncosted_cache_read_tokens"`
+	MonthlyUncostedCacheWriteTokens int64       `json:"monthly_uncosted_cache_write_tokens"`
 }
 
-// Spend of one runtime since a cutoff, grouped by provider/model so Go can
-// price the uncosted tokens with the server rate table. owner_user_id narrows
-// the rows to tasks whose agent that user owns (the per-user scope); NULL
-// means the runtime total. Mirrors ListRuntimeUsageByAgent in
-// runtime_usage.sql: cost_usd_ticks is authoritative where present, and the
-// uncosted_* buckets are the tokens from rows without a provider cost.
-func (q *Queries) ListRuntimeSpendSince(ctx context.Context, arg ListRuntimeSpendSinceParams) ([]ListRuntimeSpendSinceRow, error) {
-	rows, err := q.db.Query(ctx, listRuntimeSpendSince, arg.RuntimeID, arg.Since, arg.OwnerUserID)
+// Every budget scope and period of one runtime in a single pass. Rows are
+// grouped by the agent's owner and by provider/model, so Go can price the
+// uncosted tokens with the server rate table and then fold the groups into a
+// runtime total and a per-owner total for each period. owner_id is NULL for
+// agents nobody owns: their spend counts toward the runtime total only.
+// Mirrors ListRuntimeUsageByAgent in runtime_usage.sql: cost_usd_ticks is
+// authoritative where present, and the uncosted_* buckets carry the tokens of
+// the rows the provider did not price.
+//
+// The three period starts are not ordered against each other -- the current
+// Monday can fall before or after the first of the month -- so the scan floor
+// is their LEAST, and each period picks its own rows with a FILTER.
+func (q *Queries) ListRuntimeSpendByOwner(ctx context.Context, arg ListRuntimeSpendByOwnerParams) ([]ListRuntimeSpendByOwnerRow, error) {
+	rows, err := q.db.Query(ctx, listRuntimeSpendByOwner,
+		arg.RuntimeID,
+		arg.DailyStart,
+		arg.WeeklyStart,
+		arg.MonthlyStart,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListRuntimeSpendSinceRow{}
+	items := []ListRuntimeSpendByOwnerRow{}
 	for rows.Next() {
-		var i ListRuntimeSpendSinceRow
+		var i ListRuntimeSpendByOwnerRow
 		if err := rows.Scan(
+			&i.OwnerID,
 			&i.Provider,
 			&i.Model,
-			&i.CostUsdTicks,
-			&i.UncostedInputTokens,
-			&i.UncostedOutputTokens,
-			&i.UncostedCacheReadTokens,
-			&i.UncostedCacheWriteTokens,
+			&i.DailyCostUsdTicks,
+			&i.DailyUncostedInputTokens,
+			&i.DailyUncostedOutputTokens,
+			&i.DailyUncostedCacheReadTokens,
+			&i.DailyUncostedCacheWriteTokens,
+			&i.WeeklyCostUsdTicks,
+			&i.WeeklyUncostedInputTokens,
+			&i.WeeklyUncostedOutputTokens,
+			&i.WeeklyUncostedCacheReadTokens,
+			&i.WeeklyUncostedCacheWriteTokens,
+			&i.MonthlyCostUsdTicks,
+			&i.MonthlyUncostedInputTokens,
+			&i.MonthlyUncostedOutputTokens,
+			&i.MonthlyUncostedCacheReadTokens,
+			&i.MonthlyUncostedCacheWriteTokens,
 		); err != nil {
 			return nil, err
 		}
