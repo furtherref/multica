@@ -13,7 +13,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
+	"github.com/multica-ai/multica/server/internal/events"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // fakeLivenessStore lets tests drive every Available / Touch / IsAliveBatch
@@ -72,7 +74,7 @@ type recordingHeartbeatScheduler struct {
 	err error
 }
 
-func (s *recordingHeartbeatScheduler) Schedule(_ context.Context, id pgtype.UUID) error {
+func (s *recordingHeartbeatScheduler) Schedule(_ context.Context, id, _ pgtype.UUID) error {
 	s.ids = append(s.ids, id)
 	return s.err
 }
@@ -326,6 +328,67 @@ func TestRecordHeartbeat_OfflineToOnlineForcesDBWrite(t *testing.T) {
 	}
 }
 
+// TestRecordHeartbeat_RecoveryPublishesOnce verifies that a heartbeat-only
+// offline -> online recovery wakes presence clients, while the next ordinary
+// online heartbeat stays silent.
+func TestRecordHeartbeat_RecoveryPublishesOnce(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
+	setRuntimeStatus(t, runtimeID, "offline")
+	setRuntimeLastSeenAt(t, runtimeID, time.Now())
+
+	h := *testHandler
+	h.Bus = events.New()
+	h.LivenessStore = NewNoopLivenessStore()
+	h.HeartbeatScheduler = NewPassthroughHeartbeatScheduler(h.Queries)
+	var refreshes []events.Event
+	h.Bus.Subscribe(protocol.EventDaemonRegister, func(event events.Event) {
+		refreshes = append(refreshes, event)
+	})
+
+	if err := h.recordHeartbeat(context.Background(), loadRuntime(t, runtimeID)); err != nil {
+		t.Fatalf("recovery recordHeartbeat: %v", err)
+	}
+	if len(refreshes) != 1 {
+		t.Fatalf("recovery should publish one daemon refresh, got %d", len(refreshes))
+	}
+	if refreshes[0].WorkspaceID != testWorkspaceID {
+		t.Fatalf("refresh workspace_id = %q, want %q", refreshes[0].WorkspaceID, testWorkspaceID)
+	}
+	if payload, ok := refreshes[0].Payload.(map[string]any); !ok || payload["action"] != "heartbeat_recovery" {
+		t.Fatalf("refresh payload = %#v, want heartbeat_recovery", refreshes[0].Payload)
+	}
+
+	if err := h.recordHeartbeat(context.Background(), loadRuntime(t, runtimeID)); err != nil {
+		t.Fatalf("ordinary recordHeartbeat: %v", err)
+	}
+	if len(refreshes) != 1 {
+		t.Fatalf("ordinary online heartbeat published %d refreshes, want 1 total", len(refreshes))
+	}
+}
+
+// TestNotifyRuntimeRecovered_PublishesKnownWorkspaceWithoutLookup pins the
+// no-query contract: a handler with no Queries can still publish the refresh.
+func TestNotifyRuntimeRecovered_PublishesKnownWorkspaceWithoutLookup(t *testing.T) {
+	const workspaceID = "11111111-1111-1111-1111-111111111111"
+	h := Handler{Bus: events.New()}
+	var refreshes []events.Event
+	h.Bus.Subscribe(protocol.EventDaemonRegister, func(event events.Event) {
+		refreshes = append(refreshes, event)
+	})
+
+	h.NotifyRuntimeRecovered(context.Background(), workspaceID)
+
+	if len(refreshes) != 1 {
+		t.Fatalf("recovery refreshes = %d, want 1", len(refreshes))
+	}
+	if refreshes[0].WorkspaceID != workspaceID {
+		t.Fatalf("refresh workspace_id = %q, want %q", refreshes[0].WorkspaceID, workspaceID)
+	}
+}
+
 // TestRecordHeartbeat_TouchErrorFallsBackToDB confirms graceful degradation:
 // if Redis Touch errors, the heartbeat still writes the DB so the sweeper's
 // DB-only fallback path observes a fresh last_seen_at.
@@ -512,7 +575,7 @@ func TestMarkAgentRuntimeOnlineRefusesSuspendedOwner(t *testing.T) {
 	// suspension wants (the suspend endpoint severs daemon sockets too). The
 	// row itself must stay offline.
 	sched := NewPassthroughHeartbeatScheduler(testHandler.Queries)
-	if err := sched.Schedule(ctx, rt.ID); !errors.Is(err, pgx.ErrNoRows) {
+	if err := sched.Schedule(ctx, rt.ID, rt.WorkspaceID); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("Schedule err = %v, want pgx.ErrNoRows (refused flip must not resurrect the row)", err)
 	}
 	if status, _, _ := readRuntimeRow(t, runtimeID); status != "offline" {
