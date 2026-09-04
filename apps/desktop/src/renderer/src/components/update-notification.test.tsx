@@ -51,6 +51,7 @@ beforeEach(() => {
     windowContext: { kind: "main" as const },
     reportAuthSession: vi.fn(),
     openIssueWindow: vi.fn(() => Promise.resolve({ ok: true as const })),
+    onSelectTabShortcut: vi.fn(() => vi.fn()),
   };
 
   window.updater = {

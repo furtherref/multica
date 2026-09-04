@@ -10,7 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/daemonws"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -65,6 +67,16 @@ func (f *fakeLivenessStore) touchCount() int {
 	return len(f.touched)
 }
 
+type recordingHeartbeatScheduler struct {
+	ids []pgtype.UUID
+	err error
+}
+
+func (s *recordingHeartbeatScheduler) Schedule(_ context.Context, id pgtype.UUID) error {
+	s.ids = append(s.ids, id)
+	return s.err
+}
+
 // readRuntimeRow returns the fresh agent_runtime row for assertions.
 func readRuntimeRow(t *testing.T, runtimeID string) (status string, lastSeen time.Time, updatedAt time.Time) {
 	t.Helper()
@@ -115,6 +127,78 @@ func pgUUID(s string) (pgtype.UUID, error) {
 		return u, err
 	}
 	return u, nil
+}
+
+func TestRecordHeartbeatLeaseThrottlesDBScheduling(t *testing.T) {
+	runtimeID := uuid.NewString()
+	fake := &fakeLivenessStore{available: true, aliveOK: true}
+	scheduler := &recordingHeartbeatScheduler{}
+	h := &Handler{LivenessStore: fake, HeartbeatScheduler: scheduler}
+	lease := daemonws.NewRuntimeLease("workspace-1", "", "online", time.Now().Add(-2*runtimeHeartbeatDBFlushInterval), true)
+
+	if err := h.recordHeartbeatLease(context.Background(), runtimeID, lease); err != nil {
+		t.Fatalf("first recordHeartbeatLease: %v", err)
+	}
+	if err := h.recordHeartbeatLease(context.Background(), runtimeID, lease); err != nil {
+		t.Fatalf("second recordHeartbeatLease: %v", err)
+	}
+
+	if len(scheduler.ids) != 1 {
+		t.Fatalf("scheduled DB writes = %d, want 1 within one flush window", len(scheduler.ids))
+	}
+	if fake.touchCount() != 2 {
+		t.Fatalf("Redis touches = %d, want 2", fake.touchCount())
+	}
+	state := lease.Snapshot()
+	if !state.LastSeenAtValid || time.Since(state.LastSeenAt) > time.Second {
+		t.Fatalf("lease DB watermark was not advanced: %+v", state)
+	}
+}
+
+func TestRecordHeartbeatLeaseScheduleFailureKeepsStaleWatermark(t *testing.T) {
+	runtimeID := uuid.NewString()
+	fake := &fakeLivenessStore{available: true, aliveOK: true}
+	injected := errors.New("injected schedule failure")
+	scheduler := &recordingHeartbeatScheduler{err: injected}
+	h := &Handler{LivenessStore: fake, HeartbeatScheduler: scheduler}
+	stale := time.Now().Add(-2 * runtimeHeartbeatDBFlushInterval)
+	lease := daemonws.NewRuntimeLease("workspace-1", "", "online", stale, true)
+
+	if err := h.recordHeartbeatLease(context.Background(), runtimeID, lease); !errors.Is(err, injected) {
+		t.Fatalf("recordHeartbeatLease error = %v, want injected failure", err)
+	}
+	if got := lease.Snapshot().LastSeenAt; !got.Equal(stale) {
+		t.Fatalf("failed schedule advanced lease watermark: got %s want %s", got, stale)
+	}
+}
+
+func TestRecordHeartbeatLeaseOfflineTransitionIsSynchronous(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
+	setRuntimeStatus(t, runtimeID, "offline")
+	fake := &fakeLivenessStore{available: true, aliveOK: true}
+	scheduler := NewBatchedHeartbeatScheduler(testHandler.Queries, time.Hour, nil)
+	h := *testHandler
+	h.LivenessStore = fake
+	h.HeartbeatScheduler = scheduler
+	lease := daemonws.NewRuntimeLease(testWorkspaceID, "", "offline", time.Now(), true)
+
+	if err := h.recordHeartbeatLease(context.Background(), runtimeID, lease); err != nil {
+		t.Fatalf("recordHeartbeatLease: %v", err)
+	}
+
+	status, _, _ := readRuntimeRow(t, runtimeID)
+	if status != "online" {
+		t.Fatalf("status = %q, want online before heartbeat returns", status)
+	}
+	if got := scheduler.PendingCount(); got != 0 {
+		t.Fatalf("offline transition was deferred to batch queue: pending=%d", got)
+	}
+	if state := lease.Snapshot(); state.Status != "online" || !state.LastSeenAtValid {
+		t.Fatalf("lease state was not advanced after synchronous recovery: %+v", state)
+	}
 }
 
 // TestRecordHeartbeat_NoopStoreAlwaysWritesDB confirms that without a Redis
@@ -383,8 +467,8 @@ func TestRecordHeartbeat_SuspendedOwnerDoesNotResurrectRuntime(t *testing.T) {
 // TestMarkAgentRuntimeOnlineRefusesSuspendedOwner pins the write-side TOCTOU
 // closure: even when the app-level owner check raced ahead of the suspension
 // commit, the UPDATE itself refuses to flip a suspended owner's runtime back
-// online (zero rows → pgx.ErrNoRows), and the scheduler treats that as a
-// benign skip.
+// online (zero rows → pgx.ErrNoRows), and the scheduler passes that through
+// as the runtime-gone signal instead of resurrecting the row.
 func TestMarkAgentRuntimeOnlineRefusesSuspendedOwner(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -422,13 +506,17 @@ func TestMarkAgentRuntimeOnlineRefusesSuspendedOwner(t *testing.T) {
 		t.Fatalf("runtime status = %q, want offline", status)
 	}
 
-	// The scheduler treats the refused flip as a benign skip, not an error.
+	// The scheduler surfaces the refused flip as pgx.ErrNoRows, the same
+	// signal a deleted row produces: the heartbeat path answers it by
+	// invalidating the daemon's connection, which is exactly what a
+	// suspension wants (the suspend endpoint severs daemon sockets too). The
+	// row itself must stay offline.
 	sched := NewPassthroughHeartbeatScheduler(testHandler.Queries)
-	staleRT := rt
-	staleRT.Status = "offline" // force the MarkAgentRuntimeOnline branch
-	staleRT.LastSeenAt = pgtype.Timestamptz{}
-	if err := sched.Schedule(ctx, staleRT); err != nil {
-		t.Fatalf("Schedule: %v (refused flip must be a benign skip)", err)
+	if err := sched.Schedule(ctx, rt.ID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("Schedule err = %v, want pgx.ErrNoRows (refused flip must not resurrect the row)", err)
+	}
+	if status, _, _ := readRuntimeRow(t, runtimeID); status != "offline" {
+		t.Fatalf("runtime status after Schedule = %q, want offline", status)
 	}
 
 	// Restore the owner: the flip works again.

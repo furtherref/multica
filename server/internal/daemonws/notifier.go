@@ -178,3 +178,29 @@ func (n *RelayNotifier) DisconnectRuntimes(runtimeIDs []string) error {
 	M.WakeupPublishedTotal.Add(1)
 	return nil
 }
+
+// NotifyRuntimeGone invalidates a deleted runtime on the local daemon
+// connection and on any connection held by another API node.
+func (n *RelayNotifier) NotifyRuntimeGone(runtimeID string) {
+	if runtimeID == "" {
+		return
+	}
+	eventID := ulid.Make().String()
+	if n.local != nil {
+		n.local.notifyRuntimeGone(runtimeID, eventID)
+	}
+	if n.relay == nil {
+		return
+	}
+	frame, err := runtimeGoneFrame(runtimeID)
+	if err != nil {
+		M.RuntimeGonePublishErrors.Add(1)
+		return
+	}
+	if err := n.relay.PublishWithID(realtime.ScopeDaemonRuntime, runtimeID, "", frame, eventID); err != nil {
+		M.RuntimeGonePublishErrors.Add(1)
+		slog.Warn("daemon websocket runtime-gone publish failed", "error", err, "runtime_id", runtimeID)
+		return
+	}
+	M.RuntimeGonePublishedTotal.Add(1)
+}

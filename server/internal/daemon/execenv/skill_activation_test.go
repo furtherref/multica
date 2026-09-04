@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,16 +134,15 @@ func TestSkillIndexReachesTheBriefNotTheContextFile(t *testing.T) {
 		t.Errorf("runtime brief missing the skill activation protocol; got:\n%s", brief)
 	}
 
+	// The per-task sidecar is gone entirely (MUL-6984): the brief is the only
+	// copy of the skill index, so writeContextFiles must not bring the file
+	// back.
 	dir := t.TempDir()
 	if err := writeContextFiles(dir, "", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
-	content, err := os.ReadFile(filepath.Join(dir, ".agent_context", "issue_context.md"))
-	if err != nil {
-		t.Fatalf("read issue_context.md: %v", err)
-	}
-	if strings.Contains(string(content), "frontend-standards") {
-		t.Errorf("issue_context.md must no longer duplicate the skill list (MUL-5529); got:\n%s", content)
+	if _, err := os.Stat(filepath.Join(dir, ".agent_context", "issue_context.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("issue_context.md must not be written any more (MUL-6984); stat err = %v", err)
 	}
 }
 
