@@ -804,7 +804,7 @@ func (s *TaskService) OriginatorForIssueTask(ctx context.Context, issue db.Issue
 func (s *TaskService) captureTaskDispatched(ctx context.Context, task db.AgentTaskQueue) {
 	if s.Metrics != nil {
 		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
-		s.Metrics.RecordTaskDispatched(util.UUIDToString(task.ID), source, runtimeMode, taskQueueWaitSeconds(task))
+		s.Metrics.RecordTaskDispatched(util.UUIDToString(task.ID), source, runtimeMode, taskQueueWaitSeconds(task), taskClaimableWaitSeconds(task))
 	}
 }
 
@@ -1047,6 +1047,16 @@ func taskQueueWaitSeconds(task db.AgentTaskQueue) float64 {
 	return durationSeconds(task.CreatedAt, task.DispatchedAt)
 }
 
+// taskClaimableWaitSeconds excludes an intentional deferred delay when fire_at
+// is still available on the claimed row. Immediate tasks start at creation.
+func taskClaimableWaitSeconds(task db.AgentTaskQueue) float64 {
+	claimableAt := task.CreatedAt
+	if task.FireAt.Valid && (!claimableAt.Valid || task.FireAt.Time.After(claimableAt.Time)) {
+		claimableAt = task.FireAt
+	}
+	return durationSeconds(claimableAt, task.DispatchedAt)
+}
+
 func taskRunSeconds(task db.AgentTaskQueue) float64 {
 	return durationSeconds(task.StartedAt, task.CompletedAt)
 }
@@ -1104,7 +1114,14 @@ func (s *TaskService) EnqueueTaskForIssue(ctx context.Context, issue db.Issue, t
 // crash-safe fallback; the channel router promotes the task as soon as the
 // detached attachment transaction settles.
 func (s *TaskService) EnqueueDeferredChannelIssueTask(ctx context.Context, issue db.Issue, fireAt time.Time) (db.AgentTaskQueue, error) {
-	return s.enqueueIssueTask(ctx, issue, pgtype.UUID{}, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{Time: fireAt, Valid: true})
+	task, err := s.enqueueIssueTask(ctx, issue, pgtype.UUID{}, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{Time: fireAt, Valid: true})
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	// The task is durable but not claimable yet. Wake once without a task ID so
+	// the daemon refreshes its deferred schedule without treating it as ready.
+	s.notifyRuntimeMayHaveWork(task.RuntimeID, "")
+	return task, nil
 }
 
 // createDeferredChannelIssueTaskWithQueries inserts the inert media-gated task
@@ -1150,12 +1167,18 @@ func (s *TaskService) hydrateDeferredChannelIssueTaskOverlay(ctx context.Context
 	return nil
 }
 
-// EnqueueTaskForIssueWithHandoff is the assign/promote variant that carries a
-// handoff note into the run's opening context (MUL-3375). The note rides a
-// dedicated task column; the daemon renders it via the assignment-handoff
-// branch. Empty note behaves exactly like EnqueueTaskForIssue. actorUserID is the
-// member who performed the assign/promote and becomes the accountable human for
-// the run (MUL-4302 §4); invalid when the caller has no member actor.
+// EnqueueTaskForIssueByActor is the assign/promote variant of
+// EnqueueTaskForIssue. actorUserID is the member who performed the
+// assign/promote and becomes the accountable human for the run (MUL-4302 §4);
+// invalid when the caller has no member actor.
+func (s *TaskService) EnqueueTaskForIssueByActor(ctx context.Context, issue db.Issue, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
+	return s.enqueueIssueTask(ctx, issue, pgtype.UUID{}, false, "", actorUserID, pgtype.UUID{}, pgtype.Timestamptz{})
+}
+
+// EnqueueTaskForIssueWithHandoff is the backward-compatible assign/promote
+// variant used when an installed client still sends handoff_note. The note is
+// persisted on the task so both old and current daemons can render it in the
+// run's opening prompt. Empty text behaves like EnqueueTaskForIssueByActor.
 func (s *TaskService) EnqueueTaskForIssueWithHandoff(ctx context.Context, issue db.Issue, handoffNote string, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
 	return s.enqueueIssueTask(ctx, issue, pgtype.UUID{}, false, handoffNote, actorUserID, pgtype.UUID{}, pgtype.Timestamptz{})
 }
@@ -1357,11 +1380,16 @@ func (s *TaskService) EnqueueTaskForSquadLeader(ctx context.Context, issue db.Is
 	return s.enqueueMentionTask(ctx, issue, leaderID, triggerCommentID, true, squadID, false, "", pgtype.UUID{}, pgtype.UUID{})
 }
 
-// EnqueueTaskForSquadLeaderWithHandoff is the assign/promote variant carrying a
-// handoff note into the leader run's opening context (MUL-3375). Empty note
-// behaves exactly like EnqueueTaskForSquadLeader. actorUserID is the member who
-// performed the assign/promote and becomes the accountable human (MUL-4302 §4);
-// invalid when the caller has no member actor.
+// EnqueueTaskForSquadLeaderByActor is the assign/promote variant of
+// EnqueueTaskForSquadLeader. actorUserID is the member who performed the
+// assign/promote and becomes the accountable human (MUL-4302 §4); invalid when
+// the caller has no member actor.
+func (s *TaskService) EnqueueTaskForSquadLeaderByActor(ctx context.Context, issue db.Issue, leaderID pgtype.UUID, squadID pgtype.UUID, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
+	return s.enqueueMentionTask(ctx, issue, leaderID, pgtype.UUID{}, true, squadID, false, "", actorUserID, pgtype.UUID{})
+}
+
+// EnqueueTaskForSquadLeaderWithHandoff is the squad equivalent of
+// EnqueueTaskForIssueWithHandoff.
 func (s *TaskService) EnqueueTaskForSquadLeaderWithHandoff(ctx context.Context, issue db.Issue, leaderID pgtype.UUID, squadID pgtype.UUID, handoffNote string, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
 	return s.enqueueMentionTask(ctx, issue, leaderID, pgtype.UUID{}, true, squadID, false, handoffNote, actorUserID, pgtype.UUID{})
 }
@@ -1515,6 +1543,9 @@ func (s *TaskService) EnqueueDeferredAssigneeFallback(ctx context.Context, issue
 		"agent_id", util.UUIDToString(agentID),
 		"fire_at", fireAt.UTC().Format(time.RFC3339),
 	)
+	// Refresh the daemon's durable deferred schedule after the insert commits.
+	// An empty task ID means "claim to refresh state", not "this task is ready".
+	s.notifyRuntimeMayHaveWork(task.RuntimeID, "")
 	return task, nil
 }
 
