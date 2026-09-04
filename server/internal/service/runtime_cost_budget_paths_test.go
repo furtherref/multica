@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/pricing"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -78,6 +80,41 @@ func TestAutopilotRunOnlyRefusedWhenBudgetReached(t *testing.T) {
 	// total that GET /budget gates behind runtime read access.
 	if strings.ContainsAny(updated.FailureReason.String, "0123456789") {
 		t.Fatalf("skipped run reason %q leaks budget amounts", updated.FailureReason.String)
+	}
+}
+
+// failRun used to hardcode reason_code = internal_error, so a budget refusal
+// that slipped past the pre-write gate — create_issue commits the issue and
+// only then enqueues, and the enqueue keeps its own gate — was filed as a
+// server fault. The code is the caller's classification now, and the reason it
+// records is the amount-free one.
+func TestFailRunRecordsTheGivenReasonCode(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, creatorID, agentID, _ := seedAttributionFixture(t, pool)
+	_, runID := seedCreateIssueAutopilot(t, pool, workspaceID, agentID, creatorID)
+
+	svc := &AutopilotService{
+		Queries: q, TxStarter: pool, Bus: events.New(),
+		TaskSvc: &TaskService{Queries: q, TxStarter: pool, Bus: events.New()},
+	}
+	budget := &RuntimeBudgetExceededError{Scope: RuntimeBudgetScopeRuntime, Period: pricing.PeriodDaily}
+	reason, code := dispatchFailure(fmt.Errorf("enqueue task for issue: %w", budget))
+	svc.failRun(ctx, util.MustParseUUID(runID), reason, code)
+
+	run, err := q.GetAutopilotRun(ctx, util.MustParseUUID(runID))
+	if err != nil {
+		t.Fatalf("reload run: %v", err)
+	}
+	if run.Status != "failed" {
+		t.Fatalf("run status = %q, want failed", run.Status)
+	}
+	if run.ReasonCode.String != string(dispatch.ReasonBudgetExceeded) {
+		t.Fatalf("stored reason_code = %q, want budget_exceeded", run.ReasonCode.String)
+	}
+	if strings.ContainsAny(run.FailureReason.String, "0123456789") {
+		t.Fatalf("failed run reason %q leaks budget amounts", run.FailureReason.String)
 	}
 }
 

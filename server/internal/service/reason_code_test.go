@@ -42,6 +42,75 @@ func TestDispatchFailReasonCode(t *testing.T) {
 	}
 }
 
+// A create_issue dispatch checks the budget before it writes anything, but the
+// enqueue at the end of that transaction keeps its own gate: a limit crossed in
+// between is refused after the issue is already committed, and the refusal then
+// falls through to failRun. What must not follow it there is the amounts.
+// autopilot_run.failure_reason is readable by anyone who can see the autopilot
+// and the same string is stored in webhook_delivery.error, while the limit and
+// the running total are gated behind runtime read access on GET /budget.
+func TestDispatchFailureStripsBudgetAmounts(t *testing.T) {
+	budget := &RuntimeBudgetExceededError{
+		Scope:      RuntimeBudgetScopeRuntime,
+		Period:     pricing.PeriodDaily,
+		UsedTicks:  pricing.USDToTicks(12.5),
+		LimitTicks: pricing.USDToTicks(10),
+	}
+	if !strings.ContainsAny(budget.Error(), "0123456789") {
+		t.Fatal("fixture is not testing anything: Error() carries no amounts")
+	}
+	wrapped := fmt.Errorf("dispatch create_issue: enqueue task for issue: %w", budget)
+
+	reason, code := dispatchFailure(wrapped)
+	if code != dispatch.ReasonBudgetExceeded {
+		t.Errorf("reason code = %q, want budget_exceeded", code)
+	}
+	if strings.ContainsAny(reason, "0123456789") {
+		t.Errorf("persisted reason %q leaks budget amounts", reason)
+	}
+	if reason != budget.PublicReason() {
+		t.Errorf("persisted reason = %q, want %q", reason, budget.PublicReason())
+	}
+
+	// An ordinary failure keeps its own message and classification.
+	plain := errors.New("create issue: connection reset")
+	if reason, code := dispatchFailure(plain); reason != plain.Error() || code != dispatch.ReasonInternalError {
+		t.Errorf("plain failure = %q/%q, want %q/internal_error", reason, code, plain.Error())
+	}
+}
+
+// The webhook delivery worker stores the returned error's message verbatim in
+// webhook_delivery.error, so the error handed back up the chain must carry the
+// public reason too — while still classifying by type for everyone who reads
+// it with errors.As.
+func TestPublicDispatchErrorKeepsTheTypeAndDropsTheAmounts(t *testing.T) {
+	budget := &RuntimeBudgetExceededError{
+		Scope:      RuntimeBudgetScopeRuntime,
+		Period:     pricing.PeriodDaily,
+		UsedTicks:  pricing.USDToTicks(12.5),
+		LimitTicks: pricing.USDToTicks(10),
+	}
+	err := publicDispatchError("dispatch create_issue", fmt.Errorf("enqueue task for issue: %w", budget))
+
+	if strings.ContainsAny(err.Error(), "0123456789") {
+		t.Errorf("returned error %q leaks budget amounts into webhook_delivery.error", err.Error())
+	}
+	if !strings.HasPrefix(err.Error(), "dispatch create_issue: ") {
+		t.Errorf("returned error %q lost its stage prefix", err.Error())
+	}
+	var got *RuntimeBudgetExceededError
+	if !errors.As(err, &got) {
+		t.Fatal("errors.As no longer reaches the budget refusal through the public wrap")
+	}
+	if dispatchFailReasonCode(err) != dispatch.ReasonBudgetExceeded {
+		t.Error("the public wrap broke reason-code classification")
+	}
+	// Attribution and every other typed check must survive the same wrap.
+	if !errors.Is(publicDispatchError("dispatch run_only", ErrAttributionFailClosed), ErrAttributionFailClosed) {
+		t.Error("errors.Is no longer reaches a sentinel through the public wrap")
+	}
+}
+
 // TestAgentReadinessVerdict is the regression for Elon must-fix 2, case 2: a
 // runtime-availability failure must be classified from the agent's and
 // runtime's own state, not from the reason text. The three runtime failures are
