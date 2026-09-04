@@ -83,7 +83,9 @@ type runtimeSpend struct {
 }
 
 // ticks returns the spend of one scope in one period. An invalid ownerUserID
-// asks for the runtime total; a user with no spend reads as zero.
+// asks for the runtime total; a user with no spend reads as zero. Only the
+// periods loadRuntimeSpend was asked for are complete — a period outside that
+// set was never scanned back to its own start, so it reads low.
 func (s runtimeSpend) ticks(p pricing.Period, ownerUserID pgtype.UUID) int64 {
 	if !ownerUserID.Valid {
 		return s.total[p]
@@ -91,9 +93,35 @@ func (s runtimeSpend) ticks(p pricing.Period, ownerUserID pgtype.UUID) int64 {
 	return s.byOwner[p][util.UUIDToString(ownerUserID)]
 }
 
-// loadRuntimeSpend reads the spend of every scope and period of one runtime in
-// one query, so a check or a status read costs one aggregate over task_usage
-// instead of one per (budget row, period).
+// budgetPeriods returns the periods that carry a configured limit on at least
+// one of the given rows, in AllPeriods order. Those are exactly the periods a
+// caller ever reads back out of the loaded spend — evaluateBudgetRow and
+// scopeStatus both skip a period with no limit — so they are also the only
+// ones the spend query has to reach back for.
+func budgetPeriods(rows []db.RuntimeCostBudget) []pricing.Period {
+	out := make([]pricing.Period, 0, len(pricing.AllPeriods))
+	for _, p := range pricing.AllPeriods {
+		for _, row := range rows {
+			if _, ok := budgetLimit(row, p); ok {
+				out = append(out, p)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// loadRuntimeSpend reads the spend of every scope in one query, so a check or a
+// status read costs one aggregate over task_usage instead of one per (budget
+// row, period).
+//
+// periods names which windows the caller will actually read; it comes from
+// budgetPeriods, and only those periods are guaranteed correct in the result.
+// It decides the query's scan floor: a runtime whose only budget is a daily cap
+// scans from midnight, not from the LEAST of all three period starts, which
+// would have read a month of task_usage on every enqueue to answer a question
+// about today. The three FILTER starts are unchanged, so each requested period
+// still picks its own rows out of that scan.
 //
 // The database returns raw sums per (owner, provider, model); pricing stays in
 // Go so the rate table, not the query, decides what an uncosted token costs.
@@ -101,7 +129,7 @@ func (s runtimeSpend) ticks(p pricing.Period, ownerUserID pgtype.UUID) int64 {
 // used to sum whole, so the runtime total rounds the rate-table estimate once
 // per owner rather than once overall — a sub-tick (1e-10 USD) difference on
 // unpriced usage only, and provider-reported cost is unaffected.
-func loadRuntimeSpend(ctx context.Context, q *db.Queries, runtimeID pgtype.UUID, now time.Time) (runtimeSpend, error) {
+func loadRuntimeSpend(ctx context.Context, q *db.Queries, runtimeID pgtype.UUID, now time.Time, periods []pricing.Period) (runtimeSpend, error) {
 	spend := runtimeSpend{
 		total:   make(map[pricing.Period]int64, len(pricing.AllPeriods)),
 		byOwner: make(map[pricing.Period]map[string]int64, len(pricing.AllPeriods)),
@@ -109,11 +137,25 @@ func loadRuntimeSpend(ctx context.Context, q *db.Queries, runtimeID pgtype.UUID,
 	for _, p := range pricing.AllPeriods {
 		spend.byOwner[p] = map[string]int64{}
 	}
+	// No period carries a limit, so nothing will be read: an all-zero spend is
+	// the right answer and costs no query. Both callers have a fast path that
+	// returns before this, so it only guards against a row whose three limits
+	// are NULL (which the API deletes rather than stores).
+	if len(periods) == 0 {
+		return spend, nil
+	}
 	periodStart := func(p pricing.Period) pgtype.Timestamptz {
 		return pgtype.Timestamptz{Time: pricing.PeriodStart(now, p), Valid: true}
 	}
+	scanFloor := pricing.PeriodStart(now, periods[0])
+	for _, p := range periods[1:] {
+		if start := pricing.PeriodStart(now, p); start.Before(scanFloor) {
+			scanFloor = start
+		}
+	}
 	rows, err := q.ListRuntimeSpendByOwner(ctx, db.ListRuntimeSpendByOwnerParams{
 		RuntimeID:    runtimeID,
+		ScanFloor:    pgtype.Timestamptz{Time: scanFloor, Valid: true},
 		DailyStart:   periodStart(pricing.PeriodDaily),
 		WeeklyStart:  periodStart(pricing.PeriodWeekly),
 		MonthlyStart: periodStart(pricing.PeriodMonthly),
@@ -193,7 +235,11 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 	if len(applicable) == 0 {
 		return nil
 	}
-	spend, err := loadRuntimeSpend(ctx, q, agent.RuntimeID, now)
+	applicableRows := make([]db.RuntimeCostBudget, 0, len(applicable))
+	for _, a := range applicable {
+		applicableRows = append(applicableRows, a.row)
+	}
+	spend, err := loadRuntimeSpend(ctx, q, agent.RuntimeID, now, budgetPeriods(applicableRows))
 	if err != nil {
 		return err
 	}
@@ -375,7 +421,7 @@ func (s *TaskService) RuntimeCostBudgetStatus(ctx context.Context, runtimeID pgt
 	if len(rows) == 0 {
 		return status, nil
 	}
-	spend, err := loadRuntimeSpend(ctx, s.Queries, runtimeID, now)
+	spend, err := loadRuntimeSpend(ctx, s.Queries, runtimeID, now, budgetPeriods(rows))
 	if err != nil {
 		return RuntimeBudgetStatus{}, err
 	}

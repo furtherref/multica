@@ -88,16 +88,24 @@ uses for budgets.
 
 ## Spend computation
 
-A sqlc query `ListRuntimeSpendByOwner(runtime_id, daily_start,
+A sqlc query `ListRuntimeSpendByOwner(runtime_id, scan_floor, daily_start,
 weekly_start, monthly_start)` mirrors `ListRuntimeUsageByAgent` but
 left-joins `agent`, groups by `agent.owner_id` alongside provider and model,
 and computes all three period windows in one pass with
 `FILTER (WHERE tu.created_at >= …)` aggregates. The three starts are not
 ordered against each other — the current Monday can fall before the first of
-the month — so the scan floors on their `LEAST` and each period picks its own
-rows. Go folds the result once into a `runtimeSpend`: per period, a runtime
-total and a map of `EstimateCostTicks` sums keyed by agent owner. Agents
-nobody owns contribute to the total only.
+the month — so each period picks its own rows with its own `FILTER` rather
+than sharing one window. Go folds the result once into a `runtimeSpend`: per
+period, a runtime total and a map of `EstimateCostTicks` sums keyed by agent
+owner. Agents nobody owns contribute to the total only.
+
+`scan_floor` is computed in Go by `budgetPeriods`, from the periods that carry
+a limit on some row of this runtime — not from all three starts. **Ruling:** a
+runtime whose only budget is a daily cap must not read a month of `task_usage`
+on every enqueue to answer a question about today. The periods left out of the
+floor are exactly the ones no caller reads back: `evaluateBudgetRow` and
+`scopeStatus` both skip a period with no configured limit, and when no period
+has one the fast paths return before the query is issued at all.
 
 One read therefore answers every scope and every period, instead of one
 aggregate per (budget row, period): the budget endpoint of a runtime with N

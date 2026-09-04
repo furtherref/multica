@@ -51,8 +51,16 @@ DELETE FROM runtime_cost_budget WHERE workspace_id = $1 AND user_id = $2;
 -- the rows the provider did not price.
 --
 -- The three period starts are not ordered against each other -- the current
--- Monday can fall before or after the first of the month -- so the scan floor
--- is their LEAST, and each period picks its own rows with a FILTER.
+-- Monday can fall before or after the first of the month -- so each period
+-- picks its own rows with a FILTER rather than relying on one window.
+--
+-- scan_floor is computed in Go from the periods that actually carry a limit on
+-- some row of this runtime (budgetPeriods in runtime_cost_budget.go), NOT from
+-- all three starts. A workspace with only a daily cap would otherwise read a
+-- month of task_usage on every enqueue to answer a question about today. The
+-- periods left out of the floor are exactly the ones no caller reads back:
+-- evaluateBudgetRow and scopeStatus both skip a period with no configured
+-- limit.
 SELECT
     a.owner_id,
     LOWER(tu.provider) AS provider,
@@ -76,7 +84,7 @@ FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 LEFT JOIN agent a ON a.id = atq.agent_id
 WHERE atq.runtime_id = $1
-  AND tu.created_at >= LEAST(@daily_start::timestamptz, @weekly_start::timestamptz, @monthly_start::timestamptz)
+  AND tu.created_at >= @scan_floor::timestamptz
 GROUP BY a.owner_id, LOWER(tu.provider), tu.model;
 
 -- name: MarkRuntimeCostBudgetNotified :execrows

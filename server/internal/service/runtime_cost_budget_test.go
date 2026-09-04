@@ -586,7 +586,7 @@ func TestLoadRuntimeSpendBatchesEveryPeriodAndOwner(t *testing.T) {
 	seedSpend(t, ctx, pool, secondAgentID, issueID, 20, inWeekOnly)
 	seedSpend(t, ctx, pool, ownerlessAgentID, issueID, 100, inDay)
 
-	spend, err := loadRuntimeSpend(ctx, q, firstAgent.RuntimeID, now)
+	spend, err := loadRuntimeSpend(ctx, q, firstAgent.RuntimeID, now, pricing.AllPeriods)
 	if err != nil {
 		t.Fatalf("loadRuntimeSpend: %v", err)
 	}
@@ -620,6 +620,61 @@ func TestLoadRuntimeSpendBatchesEveryPeriodAndOwner(t *testing.T) {
 	// inheriting the total.
 	if got := spend.ticks(pricing.PeriodMonthly, util.MustParseUUID(newAutopilotIdempotencyKey())); got != 0 {
 		t.Errorf("unknown owner monthly = %d ticks, want 0", got)
+	}
+
+	// The scan floor follows the periods the caller asked for, not the LEAST of
+	// all three starts: a runtime whose only budget is a daily cap must not read
+	// a month of task_usage on every enqueue to answer a question about today.
+	// It is observable in the result — the weekly window, which this caller did
+	// not ask for, comes back holding only today's row because the earlier ones
+	// were never scanned.
+	dailyOnly, err := loadRuntimeSpend(ctx, q, firstAgent.RuntimeID, now, []pricing.Period{pricing.PeriodDaily})
+	if err != nil {
+		t.Fatalf("loadRuntimeSpend daily-only: %v", err)
+	}
+	if got, want := dailyOnly.ticks(pricing.PeriodDaily, firstOwner), pricing.USDToTicks(1); got != want {
+		t.Errorf("daily-only first owner daily = $%.2f, want $1.00", pricing.TicksToUSD(got))
+	}
+	if got, want := dailyOnly.ticks(pricing.PeriodWeekly, firstOwner), pricing.USDToTicks(1); got != want {
+		t.Errorf("daily-only scan floor reached back past today: weekly = $%.2f, want only today's $1.00",
+			pricing.TicksToUSD(got))
+	}
+}
+
+// budgetPeriods decides that scan floor, and reads across every row of the
+// runtime: one member's weekly cap widens the window the runtime-total row's
+// daily cap would have used on its own.
+func TestBudgetPeriodsCoversEveryConfiguredPeriodOnAnyRow(t *testing.T) {
+	ticks := func(usd float64) pgtype.Int8 {
+		return pgtype.Int8{Int64: pricing.USDToTicks(usd), Valid: true}
+	}
+	for _, tc := range []struct {
+		name string
+		rows []db.RuntimeCostBudget
+		want []pricing.Period
+	}{
+		{"no rows", nil, []pricing.Period{}},
+		{"all limits unset", []db.RuntimeCostBudget{{}}, []pricing.Period{}},
+		{
+			"daily only",
+			[]db.RuntimeCostBudget{{DailyLimitUsdTicks: ticks(5)}},
+			[]pricing.Period{pricing.PeriodDaily},
+		},
+		{
+			"union across rows, in AllPeriods order",
+			[]db.RuntimeCostBudget{
+				{MonthlyLimitUsdTicks: ticks(50)},
+				{DailyLimitUsdTicks: ticks(5)},
+			},
+			[]pricing.Period{pricing.PeriodDaily, pricing.PeriodMonthly},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := budgetPeriods(tc.rows)
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Fatalf("budgetPeriods = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
