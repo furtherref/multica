@@ -3708,17 +3708,17 @@ SET status = 'failed',
     error = $2,
     prepare_lease_expires_at = NULL
 WHERE agent_id = $3
-  AND runtime_id = ANY($4::uuid[])
+  AND runtime_id = $4
   AND status = 'deferred'
   AND fire_at <= now()
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision
 `
 
 type FailDueDeferredTasksForAgentOverBudgetParams struct {
-	FailureReason pgtype.Text   `json:"failure_reason"`
-	Error         pgtype.Text   `json:"error"`
-	AgentID       pgtype.UUID   `json:"agent_id"`
-	RuntimeIds    []pgtype.UUID `json:"runtime_ids"`
+	FailureReason pgtype.Text `json:"failure_reason"`
+	Error         pgtype.Text `json:"error"`
+	AgentID       pgtype.UUID `json:"agent_id"`
+	RuntimeID     pgtype.UUID `json:"runtime_id"`
 }
 
 // Retires one agent's due deferred tasks when its runtime cost budget is spent.
@@ -3734,12 +3734,17 @@ type FailDueDeferredTasksForAgentOverBudgetParams struct {
 // that difference is deliberate: a reached budget refuses the work regardless
 // of runtime state or slot occupancy, so leaving a due row deferred would only
 // hide a task nobody will ever run until its issue is closed.
+//
+// runtime_id is the agent's own runtime, taken from
+// ListDueDeferredTaskAgentsForRuntimes above, never the sweep's whole runtime
+// set: the budget priced for this agent belongs to that one runtime, so it may
+// only retire the rows sitting on it.
 func (q *Queries) FailDueDeferredTasksForAgentOverBudget(ctx context.Context, arg FailDueDeferredTasksForAgentOverBudgetParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, failDueDeferredTasksForAgentOverBudget,
 		arg.FailureReason,
 		arg.Error,
 		arg.AgentID,
-		arg.RuntimeIds,
+		arg.RuntimeID,
 	)
 	if err != nil {
 		return nil, err
@@ -5918,33 +5923,46 @@ func (q *Queries) ListChatFinalizeDeferredExpired(ctx context.Context, arg ListC
 }
 
 const listDueDeferredTaskAgentsForRuntimes = `-- name: ListDueDeferredTaskAgentsForRuntimes :many
-SELECT DISTINCT t.agent_id
+SELECT DISTINCT t.agent_id, t.runtime_id
 FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id AND a.runtime_id = t.runtime_id
 WHERE t.runtime_id = ANY($1::uuid[])
   AND t.status = 'deferred'
   AND t.fire_at <= now()
 `
 
-// The agents that own at least one deferred task whose fire_at has passed on
-// one of these runtimes. Read immediately before promotion so a reached runtime
-// cost budget can retire those rows instead of making them claimable. Kept
-// deliberately narrow (no fences, no ordering): it only decides WHICH agents to
-// price, and the promotion query below still owns which rows may be promoted.
-// Returns nothing on the common path, so an idle claim poll pays one index
-// probe and skips the budget work entirely.
-func (q *Queries) ListDueDeferredTaskAgentsForRuntimes(ctx context.Context, runtimeIds []pgtype.UUID) ([]pgtype.UUID, error) {
+type ListDueDeferredTaskAgentsForRuntimesRow struct {
+	AgentID   pgtype.UUID `json:"agent_id"`
+	RuntimeID pgtype.UUID `json:"runtime_id"`
+}
+
+// The (agent, runtime) pairs that own at least one deferred task whose fire_at
+// has passed on one of these runtimes. Read immediately before promotion so a
+// reached runtime cost budget can retire those rows instead of making them
+// claimable. Kept deliberately narrow (no fences, no ordering): it only decides
+// WHICH agents to price, and the promotion query below still owns which rows
+// may be promoted. Returns nothing on the common path, so an idle claim poll
+// pays one index probe and skips the budget work entirely.
+//
+// The join pins a.runtime_id = t.runtime_id, so the runtime returned is both
+// the one these rows sit on and the one the agent is bound to, and the caller
+// prices exactly the budget those rows would spend against. A rebound agent's
+// rows left behind on its old runtime are therefore not this gate's business at
+// all: they are neither retired by the new runtime's budget nor promoted past
+// the old runtime's, they simply promote on the old runtime's own terms.
+func (q *Queries) ListDueDeferredTaskAgentsForRuntimes(ctx context.Context, runtimeIds []pgtype.UUID) ([]ListDueDeferredTaskAgentsForRuntimesRow, error) {
 	rows, err := q.db.Query(ctx, listDueDeferredTaskAgentsForRuntimes, runtimeIds)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []pgtype.UUID{}
+	items := []ListDueDeferredTaskAgentsForRuntimesRow{}
 	for rows.Next() {
-		var agent_id pgtype.UUID
-		if err := rows.Scan(&agent_id); err != nil {
+		var i ListDueDeferredTaskAgentsForRuntimesRow
+		if err := rows.Scan(&i.AgentID, &i.RuntimeID); err != nil {
 			return nil, err
 		}
-		items = append(items, agent_id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

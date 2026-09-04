@@ -356,6 +356,116 @@ func TestRetrySuppressedWhenTheAgentCannotBeLoaded(t *testing.T) {
 	}
 }
 
+// Every blocked agent on one runtime measures itself against the same budget
+// rows and the same spend, so the sweep must read them once per runtime rather
+// than once per agent. A shared machine with a reached runtime-total cap is
+// exactly where the old shape was worst: N agents, N budget lookups, N
+// aggregates over task_usage, on every claim poll.
+func TestDeferredBudgetSweepPricesEachRuntimeOnce(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, ownerID, firstAgentID, issueID := seedAttributionFixture(t, pool)
+	fx := testutil.New(pool, workspaceID, ownerID)
+	cleanupBudgetNotices(t, fx, workspaceID)
+	firstAgent, err := q.GetAgent(ctx, util.MustParseUUID(firstAgentID))
+	if err != nil {
+		t.Fatalf("load agent: %v", err)
+	}
+	runtimeID := util.UUIDToString(firstAgent.RuntimeID)
+	_, secondAgentID := seedSecondOwnerAgent(t, ctx, pool, workspaceID, runtimeID)
+
+	// A runtime-total budget binds both owners' agents at once.
+	daily := 5.0
+	seedBudget(t, ctx, q, workspaceID, runtimeID, nil, &daily, nil, nil)
+	seedSpend(t, ctx, pool, firstAgentID, issueID, 5, time.Now().Add(-time.Minute))
+
+	due := time.Now().Add(-time.Minute)
+	firstTaskID := fx.Task(t, firstAgentID, testutil.Cols{
+		"runtime_id": runtimeID, "issue_id": issueID, "status": "deferred", "fire_at": due,
+	})
+	secondTaskID := fx.Task(t, secondAgentID, testutil.Cols{
+		"runtime_id": runtimeID, "issue_id": issueID, "status": "deferred", "fire_at": due,
+	})
+
+	counting := &countingDBTX{DBTX: pool}
+	svc := &TaskService{Queries: db.New(counting), TxStarter: pool, Bus: events.New()}
+	svc.failDueDeferredTasksOverBudget(ctx, []pgtype.UUID{firstAgent.RuntimeID})
+
+	if n := counting.calls("ListRuntimeCostBudgets"); n != 1 {
+		t.Errorf("budget lookups = %d, want exactly 1 for the runtime", n)
+	}
+	if n := counting.calls("ListRuntimeSpendByOwner"); n != 1 {
+		t.Errorf("spend queries = %d, want exactly 1 for the runtime", n)
+	}
+	for _, taskID := range []string{firstTaskID, secondTaskID} {
+		var status, failureReason string
+		fx.QueryRow(t, `SELECT status, COALESCE(failure_reason, '') FROM agent_task_queue WHERE id = $1`, taskID).
+			Scan(&status, &failureReason)
+		if status != "failed" || failureReason != string(taskfailure.ReasonBudgetExceeded) {
+			t.Errorf("task %s = %s/%s, want failed/budget_exceeded", taskID, status, failureReason)
+		}
+	}
+}
+
+// An agent that was rebound to another runtime leaves rows behind on the old
+// one. The gate must judge those rows by the runtime they are ON, not by the
+// runtime the agent points at now: pricing the new runtime's budget and then
+// failing rows on the old one retires work no budget refused. Rows whose agent
+// has moved away are simply not this gate's business — they promote or not on
+// the old runtime's own terms.
+func TestDueDeferredTasksIgnoreAgentsReboundToAnotherRuntime(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, ownerID, agentID, issueID := seedAttributionFixture(t, pool)
+	fx := testutil.New(pool, workspaceID, ownerID)
+	cleanupBudgetNotices(t, fx, workspaceID)
+	agent, err := q.GetAgent(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("load agent: %v", err)
+	}
+	oldRuntimeID := util.UUIDToString(agent.RuntimeID)
+
+	// A second, over-budget runtime, and an agent that has been rebound to it
+	// while its deferred row stayed on the old one.
+	var newRuntimeID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (workspace_id, name, runtime_mode, provider, status, device_info, metadata, owner_id)
+		VALUES ($1, 'rebound-runtime', 'cloud', 'codex', 'online', '', '{}'::jsonb, $2)
+		RETURNING id`, workspaceID, ownerID).Scan(&newRuntimeID); err != nil {
+		t.Fatalf("seed second runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, newRuntimeID)
+	})
+
+	reboundUserID, reboundAgentID := seedSecondOwnerAgent(t, ctx, pool, workspaceID, newRuntimeID)
+	daily := 5.0
+	seedBudget(t, ctx, q, workspaceID, newRuntimeID, &reboundUserID, &daily, nil, nil)
+	seedSpend(t, ctx, pool, reboundAgentID, issueID, 5, time.Now().Add(-time.Minute))
+
+	leftBehindTaskID := fx.Task(t, reboundAgentID, testutil.Cols{
+		"runtime_id": oldRuntimeID, "issue_id": issueID, "status": "deferred",
+		"fire_at": time.Now().Add(-time.Minute),
+	})
+
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	if err := svc.PromoteDueDeferredTasksForRuntime(ctx, agent.RuntimeID); err != nil {
+		t.Fatalf("PromoteDueDeferredTasksForRuntime: %v", err)
+	}
+
+	var status, failureReason string
+	fx.QueryRow(t, `SELECT status, COALESCE(failure_reason, '') FROM agent_task_queue WHERE id = $1`, leftBehindTaskID).
+		Scan(&status, &failureReason)
+	if failureReason == string(taskfailure.ReasonBudgetExceeded) {
+		t.Fatalf("a rebound agent's row on the old runtime was retired by the NEW runtime's budget (status %s)", status)
+	}
+	if status != "queued" {
+		t.Fatalf("left-behind deferred task = %q, want queued: the old runtime has no budget", status)
+	}
+}
+
 // The retry helper both auto-retry entry points share fails closed: an
 // unreadable budget suppresses the retry rather than spending against a limit
 // the server could not check.

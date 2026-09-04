@@ -188,14 +188,32 @@ executing agent is known and before the row is written:
   that may not have been reached yet; the only moment that matters is when it
   would start spending. `failDueDeferredTasksOverBudget` runs immediately
   before `PromoteDueDeferredTasksForRuntime(s)` in both the single- and
-  multi-runtime claim paths: it prices each agent that owns a due deferred
-  row and, for a blocked one, flips that agent's due rows to `failed` with
-  `failure_reason = 'budget_exceeded'` (a new
+  multi-runtime claim paths: it groups the due `(agent, runtime)` pairs by
+  runtime, reads that runtime's budget rows and spend ONCE however many agents
+  share it, evaluates each agent against them with the same
+  `applicableBudgetRows` / `firstReachedBudget` helpers the enqueue gate uses,
+  and for a blocked one flips that agent's due rows on that runtime to `failed`
+  with `failure_reason = 'budget_exceeded'` (a new
   `taskfailure.ReasonBudgetExceeded`, sharing the dispatch reason's wire
   value) so the task is visible as a terminal outcome instead of held
   silently. One refusal never stops the sweep — every other agent's rows
   promote in the same tick — and an unreadable budget leaves that agent's
   rows to promote rather than retiring a member's work over a transient read.
+  The pairs come from a query that joins `agent ON a.id = t.agent_id AND
+  a.runtime_id = t.runtime_id`, so the budget priced is always the one those
+  rows would actually spend against: an agent rebound to another runtime leaves
+  rows behind that this gate does not touch at all — neither retired by the new
+  runtime's budget nor promoted past the old runtime's.
+  **Ruling:** the fail is best-effort against a concurrent promotion. The two
+  are separate statements with no transaction around them, so a row that comes
+  due in the gap — or that another daemon's claim loop promotes there — can
+  still reach `queued` unpriced. Joining them costs more than it buys: the
+  promotion's unique-violation on `idx_one_pending_task_per_issue_agent_v2` is
+  tolerated today (one row losing its slot must not fail the claim), and inside
+  a transaction that error would poison the fail too. The window is one tick
+  wide, every row in it passed its own enqueue-time gate, and the overshoot is
+  the same bounded kind already accepted for tasks in flight when a limit is
+  crossed.
   **Ruling:** the fail is scoped wider than the promotion it precedes. It
   retires every due deferred row of a blocked agent on that runtime, while
   promotion additionally requires the runtime online and fresh, an unoccupied

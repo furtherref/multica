@@ -4077,7 +4077,7 @@ func (s *TaskService) cancelSupersededDeferredRetries(ctx context.Context, runti
 
 // failDueDeferredTasksOverBudget retires the due deferred tasks of every agent
 // whose runtime cost budget is already spent, so the promotion that follows
-// cannot make them claimable.
+// does not make them claimable.
 //
 // The budget is checked at promotion, not at creation: a fallback armed hours
 // ago is a prediction about a limit that may not have been reached yet, and the
@@ -4087,22 +4087,78 @@ func (s *TaskService) cancelSupersededDeferredRetries(ctx context.Context, runti
 // silently until its issue is closed. checkRuntimeCostBudget files the
 // per-period notice that explains it.
 //
+// Best-effort against a concurrent promotion, deliberately. The fail and the
+// promotion are separate statements with no transaction around them, so a row
+// that becomes due in the gap — or that another daemon's claim loop promotes
+// there — can still reach 'queued' unpriced. Joining them into one transaction
+// would cost more than it buys: the promotion's unique-violation on
+// idx_one_pending_task_per_issue_agent_v2 is tolerated today (isDuplicate-
+// PendingTaskErr, one row losing its slot must not fail the claim), and inside
+// a transaction that error would poison the fail as well. The window is one
+// tick wide, every row that reaches it passed its own enqueue-time gate, and
+// the overshoot it allows is the same bounded kind already accepted for tasks
+// in flight when a limit is crossed.
+//
 // One agent's refusal never stops the sweep: every other agent's rows still
-// promote in the same tick. A non-budget error (an unreadable budget, a missing
-// agent row) is logged and skipped, leaving that agent's rows to promote
-// normally — failing someone's queued work permanently over a transient read is
-// worse than one run against a limit the next tick re-checks, and every enqueue
-// path still fails closed on the same error.
+// promote in the same tick. A missing agent row is logged and skipped, leaving
+// that agent's rows to promote normally, and an unreadable budget or spend
+// leaves the whole runtime's rows to promote — failing someone's queued work
+// permanently over a transient read is worse than one run against a limit the
+// next tick re-checks, and every enqueue path still fails closed on the same
+// error.
 func (s *TaskService) failDueDeferredTasksOverBudget(ctx context.Context, runtimeIDs []pgtype.UUID) {
 	if len(runtimeIDs) == 0 {
 		return
 	}
-	agentIDs, err := s.Queries.ListDueDeferredTaskAgentsForRuntimes(ctx, runtimeIDs)
+	due, err := s.Queries.ListDueDeferredTaskAgentsForRuntimes(ctx, runtimeIDs)
 	if err != nil {
 		slog.Warn("deferred promotion budget gate: list due agents failed", "error", err)
 		return
 	}
+	if len(due) == 0 {
+		return
+	}
+	// Group by the runtime the rows sit on — which the query has already pinned
+	// to the agent's own runtime — so each runtime's budget rows and spend are
+	// read once however many blocked agents share it.
+	agentsByRuntime := map[string][]pgtype.UUID{}
+	runtimeByKey := map[string]pgtype.UUID{}
+	for _, row := range due {
+		key := util.UUIDToString(row.RuntimeID)
+		agentsByRuntime[key] = append(agentsByRuntime[key], row.AgentID)
+		runtimeByKey[key] = row.RuntimeID
+	}
 	now := time.Now()
+	for key, agentIDs := range agentsByRuntime {
+		s.failDueDeferredTasksOnRuntimeOverBudget(ctx, runtimeByKey[key], agentIDs, now)
+	}
+}
+
+// failDueDeferredTasksOnRuntimeOverBudget is the per-runtime half of the sweep.
+// It reads the runtime's budget rows and its spend once and then evaluates every
+// agent against them with the same pure helpers checkRuntimeCostBudget uses, so
+// N blocked agents on one machine cost one budget lookup and one spend
+// aggregate instead of N of each.
+func (s *TaskService) failDueDeferredTasksOnRuntimeOverBudget(ctx context.Context, runtimeID pgtype.UUID, agentIDs []pgtype.UUID, now time.Time) {
+	rows, err := s.Queries.ListRuntimeCostBudgets(ctx, runtimeID)
+	if err != nil {
+		slog.Warn("deferred promotion budget gate: list budgets failed",
+			"runtime_id", util.UUIDToString(runtimeID), "error", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	type candidate struct {
+		agent      db.Agent
+		applicable []scopedBudgetRow
+	}
+	candidates := make([]candidate, 0, len(agentIDs))
+	// The spend query's scan floor covers the union of every candidate's rows,
+	// so one load answers for all of them without over-reading a period no
+	// budget on this runtime configures.
+	var pricedRows []db.RuntimeCostBudget
+	seenRow := map[string]bool{}
 	for _, agentID := range agentIDs {
 		agent, err := s.Queries.GetAgent(ctx, agentID)
 		if err != nil {
@@ -4110,25 +4166,49 @@ func (s *TaskService) failDueDeferredTasksOverBudget(ctx context.Context, runtim
 				"agent_id", util.UUIDToString(agentID), "error", err)
 			continue
 		}
-		budgetErr := s.checkRuntimeCostBudget(ctx, s.Queries, agent, now)
-		if budgetErr == nil {
+		applicable := applicableBudgetRows(rows, agent)
+		if len(applicable) == 0 {
 			continue
 		}
-		var exceeded *RuntimeBudgetExceededError
-		if !errors.As(budgetErr, &exceeded) {
-			slog.Warn("deferred promotion budget gate: budget check failed",
-				"agent_id", util.UUIDToString(agentID), "error", budgetErr)
+		candidates = append(candidates, candidate{agent: agent, applicable: applicable})
+		for _, a := range applicable {
+			if id := util.UUIDToString(a.row.ID); !seenRow[id] {
+				seenRow[id] = true
+				pricedRows = append(pricedRows, a.row)
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	spend, err := loadRuntimeSpend(ctx, s.Queries, runtimeID, now, budgetPeriods(pricedRows))
+	if err != nil {
+		slog.Warn("deferred promotion budget gate: load spend failed",
+			"runtime_id", util.UUIDToString(runtimeID), "error", err)
+		return
+	}
+	for _, c := range candidates {
+		row, exceeded := firstReachedBudget(c.applicable, spend, now)
+		if exceeded == nil {
 			continue
 		}
+		slog.Info("deferred promotion refused: runtime cost budget reached",
+			"runtime_id", util.UUIDToString(runtimeID), "agent_id", util.UUIDToString(c.agent.ID),
+			"scope", exceeded.Scope, "period", exceeded.Period,
+			"used_ticks", exceeded.UsedTicks, "limit_ticks", exceeded.LimitTicks)
+		// Same notice the enqueue gate files, and it deduplicates itself: one
+		// inbox item per (budget row, period) however many agents this sweep
+		// refuses against the same row.
+		s.notifyRuntimeBudgetExceeded(ctx, s.Queries, row, exceeded, c.agent.OwnerID)
 		failed, err := s.Queries.FailDueDeferredTasksForAgentOverBudget(ctx, db.FailDueDeferredTasksForAgentOverBudgetParams{
 			FailureReason: pgtype.Text{String: string(taskfailure.ReasonBudgetExceeded), Valid: true},
 			Error:         pgtype.Text{String: exceeded.PublicReason(), Valid: true},
-			AgentID:       agentID,
-			RuntimeIds:    runtimeIDs,
+			AgentID:       c.agent.ID,
+			RuntimeID:     runtimeID,
 		})
 		if err != nil {
 			slog.Warn("deferred promotion budget gate: fail due tasks failed",
-				"agent_id", util.UUIDToString(agentID), "error", err)
+				"agent_id", util.UUIDToString(c.agent.ID), "error", err)
 			continue
 		}
 		for _, task := range failed {

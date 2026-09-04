@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -678,21 +679,35 @@ func TestBudgetPeriodsCoversEveryConfiguredPeriodOnAnyRow(t *testing.T) {
 	}
 }
 
-// countingDBTX counts the statements a *db.Queries issues whose SQL names the
-// wanted query. sqlc keeps the `-- name: X :many` header inside the generated
-// SQL constant, so matching on the query name is exact. This package had no
-// query-counting helper before; this one stays minimal on purpose.
+// countingDBTX records the SQL of every statement a *db.Queries issues, so a
+// test can ask afterwards how many times a named query ran. sqlc keeps the
+// `-- name: X :many` header inside the generated SQL constant, so matching on
+// the query name is exact. This package had no query-counting helper before;
+// this one stays minimal on purpose.
 type countingDBTX struct {
 	db.DBTX
-	queryName string
-	calls     int
+	mu       sync.Mutex
+	executed []string
 }
 
 func (c *countingDBTX) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
-	if strings.Contains(sql, c.queryName) {
-		c.calls++
-	}
+	c.mu.Lock()
+	c.executed = append(c.executed, sql)
+	c.mu.Unlock()
 	return c.DBTX.Query(ctx, sql, args...)
+}
+
+// calls counts the recorded statements whose SQL names queryName.
+func (c *countingDBTX) calls(queryName string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, sql := range c.executed {
+		if strings.Contains(sql, queryName) {
+			n++
+		}
+	}
+	return n
 }
 
 // TestRuntimeCostBudgetStatusIssuesOneSpendQuery pins the cost of the budget
@@ -721,7 +736,7 @@ func TestRuntimeCostBudgetStatusIssuesOneSpendQuery(t *testing.T) {
 		seedBudget(t, ctx, q, workspaceID, runtimeID, &userIDs[i], &daily, &weekly, &monthly)
 	}
 
-	counting := &countingDBTX{DBTX: pool, queryName: "ListRuntimeSpendByOwner"}
+	counting := &countingDBTX{DBTX: pool}
 	svc := &TaskService{Queries: db.New(counting), TxStarter: pool, Bus: events.New()}
 	status, err := svc.RuntimeCostBudgetStatus(ctx, agent.RuntimeID, now)
 	if err != nil {
@@ -730,8 +745,8 @@ func TestRuntimeCostBudgetStatusIssuesOneSpendQuery(t *testing.T) {
 	if status.Runtime == nil || len(status.Users) != 3 {
 		t.Fatalf("status = %d user scopes, runtime scope present %t; want 3 and true", len(status.Users), status.Runtime != nil)
 	}
-	if counting.calls != 1 {
-		t.Fatalf("spend queries = %d, want exactly 1 for every scope and period", counting.calls)
+	if n := counting.calls("ListRuntimeSpendByOwner"); n != 1 {
+		t.Fatalf("spend queries = %d, want exactly 1 for every scope and period", n)
 	}
 	if got := status.Runtime.Periods[pricing.PeriodDaily].UsedTicks; got != pricing.USDToTicks(3) {
 		t.Fatalf("runtime daily used = $%.2f, want $3.00", pricing.TicksToUSD(got))

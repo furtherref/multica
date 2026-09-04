@@ -2297,15 +2297,23 @@ WHERE r.runtime_id = ANY(@runtime_ids::uuid[])
 RETURNING *;
 
 -- name: ListDueDeferredTaskAgentsForRuntimes :many
--- The agents that own at least one deferred task whose fire_at has passed on
--- one of these runtimes. Read immediately before promotion so a reached runtime
--- cost budget can retire those rows instead of making them claimable. Kept
--- deliberately narrow (no fences, no ordering): it only decides WHICH agents to
--- price, and the promotion query below still owns which rows may be promoted.
--- Returns nothing on the common path, so an idle claim poll pays one index
--- probe and skips the budget work entirely.
-SELECT DISTINCT t.agent_id
+-- The (agent, runtime) pairs that own at least one deferred task whose fire_at
+-- has passed on one of these runtimes. Read immediately before promotion so a
+-- reached runtime cost budget can retire those rows instead of making them
+-- claimable. Kept deliberately narrow (no fences, no ordering): it only decides
+-- WHICH agents to price, and the promotion query below still owns which rows
+-- may be promoted. Returns nothing on the common path, so an idle claim poll
+-- pays one index probe and skips the budget work entirely.
+--
+-- The join pins a.runtime_id = t.runtime_id, so the runtime returned is both
+-- the one these rows sit on and the one the agent is bound to, and the caller
+-- prices exactly the budget those rows would spend against. A rebound agent's
+-- rows left behind on its old runtime are therefore not this gate's business at
+-- all: they are neither retired by the new runtime's budget nor promoted past
+-- the old runtime's, they simply promote on the old runtime's own terms.
+SELECT DISTINCT t.agent_id, t.runtime_id
 FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id AND a.runtime_id = t.runtime_id
 WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
   AND t.status = 'deferred'
   AND t.fire_at <= now();
@@ -2324,6 +2332,11 @@ WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
 -- that difference is deliberate: a reached budget refuses the work regardless
 -- of runtime state or slot occupancy, so leaving a due row deferred would only
 -- hide a task nobody will ever run until its issue is closed.
+--
+-- runtime_id is the agent's own runtime, taken from
+-- ListDueDeferredTaskAgentsForRuntimes above, never the sweep's whole runtime
+-- set: the budget priced for this agent belongs to that one runtime, so it may
+-- only retire the rows sitting on it.
 UPDATE agent_task_queue
 SET status = 'failed',
     completed_at = now(),
@@ -2331,7 +2344,7 @@ SET status = 'failed',
     error = @error,
     prepare_lease_expires_at = NULL
 WHERE agent_id = @agent_id
-  AND runtime_id = ANY(@runtime_ids::uuid[])
+  AND runtime_id = @runtime_id
   AND status = 'deferred'
   AND fire_at <= now()
 RETURNING *;

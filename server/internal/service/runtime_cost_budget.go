@@ -200,6 +200,55 @@ func evaluateBudgetRow(row db.RuntimeCostBudget, scope RuntimeBudgetScope, spend
 	return nil
 }
 
+// scopedBudgetRow pairs a budget row with the scope it enforces for one agent.
+type scopedBudgetRow struct {
+	row   db.RuntimeCostBudget
+	scope RuntimeBudgetScope
+}
+
+// applicableBudgetRows selects the rows of a runtime that bind one agent: the
+// runtime-total row (user_id NULL) always, plus the row scoped to the agent's
+// owner if there is one. Rows belonging to other owners are dropped, which is
+// what makes a runtime whose budgets all belong to someone else cost no spend
+// query at all — the caller returns on an empty result before pricing anything.
+func applicableBudgetRows(rows []db.RuntimeCostBudget, agent db.Agent) []scopedBudgetRow {
+	applicable := make([]scopedBudgetRow, 0, len(rows))
+	for _, row := range rows {
+		scope := RuntimeBudgetScopeUser
+		if !row.UserID.Valid {
+			scope = RuntimeBudgetScopeRuntime
+		} else if !agent.OwnerID.Valid || util.UUIDToString(row.UserID) != util.UUIDToString(agent.OwnerID) {
+			continue
+		}
+		applicable = append(applicable, scopedBudgetRow{row: row, scope: scope})
+	}
+	return applicable
+}
+
+// budgetRowsOf drops the scopes, for budgetPeriods.
+func budgetRowsOf(applicable []scopedBudgetRow) []db.RuntimeCostBudget {
+	rows := make([]db.RuntimeCostBudget, 0, len(applicable))
+	for _, a := range applicable {
+		rows = append(rows, a.row)
+	}
+	return rows
+}
+
+// firstReachedBudget evaluates one agent's applicable rows against
+// already-loaded spend and returns the row that refused with its refusal, or a
+// nil error when every configured limit still has room. Pure: it neither reads
+// the database nor decides what a refusal means, so the single-agent enqueue
+// gate and the multi-agent deferred sweep can share one evaluation over one
+// loaded spend.
+func firstReachedBudget(applicable []scopedBudgetRow, spend runtimeSpend, now time.Time) (db.RuntimeCostBudget, *RuntimeBudgetExceededError) {
+	for _, a := range applicable {
+		if exceeded := evaluateBudgetRow(a.row, a.scope, spend, now); exceeded != nil {
+			return a.row, exceeded
+		}
+	}
+	return db.RuntimeCostBudget{}, nil
+}
+
 // checkRuntimeCostBudget refuses the enqueue when the agent's runtime total or
 // the agent owner's per-user budget is spent for the current UTC period. It
 // runs after attribution in every enqueue helper. Workspaces without budgets
@@ -215,48 +264,25 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 	if err != nil {
 		return fmt.Errorf("list runtime cost budgets: %w", err)
 	}
-	if len(rows) == 0 {
-		return nil
-	}
-	type applicableRow struct {
-		row   db.RuntimeCostBudget
-		scope RuntimeBudgetScope
-	}
-	applicable := make([]applicableRow, 0, len(rows))
-	for _, row := range rows {
-		scope := RuntimeBudgetScopeUser
-		if !row.UserID.Valid {
-			scope = RuntimeBudgetScopeRuntime
-		} else if !agent.OwnerID.Valid || util.UUIDToString(row.UserID) != util.UUIDToString(agent.OwnerID) {
-			continue
-		}
-		applicable = append(applicable, applicableRow{row: row, scope: scope})
-	}
+	applicable := applicableBudgetRows(rows, agent)
 	if len(applicable) == 0 {
 		return nil
 	}
-	applicableRows := make([]db.RuntimeCostBudget, 0, len(applicable))
-	for _, a := range applicable {
-		applicableRows = append(applicableRows, a.row)
-	}
-	spend, err := loadRuntimeSpend(ctx, q, agent.RuntimeID, now, budgetPeriods(applicableRows))
+	spend, err := loadRuntimeSpend(ctx, q, agent.RuntimeID, now, budgetPeriods(budgetRowsOf(applicable)))
 	if err != nil {
 		return err
 	}
-	for _, a := range applicable {
-		exceeded := evaluateBudgetRow(a.row, a.scope, spend, now)
-		if exceeded == nil {
-			continue
-		}
-		slog.Info("task enqueue refused: runtime cost budget reached",
-			"runtime_id", util.UUIDToString(a.row.RuntimeID), "scope", a.scope, "period", exceeded.Period,
-			"used_ticks", exceeded.UsedTicks, "limit_ticks", exceeded.LimitTicks)
-		// s.Queries, never q: q may be the caller's transaction, and the
-		// refusal returned below always rolls that transaction back.
-		s.notifyRuntimeBudgetExceeded(ctx, s.Queries, a.row, exceeded, agent.OwnerID)
-		return exceeded
+	row, exceeded := firstReachedBudget(applicable, spend, now)
+	if exceeded == nil {
+		return nil
 	}
-	return nil
+	slog.Info("task enqueue refused: runtime cost budget reached",
+		"runtime_id", util.UUIDToString(row.RuntimeID), "scope", exceeded.Scope, "period", exceeded.Period,
+		"used_ticks", exceeded.UsedTicks, "limit_ticks", exceeded.LimitTicks)
+	// s.Queries, never q: q may be the caller's transaction, and the refusal
+	// returned below always rolls that transaction back.
+	s.notifyRuntimeBudgetExceeded(ctx, s.Queries, row, exceeded, agent.OwnerID)
+	return exceeded
 }
 
 // notifyRuntimeBudgetExceeded creates one "limit reached" inbox item per
