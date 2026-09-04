@@ -4122,7 +4122,7 @@ func (s *TaskService) failDueDeferredTasksOverBudget(ctx context.Context, runtim
 		}
 		failed, err := s.Queries.FailDueDeferredTasksForAgentOverBudget(ctx, db.FailDueDeferredTasksForAgentOverBudgetParams{
 			FailureReason: pgtype.Text{String: string(taskfailure.ReasonBudgetExceeded), Valid: true},
-			Error:         pgtype.Text{String: exceeded.Error(), Valid: true},
+			Error:         pgtype.Text{String: exceeded.PublicReason(), Valid: true},
 			AgentID:       agentID,
 			RuntimeIds:    runtimeIDs,
 		})

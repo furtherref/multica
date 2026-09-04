@@ -1009,7 +1009,7 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 	if err := s.TaskSvc.checkRuntimeCostBudget(ctx, s.TaskSvc.Queries, agent, time.Now()); err != nil {
 		var budgetErr *RuntimeBudgetExceededError
 		if errors.As(err, &budgetErr) {
-			return &errDispatchSkipped{reason: formatAdmissionReason(ap, budgetErr.Error()), code: dispatch.ReasonBudgetExceeded}
+			return &errDispatchSkipped{reason: formatAdmissionReason(ap, budgetErr.PublicReason()), code: dispatch.ReasonBudgetExceeded}
 		}
 		return fmt.Errorf("check runtime cost budget: %w", err)
 	}

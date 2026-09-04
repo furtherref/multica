@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +70,12 @@ func TestAutopilotRunOnlyRefusedWhenBudgetReached(t *testing.T) {
 	}
 	if n := fx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE autopilot_run_id = $1`, runID); n != 0 {
 		t.Fatalf("refused run_only dispatch queued %d tasks, want 0", n)
+	}
+	// autopilot_run.failure_reason is readable by anyone who can see the
+	// autopilot, so the refusal string must not carry the limit or the running
+	// total that GET /budget gates behind runtime read access.
+	if strings.ContainsAny(updated.FailureReason.String, "0123456789") {
+		t.Fatalf("skipped run reason %q leaks budget amounts", updated.FailureReason.String)
 	}
 }
 
@@ -207,11 +214,17 @@ func TestDueDeferredTaskFailedWhenBudgetReached(t *testing.T) {
 		t.Fatalf("PromoteDueDeferredTasksForRuntime: %v", err)
 	}
 
-	var status, failureReason string
-	fx.QueryRow(t, `SELECT status, COALESCE(failure_reason, '') FROM agent_task_queue WHERE id = $1`, blockedTaskID).
-		Scan(&status, &failureReason)
+	var status, failureReason, taskError string
+	fx.QueryRow(t, `SELECT status, COALESCE(failure_reason, ''), COALESCE(error, '') FROM agent_task_queue WHERE id = $1`, blockedTaskID).
+		Scan(&status, &failureReason, &taskError)
 	if status != "failed" || failureReason != string(taskfailure.ReasonBudgetExceeded) {
 		t.Fatalf("blocked deferred task = %s/%s, want failed/budget_exceeded", status, failureReason)
+	}
+	// agent_task_queue.error is broadcast on task:failed to every workspace
+	// subscriber, so it must name the cause without the amounts GET /budget
+	// gates behind runtime read access.
+	if strings.ContainsAny(taskError, "0123456789") {
+		t.Fatalf("persisted task error %q leaks budget amounts", taskError)
 	}
 	fx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, okTaskID).Scan(&status)
 	if status != "queued" {

@@ -45,6 +45,20 @@ func (e *RuntimeBudgetExceededError) Error() string {
 		e.Scope, e.Period, pricing.TicksToUSD(e.LimitTicks), pricing.TicksToUSD(e.UsedTicks), e.ResetAt.UTC().Format(time.RFC3339))
 }
 
+// PublicReason names the refusal without any amount. Use it everywhere the
+// message is persisted or broadcast beyond the person who set the budget:
+// agent_task_queue.error (which task:failed republishes to every workspace
+// subscriber) and autopilot_run.failure_reason. GET /api/runtimes/{id}/budget
+// is gated on runtime read access and PUT deliberately withholds spend from a
+// writer who may not read a private runtime, so a limit or a running total
+// carried in one of those strings would hand the figures to the whole
+// workspace instead. Error() keeps the amounts for server logs and the
+// recipient-scoped inbox notice keeps them for the two people entitled to see
+// them.
+func (e *RuntimeBudgetExceededError) PublicReason() string {
+	return fmt.Sprintf("runtime cost budget reached (%s %s)", e.Scope, e.Period)
+}
+
 // budgetLimit returns the configured limit of one period on a row, or false.
 func budgetLimit(row db.RuntimeCostBudget, p pricing.Period) (int64, bool) {
 	var v pgtype.Int8

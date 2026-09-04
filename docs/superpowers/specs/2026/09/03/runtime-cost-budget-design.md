@@ -199,6 +199,18 @@ auto-commit connection, never inside the enqueue transaction (which the
 refusal rolls back), and the runtime and recipients are resolved before the
 `*_notified_period_start` claim so a failed lookup cannot consume a period.
 
+The amounts stay inside that notice. `RuntimeBudgetExceededError.Error()`
+names the limit, the running total and the reset time, and is used for server
+logs only; every string that is persisted or broadcast beyond the notice's
+recipients uses `PublicReason()` — `runtime cost budget reached (runtime
+daily)` — instead. That covers `agent_task_queue.error` (republished to every
+workspace subscriber on `task:failed`) and `autopilot_run.failure_reason`. A
+`GET /budget` read is gated on runtime read access and `PUT` withholds spend
+from a writer who may not read a private runtime, so a limit carried in one of
+those columns would be a workspace-wide way around both. The `409`
+`budget_exceeded` responses already answer with the generic
+`dispatchBlockedFallbackMessage`, which carries no figures.
+
 ## API
 
 `GET /api/runtimes/{id}/budget` (runtime read access):
