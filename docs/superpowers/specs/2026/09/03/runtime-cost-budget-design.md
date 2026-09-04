@@ -2,11 +2,31 @@
 
 ## Goal
 
-Let workspace owners and admins cap the estimated model spend of a runtime.
+Let a runtime's owner cap the estimated model spend of their runtime.
 A runtime gets an optional total budget, and individual users can get their
 own budget on that runtime. Each budget is a set of daily, weekly and monthly
 USD limits; an empty limit means unlimited. When a limit is reached, new agent
 runs that would spend against it are refused until the period rolls over.
+
+## Amendment - 2026-09-04: budgets are the runtime owner's call
+
+The first implementation gated `PUT /api/runtimes/{id}/budget` on the
+workspace owner/admin role and described budgets as workspace governance.
+That is wrong for this product: a runtime is one person's machine, spending
+their credentials and their local quota, which is exactly why
+`canSetRuntimeVisibility` is owner-only. A cap on that spend is the same kind
+of decision, so an admin who could set it would be budgeting somebody else's
+account.
+
+The permission is therefore narrowed to the runtime owner alone, with no
+workspace-owner or admin override. An ownerless runtime (profile-created, or
+an owner since removed) has nobody who qualifies, so its budget is read-only.
+`can_manage` in the `GET` body follows the same rule. Notification recipients
+are unchanged: the refused agent's owner and the runtime owner.
+
+The rest of this document reflects the amended rule. Dropping the `204`
+branch follows from it: the only writer left is a reader of their own runtime,
+so there is never a body to withhold.
 
 ## Decisions taken with the product owner
 
@@ -302,8 +322,9 @@ those columns would be a workspace-wide way around both. The `409`
 }
 ```
 
-`PUT /api/runtimes/{id}/budget` (workspace owner or admin via
-`requireWorkspaceRole`) replaces the whole budget set:
+`PUT /api/runtimes/{id}/budget` (the runtime owner only, via
+`requireWorkspaceMember` plus `canManageRuntimeBudget`) replaces the whole
+budget set:
 
 ```json
 { "runtime": { "daily_usd": 20, "weekly_usd": null, "monthly_usd": null },
@@ -313,9 +334,10 @@ those columns would be a workspace-wide way around both. The `409`
 Validation: amounts are finite, greater than zero, at most 1,000,000 USD,
 with at most two decimals; each `user_id` is a workspace member and appears
 once. Rows that end up with no limits are deleted. The response is the
-`GET` body, except when the writer cannot read the runtime (an admin on
-another member's private runtime): then the reply is `204` with no body,
-because the spend figures are the read that `GET` denies.
+`GET` body. The writer is always the runtime owner, who may read their own
+runtime, so there is no case where the spend has to be withheld and no `204`
+branch. (The API client still tolerates a bodyless `204` — an installed
+desktop build may talk to an older backend.)
 
 ## Frontend
 
@@ -325,8 +347,8 @@ because the spend figures are the read that `GET` denies.
   `packages/core/types/agent.ts`; `getRuntimeBudget` and
   `updateRuntimeBudget` in the API client; `runtimeBudgetOptions(runtimeId)`
   under `runtimeKeys`; `useUpdateRuntimeBudget(wsId)` invalidating that key.
-- `canManageRuntimeBudget(ctx)` in `permissions/rules.ts` reusing
-  `isAdminLike`.
+- `canManageRuntimeBudget(runtime, ctx)` in `permissions/rules.ts`, an
+  owner-identity check with no admin override.
 - `budget_exceeded` added wherever `attribution_blocked` is classified, in
   the chat send-failure toasts, and in the mobile dispatch-reason mapper;
   `runtime_budget_exceeded` added to the inbox item type union, the views
@@ -371,11 +393,13 @@ Locale keys under `runtimes.budget.*` and the inbox and issues bundles in
   and owner from one call (including a week that starts before the month),
   and the budget endpoint issues exactly one spend query for three per-user
   scopes.
-- Handler: `PUT` returns 403 for members, 200 for owner and admin, rejects
-  invalid amounts and non-members, deletes emptied rows; `GET` reports used
-  and reached.
+- Handler: `PUT` returns 200 for the runtime owner even when they are a plain
+  workspace member, 403 for the workspace owner and for an admin who does not
+  own the runtime, 403 for everyone on an ownerless runtime; it rejects
+  invalid amounts and non-members and deletes emptied rows. `GET` reports used
+  and reached, and `can_manage` is true only for the runtime owner.
 - `packages/core`: schema malformed-response test, permission rule test,
   query key test.
 - `packages/views`: `BudgetSection` empty and populated states, collapsed by
   default with the toggle expanding user rows and the reached badge, button
-  gated by role, dialog save wiring.
+  gated by runtime ownership, dialog save wiring.
