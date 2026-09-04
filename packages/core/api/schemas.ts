@@ -1797,6 +1797,7 @@ const OptionalStringArraySchema = z.preprocess(
 // pricing on the counters it does have, and the "we have no usage at all" case
 // is carried by the field's absence, not by a zeroed entry.
 const TaskUsageSchema = z.object({
+  pricing_date: z.string().optional(),
   provider: z.string().optional(),
   model: z.string().default(""),
   input_tokens: z.number().default(0),

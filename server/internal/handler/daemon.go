@@ -5219,6 +5219,7 @@ func (h *Handler) hydrateTaskUsage(ctx context.Context, issueID pgtype.UUID, res
 		}
 		taskID := uuidToString(row.TaskID)
 		byTask[taskID] = append(byTask[taskID], TaskUsageData{
+			PricingDate:      row.PricingDate.Time.Format("2006-01-02"),
 			Provider:         row.Provider,
 			Model:            row.Model,
 			InputTokens:      row.InputTokens,

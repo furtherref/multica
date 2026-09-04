@@ -32,11 +32,17 @@ ORDER BY model;
 -- longer be priced at all. The execution log sums the rows per task; the usage
 -- panel shows them split.
 --
+-- pricing_date is the UTC day the usage was recorded, so effective-dated
+-- provider rates (Copilot's Sol promotion) price an old run at the rate that
+-- applied then, not at today's -- the same contract as the runtime and
+-- dashboard usage rows.
+--
 -- Ordering is by task then model so the client can group by task_id in one
 -- pass. Uses idx_agent_task_queue_issue_id (migration 035) + the task_usage
 -- task_id index (migration 032).
 SELECT
     tu.task_id,
+    DATE(tu.created_at AT TIME ZONE 'UTC') AS pricing_date,
     tu.provider,
     tu.model,
     tu.input_tokens,

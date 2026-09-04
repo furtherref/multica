@@ -433,6 +433,8 @@ export interface AgentTask {
  * when cost_usd_ticks is absent", which is what the estimator already assumes.
  */
 export interface TaskUsage {
+  // UTC day the usage was recorded; selects effective-dated provider rates.
+  pricing_date?: string;
   provider?: string;
   model: string;
   input_tokens: number;
