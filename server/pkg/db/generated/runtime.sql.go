@@ -1068,6 +1068,35 @@ func (q *Queries) MarkAgentRuntimeOnline(ctx context.Context, id pgtype.UUID) (A
 	return i, err
 }
 
+const markAgentRuntimeOnlineIfOffline = `-- name: MarkAgentRuntimeOnlineIfOffline :execrows
+UPDATE agent_runtime
+SET status = 'online', last_seen_at = now(), updated_at = now()
+WHERE agent_runtime.id = $1
+  AND agent_runtime.status <> 'online'
+  AND (agent_runtime.owner_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM "user" u
+      WHERE u.id = agent_runtime.owner_id AND u.account_status = 'suspended'
+  ))
+`
+
+// Reports whether this heartbeat performed an offline -> online transition.
+// The conditional update prevents concurrent stale heartbeat snapshots from
+// publishing duplicate lifecycle refresh events after another beat already
+// recovered the runtime.
+//
+// Carries the same suspended-owner predicate as MarkAgentRuntimeOnline: this
+// is the first write the recovery path tries, so without it a heartbeat
+// would resurrect a force-offlined runtime here and never reach the guarded
+// query below. Zero rows for a suspended owner then falls through to
+// MarkAgentRuntimeOnline, which refuses the flip with pgx.ErrNoRows.
+func (q *Queries) MarkAgentRuntimeOnlineIfOffline(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markAgentRuntimeOnlineIfOffline, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markRuntimesOfflineByIDs = `-- name: MarkRuntimesOfflineByIDs :many
 UPDATE agent_runtime
 SET status = 'offline', updated_at = now()
