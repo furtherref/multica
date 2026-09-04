@@ -845,6 +845,11 @@ func (h *Handler) createAgentCommentSubIssue(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *Handler) writeSourceContextError(w http.ResponseWriter, err error, limits service.SourceContextLimitUsage) {
+	var budget *service.RuntimeBudgetExceededError
+	if errors.As(err, &budget) {
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonBudgetExceeded)
+		return
+	}
 	if writeIssueLimitReached(w, err) {
 		return
 	}

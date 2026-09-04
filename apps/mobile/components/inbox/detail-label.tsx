@@ -56,6 +56,7 @@ const TYPE_LABEL: Record<InboxItemType, string> = {
   quick_create_unconfirmed: "Quick-create needs a check",
   autopilot_paused: "Autopilot paused",
   autopilot_quota_exceeded: "Autopilot run limit reached",
+  runtime_budget_exceeded: "Runtime cost budget reached",
 };
 
 // due_date is a calendar day — format timezone-safely (no offset day shift).
@@ -154,6 +155,8 @@ export function InboxDetailLabel({
       }
       case "autopilot_quota_exceeded":
         return "Run blocked because the limit was reached";
+      case "runtime_budget_exceeded":
+        return "New runs are refused until the period resets";
       default:
         return TYPE_LABEL[item.type] ?? item.type;
     }

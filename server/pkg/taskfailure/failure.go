@@ -27,7 +27,7 @@
 //     runtime_recovery, timeout, iteration_limit, agent_blocked,
 //     api_invalid_request, skill_bundle_unavailable,
 //     runtime_cli_timeout, environment_prepare_failed,
-//     invalid_task_identity
+//     invalid_task_identity, budget_exceeded
 //
 //   - 14 agent-side values (with `agent_error.` prefix) produced by
 //     Classify(rawError) when the agent process surfaced an error string.
@@ -169,6 +169,17 @@ const (
 	// session was touched.
 	ReasonEnvironmentPrepareFailed Reason = "environment_prepare_failed"
 
+	// ReasonBudgetExceeded: the target's runtime has a cost budget (total or
+	// for the agent owner) whose current period was already spent when the task
+	// became due, so it was never made claimable. Platform-side: the agent
+	// process was never launched and no provider was contacted. The wire value
+	// matches dispatch.ReasonBudgetExceeded so a refused trigger and a refused
+	// deferred task read as the same cause across the API and the queue.
+	// Deliberately NOT retryable — a retry spends exactly what the budget
+	// refuses. Written by failDueDeferredTasksOverBudget when a deferred
+	// fallback task comes due against a reached budget.
+	ReasonBudgetExceeded Reason = "budget_exceeded"
+
 	// ReasonInvalidTaskIdentity: the daemon refused a claimed task because
 	// the task row's authoritative agent_id was absent or disagreed with the
 	// nested agent payload. The agent process is never launched. This is
@@ -251,7 +262,7 @@ const (
 	ReasonAgentUnknown Reason = "agent_error.unknown"
 )
 
-// allReasons is the canonical ordered list of the 26 reasons. Order is
+// allReasons is the canonical ordered list of the 27 reasons. Order is
 // stable so callers (e.g. Prometheus collectors that pre-warm series via
 // AllReasons) can build deterministic label sets across restarts.
 //
@@ -274,6 +285,7 @@ var allReasons = []Reason{
 	ReasonRuntimeCLITimeout,
 	ReasonEnvironmentPrepareFailed,
 	ReasonInvalidTaskIdentity,
+	ReasonBudgetExceeded,
 
 	// Agent process side: provider errors.
 	ReasonAgentProviderAuthOrAccess,

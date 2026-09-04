@@ -81,6 +81,7 @@ import { useChatResize } from "./use-chat-resize";
 import { useVisualViewportKeyboard } from "./use-visual-viewport-keyboard";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import {
+  chatSendFailureToast,
   hasInFlightPendingTask,
   isStillOnComposeTarget,
   planProjectContextChange,
@@ -488,14 +489,8 @@ export function ChatWindow() {
         sessionId = await ensureSession(finalContent);
       } catch (err) {
         apiLogger.error("sendChatMessage.ensureSession.error", err);
-        const reason = dispatchReasonCode(err);
-        toast.error(
-          reason === "invocation_not_allowed"
-            ? t(($) => $.input.send_blocked_toast)
-            : reason === "agent_runtime_required"
-              ? t(($) => $.input.runtime_required_toast)
-              : t(($) => $.input.send_failed_toast),
-        );
+        const toastKey = chatSendFailureToast(dispatchReasonCode(err));
+        toast.error(t(($) => $.input[toastKey]));
         return false;
       }
       if (!sessionId) {
@@ -514,14 +509,8 @@ export function ChatWindow() {
         result = await api.sendChatMessage(sessionId, finalContent, attachmentIds);
       } catch (err) {
         apiLogger.error("sendChatMessage.error", { sessionId, err });
-        const reason = dispatchReasonCode(err);
-        toast.error(
-          reason === "invocation_not_allowed"
-            ? t(($) => $.input.send_blocked_toast)
-            : reason === "agent_runtime_required"
-              ? t(($) => $.input.runtime_required_toast)
-              : t(($) => $.input.send_failed_toast),
-        );
+        const toastKey = chatSendFailureToast(dispatchReasonCode(err));
+        toast.error(t(($) => $.input[toastKey]));
         return false;
       }
       apiLogger.info("sendChatMessage.success", {

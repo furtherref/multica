@@ -1001,6 +1001,12 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Budget rows carry no foreign key (repository rule), so the runtime's
+	// scopes are removed explicitly inside the same transaction.
+	if err := qtx.DeleteRuntimeCostBudgetsForRuntime(r.Context(), rt.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
+		return
+	}
 	if err := qtx.DeleteAgentRuntime(r.Context(), rt.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
 		return
@@ -1209,6 +1215,13 @@ func (h *Handler) UnbindAgentsAndDeleteRuntime(w http.ResponseWriter, r *http.Re
 		}
 		slog.Error("runtime delete teardown failed", "runtime_id", uuidToString(rt.ID), "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to unbind agents")
+		return
+	}
+
+	// Budget rows carry no foreign key (repository rule), so the runtime's
+	// scopes are removed explicitly inside the same transaction.
+	if err := qtx.DeleteRuntimeCostBudgetsForRuntime(r.Context(), rt.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
 		return
 	}
 

@@ -2272,6 +2272,10 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	if errors.Is(err, service.ErrAttributionFailClosed) {
 		return ReasonAttributionBlocked
 	}
+	var budget *service.RuntimeBudgetExceededError
+	if errors.As(err, &budget) {
+		return ReasonBudgetExceeded
+	}
 	return ReasonInternalError
 }
 
@@ -2346,6 +2350,10 @@ const (
 	// the merge. The original task is kept and no fresh task is enqueued, but the
 	// re-attribution did NOT happen → outcome attribution_blocked, not success.
 	commentMergeAttributionBlocked
+	// commentMergeBudgetExceeded: the runtime's cost budget is spent, so the
+	// re-attributed merge was refused. Like the fail-closed case the original
+	// task is kept and no fresh task is enqueued → outcome budget_exceeded.
+	commentMergeBudgetExceeded
 	// commentMergeError: an unknown attribution/DB error. Fail closed (keep the
 	// task, no duplicate enqueue), but the merge did not complete → outcome
 	// internal_error, not success.
@@ -2362,6 +2370,8 @@ func commentMergeTerminalOutcome(result commentMergeResult) (status DispatchStat
 		return DispatchCoalesced, ReasonCoalesced, true
 	case commentMergeAttributionBlocked:
 		return DispatchBlocked, ReasonAttributionBlocked, true
+	case commentMergeBudgetExceeded:
+		return DispatchBlocked, ReasonBudgetExceeded, true
 	case commentMergeError:
 		return DispatchBlocked, ReasonInternalError, true
 	default: // commentMergeNoPendingTask
@@ -2403,6 +2413,10 @@ func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issu
 			"error", err)
 		if errors.Is(err, service.ErrAttributionFailClosed) {
 			return commentMergeAttributionBlocked
+		}
+		var budget *service.RuntimeBudgetExceededError
+		if errors.As(err, &budget) {
+			return commentMergeBudgetExceeded
 		}
 		return commentMergeError
 	}

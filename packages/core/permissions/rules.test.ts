@@ -11,6 +11,7 @@ import {
   canEditComment,
   canEditSkill,
   canManageMembers,
+  canManageRuntimeBudget,
   canUpdateWorkspaceSettings,
 } from "./rules";
 
@@ -370,6 +371,15 @@ describe("canDeleteRuntime", () => {
     const r = makeRuntime(ALICE);
     expect(canDeleteRuntime(r, { userId: BOB, role: "member" }).allowed)
       .toBe(false);
+  });
+});
+
+describe("canManageRuntimeBudget", () => {
+  it("allows owner and admin, denies member and signed-out", () => {
+    expect(canManageRuntimeBudget({ userId: ALICE, role: "owner" }).allowed).toBe(true);
+    expect(canManageRuntimeBudget({ userId: ALICE, role: "admin" }).allowed).toBe(true);
+    expect(canManageRuntimeBudget({ userId: ALICE, role: "member" }).allowed).toBe(false);
+    expect(canManageRuntimeBudget({ userId: null, role: null }).allowed).toBe(false);
   });
 });
 

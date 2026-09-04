@@ -53,6 +53,8 @@ import {
   RuntimeUsageByHourListSchema,
   RuntimeUsageCoverageListSchema,
   RuntimeUsageListSchema,
+  RuntimeCostBudgetSchema,
+  EMPTY_RUNTIME_COST_BUDGET,
   SendChatMessageResponseSchema,
   SquadListSchema,
   SquadSchema,
@@ -1093,6 +1095,28 @@ describe("dashboard + runtime usage schema drift", () => {
       DashboardUsageByAgentListSchema.parse([{ model: "claude-opus-4-7" }])[0]?.provider,
     ).toBe("");
     expect(RuntimeUsageByAgentListSchema.parse([{ model: "x" }])[0]?.provider).toBe("");
+  });
+
+  it("parses a runtime cost budget and defaults missing scopes", () => {
+    const full = RuntimeCostBudgetSchema.parse({
+      runtime: { daily: { limit_usd: 20, used_usd: 3.42, period_start: "a", reset_at: "b", reached: false }, weekly: null, monthly: null },
+      users: [{ user_id: "u1", daily: null, weekly: { limit_usd: 50, used_usd: 51, period_start: "a", reset_at: "b", reached: true }, monthly: null }],
+      can_manage: true,
+    });
+    expect(full.runtime?.daily?.limit_usd).toBe(20);
+    expect(full.users[0]?.weekly?.reached).toBe(true);
+
+    const sparse = RuntimeCostBudgetSchema.parse({});
+    expect(sparse).toEqual({ runtime: null, users: [], can_manage: false });
+
+    const partialPeriod = RuntimeCostBudgetSchema.parse({ runtime: { daily: { limit_usd: 5 } } });
+    expect(partialPeriod.runtime?.daily).toEqual({ limit_usd: 5, used_usd: 0, period_start: "", reset_at: "", reached: false });
+    expect(partialPeriod.runtime?.weekly).toBeNull();
+  });
+
+  it("rejects a runtime cost budget body that is not an object", () => {
+    expect(RuntimeCostBudgetSchema.safeParse([]).success).toBe(false);
+    expect(EMPTY_RUNTIME_COST_BUDGET).toEqual({ runtime: null, users: [], can_manage: false });
   });
 
   it("rejects a non-array body so parseWithFallback can return its fallback", () => {

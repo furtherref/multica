@@ -74,7 +74,8 @@
     "quick_create_failed": "에이전트 생성 실패",
     "quick_create_unconfirmed": "에이전트 생성 결과 미확인",
     "autopilot_paused": "자동화 일시 중지됨",
-    "autopilot_quota_exceeded": "자동화 실행 한도 도달"
+    "autopilot_quota_exceeded": "자동화 실행 한도 도달",
+    "runtime_budget_exceeded": "런타임 비용 예산 한도 도달"
   },
   "labels": {
     "set_status_to": "상태 변경:",
@@ -88,7 +89,8 @@
     "reacted_to_comment": "내 댓글에 {{emoji}} 반응을 남겼습니다",
     "created_with_agent": "에이전트가 생성: {{identifier}}",
     "failed_with_detail": "실패: {{detail}}",
-    "autopilot_quota_blocked": "한도에 도달하여 실행이 차단됨"
+    "autopilot_quota_blocked": "한도에 도달하여 실행이 차단됨",
+    "runtime_budget_blocked": "기간이 재설정될 때까지 새 실행이 거부됩니다"
   },
   "toasts": {
     "source_context_retry_started": "원본 컨텍스트로 재시도를 시작했습니다",

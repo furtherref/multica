@@ -569,6 +569,16 @@ func (q *Queries) DeleteWorkspacePullRequests(ctx context.Context, workspaceID p
 	return err
 }
 
+const deleteWorkspaceRuntimeCostBudgets = `-- name: DeleteWorkspaceRuntimeCostBudgets :exec
+DELETE FROM runtime_cost_budget
+WHERE runtime_cost_budget.workspace_id = $1
+`
+
+func (q *Queries) DeleteWorkspaceRuntimeCostBudgets(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceRuntimeCostBudgets, workspaceID)
+	return err
+}
+
 const deleteWorkspaceRuntimesAndProjects = `-- name: DeleteWorkspaceRuntimesAndProjects :exec
 WITH
 deleted_runtimes AS (

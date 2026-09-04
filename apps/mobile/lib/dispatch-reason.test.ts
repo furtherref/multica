@@ -47,6 +47,16 @@ describe("sendFailureMessage", () => {
     ).toMatch(/runtime/i);
   });
 
+  // The budget refusal clears on the period boundary, not by resending, so it
+  // must say what ran out and when it comes back instead of reading as the
+  // generic retry.
+  it("names the spent cost budget and its period reset for budget_exceeded", () => {
+    const message = sendFailureMessage(apiError({ reason_code: "budget_exceeded" }));
+    expect(message).toMatch(/cost budget/i);
+    expect(message).toMatch(/period resets/i);
+    expect(message).not.toBe(sendFailureMessage(new Error("timeout")));
+  });
+
   it("falls back to a retryable message for anything else", () => {
     expect(sendFailureMessage(new Error("timeout"))).toMatch(/try again/i);
   });

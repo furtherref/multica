@@ -923,6 +923,7 @@
       "runtime_cli_timeout": "Local runtime CLI timed out",
       "environment_prepare_failed": "Couldn't prepare the execution environment",
       "invalid_task_identity": "Task identity mismatch",
+      "budget_exceeded": "Runtime cost budget reached",
       "agent_error_provider_auth_or_access": "Provider auth failed",
       "agent_error_provider_quota_limit": "Provider quota exhausted",
       "agent_error_provider_capacity_or_rate_limit": "Rate limited by provider",

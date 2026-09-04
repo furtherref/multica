@@ -258,6 +258,14 @@ func (h *Handler) RetrySourceContextQuickCreate(w http.ResponseWriter, r *http.R
 	if writeIssueLimitReached(w, err) {
 		return
 	}
+	// A reached runtime cost budget is a refusal the caller can act on (retry
+	// after the period resets), not a 500. Same 409 + budget_exceeded shape the
+	// capture path returns through writeSourceContextError.
+	var budgetErr *service.RuntimeBudgetExceededError
+	if errors.As(err, &budgetErr) {
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonBudgetExceeded)
+		return
+	}
 	if errors.Is(err, service.ErrRerunInvokeNotAllowed) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return

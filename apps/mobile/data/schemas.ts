@@ -427,7 +427,7 @@ export const AgentTaskSchema: z.ZodType<AgentTask> = z.object({
   // Open string, not an enum — same contract as `failure_reason` in
   // packages/core/types/agent.ts and as the chat message schema above. The
   // backend taxonomy passed the six coarse values at MUL-1949 and keeps
-  // growing (26 canonical reasons today), so an installed build meets reasons
+  // growing (27 canonical reasons today), so an installed build meets reasons
   // it predates.
   //
   // This field WAS a closed six-value enum, which made the whole thing moot:

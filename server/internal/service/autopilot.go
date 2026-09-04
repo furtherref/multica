@@ -332,12 +332,15 @@ func (s *AutopilotService) ensureWebhookCreateIssueTask(ctx context.Context, aut
 			return fmt.Errorf("dispatch for webhook delivery: resolve squad leader: %w", err)
 		}
 		if _, err := s.TaskSvc.EnqueueTaskForSquadLeader(ctx, issue, leader.ID, autopilot.AssigneeID, pgtype.UUID{}); err != nil {
-			return fmt.Errorf("dispatch for webhook delivery: repair squad task: %w", err)
+			// The enqueue keeps its own budget gate and the worker persists
+			// this error's message in webhook_delivery.error, so it goes out
+			// through the same amount-free wrap the dispatch path uses.
+			return publicDispatchError("dispatch for webhook delivery: repair squad task", err)
 		}
 		return nil
 	}
 	if _, err := s.TaskSvc.EnqueueTaskForIssue(ctx, issue); err != nil {
-		return fmt.Errorf("dispatch for webhook delivery: repair issue task: %w", err)
+		return publicDispatchError("dispatch for webhook delivery: repair issue task", err)
 	}
 	return nil
 }
@@ -583,21 +586,23 @@ func (s *AutopilotService) dispatchAutopilotRun(
 			if skipped, code := s.handleDispatchSkip(ctx, autopilot, run, err); skipped != nil {
 				return skipped, code, nil
 			}
-			s.failRun(ctx, run.ID, err.Error())
-			s.captureAutopilotRunFailed(autopilot, *run, source, err.Error())
-			return run, dispatchFailReasonCode(err), fmt.Errorf("dispatch create_issue: %w", err)
+			reason, code := dispatchFailure(err)
+			s.failRun(ctx, run.ID, reason, code)
+			s.captureAutopilotRunFailed(autopilot, *run, source, reason)
+			return run, code, publicDispatchError("dispatch create_issue", err)
 		}
 	case "run_only":
 		if err := s.dispatchRunOnly(ctx, autopilot, run, actorUserID); err != nil {
 			if skipped, code := s.handleDispatchSkip(ctx, autopilot, run, err); skipped != nil {
 				return skipped, code, nil
 			}
-			s.failRun(ctx, run.ID, err.Error())
-			s.captureAutopilotRunFailed(autopilot, *run, source, err.Error())
-			return run, dispatchFailReasonCode(err), fmt.Errorf("dispatch run_only: %w", err)
+			reason, code := dispatchFailure(err)
+			s.failRun(ctx, run.ID, reason, code)
+			s.captureAutopilotRunFailed(autopilot, *run, source, reason)
+			return run, code, publicDispatchError("dispatch run_only", err)
 		}
 	default:
-		s.failRun(ctx, run.ID, "unknown execution_mode: "+autopilot.ExecutionMode)
+		s.failRun(ctx, run.ID, "unknown execution_mode: "+autopilot.ExecutionMode, dispatch.ReasonInternalError)
 		s.captureAutopilotRunFailed(autopilot, *run, source, "unknown execution_mode: "+autopilot.ExecutionMode)
 		return run, dispatch.ReasonInternalError, fmt.Errorf("unknown execution_mode: %s", autopilot.ExecutionMode)
 	}
@@ -629,8 +634,57 @@ func dispatchFailReasonCode(err error) dispatch.ReasonCode {
 	if errors.Is(err, ErrAttributionFailClosed) {
 		return dispatch.ReasonAttributionBlocked
 	}
+	var budget *RuntimeBudgetExceededError
+	if errors.As(err, &budget) {
+		return dispatch.ReasonBudgetExceeded
+	}
 	return dispatch.ReasonInternalError
 }
+
+// dispatchFailure says how a dispatch error that fell through to failRun must
+// be recorded: the reason string to persist, and the reason code to file it
+// under.
+//
+// Both gates check the runtime cost budget before any write, so a refusal
+// normally lands as a `skipped` run through handleDispatchSkip. It can still
+// arrive here: create_issue commits the issue and only then enqueues, and the
+// enqueue helper keeps its own gate, so a limit crossed in that window is
+// refused after the issue exists. That run stays `failed` rather than
+// `skipped` — the issue is committed and a `skipped` run claims nothing
+// happened — but it is filed as budget_exceeded, not internal_error, so
+// nobody is sent looking for a fault instead of at the limit that stopped it.
+//
+// The reason is the refusal's PublicReason(). autopilot_run.failure_reason is
+// readable by anyone who can see the autopilot, and the same string reaches
+// webhook_delivery.error; Error()'s limit and running total are gated behind
+// runtime read access on GET /budget and must not be republished through
+// either. Server logs and the recipient-scoped inbox notice keep the amounts.
+func dispatchFailure(err error) (string, dispatch.ReasonCode) {
+	code := dispatchFailReasonCode(err)
+	var budget *RuntimeBudgetExceededError
+	if errors.As(err, &budget) {
+		return budget.PublicReason(), code
+	}
+	return err.Error(), code
+}
+
+// publicDispatchError wraps a dispatch failure for the caller chain so its
+// Error() is the string dispatchFailure would persist, while errors.As and
+// errors.Is still reach the original. The webhook delivery worker stores the
+// returned error's message verbatim in webhook_delivery.error, so a plain
+// fmt.Errorf("%w") wrap would carry a budget refusal's amounts there.
+func publicDispatchError(stage string, err error) error {
+	reason, _ := dispatchFailure(err)
+	return &dispatchError{reason: stage + ": " + reason, err: err}
+}
+
+type dispatchError struct {
+	reason string
+	err    error
+}
+
+func (e *dispatchError) Error() string { return e.reason }
+func (e *dispatchError) Unwrap() error { return e.err }
 
 // dispatchCreateIssue creates an issue and enqueues a task for the agent.
 //
@@ -647,6 +701,31 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 	leader, _, err := s.resolveAutopilotLeader(ctx, ap)
 	if err != nil {
 		return fmt.Errorf("resolve leader: %w", err)
+	}
+	// The runtime cost budget is checked BEFORE any write here, unlike
+	// dispatchRunOnly where it is the last gate in front of the single row that
+	// path inserts. create_issue commits the issue, its subscribers and the
+	// quota reservation in one transaction and only then enqueues, so a refusal
+	// discovered at the enqueue would leave behind a committed issue with no
+	// task, a consumed reservation, and — because the enqueue error falls
+	// through to failRun — a `failed` run feeding the failure-rate auto-pause
+	// monitor in cmd/server/autopilot_failure_monitor.go. Nothing about a
+	// reached budget is that autopilot's fault.
+	//
+	// The leader resolved above is the agent that will actually execute: a
+	// squad-assigned autopilot creates the issue against the squad and the
+	// issue listener routes it to this same leader, so it is the scope to
+	// price either way. A refusal takes the errDispatchSkipped shape run_only
+	// uses, landing as a `skipped` run carrying budget_exceeded; a non-budget
+	// error from the check is a real read failure and stays a dispatch failure.
+	// The enqueue helpers keep their own gate, which still catches a limit
+	// crossed in the window between this check and the enqueue below.
+	if err := s.TaskSvc.checkRuntimeCostBudget(ctx, s.TaskSvc.Queries, leader, time.Now()); err != nil {
+		var budgetErr *RuntimeBudgetExceededError
+		if errors.As(err, &budgetErr) {
+			return &errDispatchSkipped{reason: formatAdmissionReason(ap, budgetErr.PublicReason()), code: dispatch.ReasonBudgetExceeded}
+		}
+		return fmt.Errorf("check runtime cost budget: %w", err)
 	}
 	issueCountPolicy := ResolveIssueCountPolicy(ctx, s.Entitlements, ap.WorkspaceID)
 
@@ -995,6 +1074,25 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 	if err != nil {
 		return &errDispatchSkipped{reason: formatAdmissionReason(ap, "workspace fail-closed: no accountable human for autopilot run"), code: dispatch.ReasonAttributionBlocked}
 	}
+	// The runtime cost budget is the last gate before the row is written, for the
+	// same reason attribution is: both need the resolved executing agent. A
+	// reached budget is a skip, not a failure — nothing was attempted and nobody
+	// is at fault — so it takes the same errDispatchSkipped shape as the
+	// attribution refusal above and lands as a `skipped` run carrying
+	// budget_exceeded. A non-budget error from the check is a real read failure
+	// and stays a dispatch failure so the run is not silently marked skipped.
+	//
+	// dispatchCreateIssue runs the same check at the TOP of the function instead:
+	// this path writes exactly one row and nothing before it, while that one
+	// commits an issue before it ever reaches an enqueue.
+	if err := s.TaskSvc.checkRuntimeCostBudget(ctx, s.TaskSvc.Queries, agent, time.Now()); err != nil {
+		var budgetErr *RuntimeBudgetExceededError
+		if errors.As(err, &budgetErr) {
+			return &errDispatchSkipped{reason: formatAdmissionReason(ap, budgetErr.PublicReason()), code: dispatch.ReasonBudgetExceeded}
+		}
+		return fmt.Errorf("check runtime cost budget: %w", err)
+	}
+
 	apSource, _, apEvidenceKind, apEvidenceRef := attributionCreateParams(autopilotAttr)
 	task, err := s.Queries.CreateAutopilotTask(ctx, db.CreateAutopilotTaskParams{
 		ID:             dbid.NewV7(),
@@ -1259,11 +1357,15 @@ func (s *AutopilotService) handleDispatchSkip(ctx context.Context, ap db.Autopil
 	return run, skipErr.code
 }
 
-func (s *AutopilotService) failRun(ctx context.Context, runID pgtype.UUID, reason string) {
+// failRun marks a run failed under the reason code the caller classified the
+// error as. The code is a parameter, not a constant: a budget refusal that
+// slipped past the pre-write gate is a real failure but not an internal one,
+// and filing it as internal_error hides the limit that actually stopped it.
+func (s *AutopilotService) failRun(ctx context.Context, runID pgtype.UUID, reason string, code dispatch.ReasonCode) {
 	if _, err := s.failAutopilotRun(ctx, db.UpdateAutopilotRunFailedParams{
 		ID:            runID,
 		FailureReason: pgtype.Text{String: reason, Valid: true},
-		ReasonCode:    pgtype.Text{String: string(dispatch.ReasonInternalError), Valid: true},
+		ReasonCode:    pgtype.Text{String: string(code), Valid: code != ""},
 	}); err != nil {
 		slog.Warn("failed to mark autopilot run as failed", "run_id", util.UUIDToString(runID), "error", err)
 	}

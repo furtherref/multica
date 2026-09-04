@@ -186,6 +186,38 @@ export function seedAcceptedPendingTask(
   qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
 }
 
+/**
+ * Which `chat.input.*` toast a refused send shows, from the admission gate's
+ * `reason_code`.
+ *
+ * Every one of these refusals is DECIDED, not transient, so the generic
+ * "Failed to send message" is the wrong answer for all of them: it reads as
+ * "retry" and the retry is refused again. `budget_exceeded` in particular waits
+ * on a calendar period, not on the user trying harder.
+ *
+ * Shared by ChatWindow and ChatPage so both surfaces name the same cause, and
+ * covers the session-create leg as well as the send: a revoked permission or a
+ * spent budget refuses the lazy `ensureSession` call first.
+ */
+export type ChatSendFailureToast =
+  | "send_blocked_toast"
+  | "runtime_required_toast"
+  | "send_blocked_budget_exceeded"
+  | "send_failed_toast";
+
+export function chatSendFailureToast(reason: string | undefined): ChatSendFailureToast {
+  switch (reason) {
+    case "invocation_not_allowed":
+      return "send_blocked_toast";
+    case "agent_runtime_required":
+      return "runtime_required_toast";
+    case "budget_exceeded":
+      return "send_blocked_budget_exceeded";
+    default:
+      return "send_failed_toast";
+  }
+}
+
 const CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX = 1_000_000;
 
 
@@ -547,14 +579,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
         apiLogger.error("sendChatMessage.ensureSession.error", err);
         // A revoked invoke permission blocks session create with a structured
         // 403 (MUL-4525) — name the cause instead of a generic failure.
-        const reason = dispatchReasonCode(err);
-        toast.error(
-          reason === "invocation_not_allowed"
-            ? t(($) => $.input.send_blocked_toast)
-            : reason === "agent_runtime_required"
-              ? t(($) => $.input.runtime_required_toast)
-              : t(($) => $.input.send_failed_toast),
-        );
+        const toastKey = chatSendFailureToast(dispatchReasonCode(err));
+        toast.error(t(($) => $.input[toastKey]));
         return false;
       }
       if (!sessionId) {
@@ -577,14 +603,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
         // a structured 403 before anything persists (MUL-4525). Surface the
         // specific cause so the user knows it is a permission change, not a
         // transient failure they should retry.
-        const reason = dispatchReasonCode(err);
-        toast.error(
-          reason === "invocation_not_allowed"
-            ? t(($) => $.input.send_blocked_toast)
-            : reason === "agent_runtime_required"
-              ? t(($) => $.input.runtime_required_toast)
-              : t(($) => $.input.send_failed_toast),
-        );
+        const toastKey = chatSendFailureToast(dispatchReasonCode(err));
+        toast.error(t(($) => $.input[toastKey]));
         return false;
       }
       apiLogger.info("sendChatMessage.success", {

@@ -14,6 +14,7 @@ export const runtimeKeys = {
   // by-hour now follows the viewer's tz, like the other reports.
   usageByHour: (rid: string, days: number, tz: string) =>
     ["runtimes", "usage", "by-hour", rid, days, tz] as const,
+  budget: (rid: string) => ["runtimes", "budget", rid] as const,
 };
 
 // `tz` is the viewer's IANA name — all reports follow the viewer's tz.
@@ -58,6 +59,14 @@ export function runtimeUsageByHourOptions(runtimeId: string, days: number, tz: s
     queryKey: runtimeKeys.usageByHour(runtimeId, days, tz),
     queryFn: () => api.getRuntimeUsageByHour(runtimeId, { days, tz }),
     staleTime: 60 * 1000,
+  });
+}
+
+export function runtimeCostBudgetOptions(runtimeId: string) {
+  return queryOptions({
+    queryKey: runtimeKeys.budget(runtimeId),
+    queryFn: () => api.getRuntimeCostBudget(runtimeId),
+    staleTime: 30 * 1000,
   });
 }
 

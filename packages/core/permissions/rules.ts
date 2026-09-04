@@ -183,6 +183,19 @@ export function canDeleteRuntime(
   );
 }
 
+/**
+ * Set or change a runtime's cost budget. Mirrors `PutRuntimeCostBudget`
+ * (`server/internal/handler/runtime_cost_budget.go`): workspace owner or
+ * admin only. The runtime owner has no override — budgets are governance.
+ */
+export function canManageRuntimeBudget(ctx: PermissionContext): Decision {
+  if (isAdminLike(ctx.role)) return ALLOW;
+  return deny(
+    "not_admin_role",
+    "Only workspace owners and admins can set runtime cost budgets.",
+  );
+}
+
 // ---- Workspace -------------------------------------------------------------
 
 export function canUpdateWorkspaceSettings(ctx: PermissionContext): Decision {

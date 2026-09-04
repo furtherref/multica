@@ -562,6 +562,10 @@ WHERE autopilot_quota_reservation.workspace_id = $1;
 DELETE FROM autopilot_quota_period
 WHERE autopilot_quota_period.workspace_id = $1;
 
+-- name: DeleteWorkspaceRuntimeCostBudgets :exec
+DELETE FROM runtime_cost_budget
+WHERE runtime_cost_budget.workspace_id = $1;
+
 -- name: DeleteWorkspaceAutopilotChildren :exec
 WITH
 deleted_triggers AS (

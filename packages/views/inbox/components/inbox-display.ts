@@ -56,6 +56,10 @@ export function isAutopilotQuotaNotice(type: InboxItem["type"]): boolean {
   return type === "autopilot_quota_exceeded";
 }
 
+export function isRuntimeBudgetNotice(type: InboxItem["type"]): boolean {
+  return type === "runtime_budget_exceeded";
+}
+
 export function getQuickCreateOutcomeDetail(item: InboxItem): string {
   const details = item.details ?? {};
   return singleLine(details.error) || singleLine(item.body);

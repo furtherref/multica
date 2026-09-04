@@ -28,6 +28,7 @@ const FAILURE_REASON_BADGE: Record<string, string> = {
   skill_bundle_unavailable: "Skill download failed",
   runtime_cli_timeout: "Runtime CLI timeout",
   environment_prepare_failed: "Environment setup failed",
+  budget_exceeded: "Budget reached",
 
   "agent_error.provider_auth_or_access": "Auth failed",
   "agent_error.provider_quota_limit": "Quota exhausted",

@@ -460,6 +460,20 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		teardowns = append(teardowns, teardown)
 	}
 
+	// Budget rows carry no foreign key (repository rule), and the bulk delete
+	// below removes the runtime rows without going through DeleteAgentRuntime,
+	// so each runtime's scopes are dropped explicitly first. Rows left behind
+	// would be unreachable: every budget read is keyed by a runtime_id that no
+	// longer exists.
+	for _, rid := range runtimeIDs {
+		if err := qtx.DeleteRuntimeCostBudgetsForRuntime(r.Context(), rid); err != nil {
+			slog.Error("DeleteRuntimeCostBudgetsForRuntime failed",
+				"error", err, "runtime_id", uuidToString(rid), "profile_id", uuidToString(profileUUID))
+			writeError(w, http.StatusInternalServerError, "failed to clean up runtime instances")
+			return
+		}
+	}
+
 	// Now the runtime rows have no agent references; remove them, then the
 	// profile itself.
 	if _, err := qtx.DeleteAgentRuntimesByProfile(r.Context(), db.DeleteAgentRuntimesByProfileParams{

@@ -94,6 +94,7 @@ import {
   getInboxDisplayTitle,
   isAutopilotQuotaNotice,
   isQuickCreateOutcome,
+  isRuntimeBudgetNotice,
   resolveDetailItem,
 } from "./inbox-display";
 import { AutopilotQuotaNotice } from "./autopilot-quota-notice";
@@ -714,7 +715,10 @@ export function InboxPage() {
   ) : detailItem ? (
     <div className="p-6">
       <h2 className="text-title font-semibold">
-        {isAutopilotQuotaNotice(detailItem.type)
+        {/* Same swap as the list row: a system notice's English server title is
+            replaced by the localized type label, while the body below still
+            comes from the server for everything but the quota notice. */}
+        {isAutopilotQuotaNotice(detailItem.type) || isRuntimeBudgetNotice(detailItem.type)
           ? typeLabels[detailItem.type]
           : getInboxDisplayTitle(detailItem)}
       </h2>

@@ -983,6 +983,45 @@ export interface RuntimeUsageByHour {
   task_count: number;
 }
 
+// Runtime cost budget (`/api/runtimes/:id/budget`). Periods are UTC calendar
+// windows; a null period is unlimited. `runtime` is the total scope (blocks
+// everyone), `users` are per-owner scopes. `can_manage` mirrors the server's
+// owner/admin gate so the UI shows the editor only when a PUT would succeed.
+export type RuntimeBudgetPeriodKey = "daily" | "weekly" | "monthly";
+
+export interface RuntimeBudgetPeriod {
+  limit_usd: number;
+  used_usd: number;
+  period_start: string;
+  reset_at: string;
+  reached: boolean;
+}
+
+export interface RuntimeBudgetScope {
+  user_id?: string;
+  daily: RuntimeBudgetPeriod | null;
+  weekly: RuntimeBudgetPeriod | null;
+  monthly: RuntimeBudgetPeriod | null;
+}
+
+export interface RuntimeCostBudget {
+  runtime: RuntimeBudgetScope | null;
+  users: RuntimeBudgetScope[];
+  can_manage: boolean;
+}
+
+export interface RuntimeBudgetScopeInput {
+  user_id?: string;
+  daily_usd: number | null;
+  weekly_usd: number | null;
+  monthly_usd: number | null;
+}
+
+export interface RuntimeCostBudgetInput {
+  runtime: RuntimeBudgetScopeInput | null;
+  users: RuntimeBudgetScopeInput[];
+}
+
 // One (date, provider, model) bucket of token usage for the workspace
 // dashboard. Workspace-scoped (no runtime_id) and optionally narrowed to a
 // single project on the server side. `provider` is kept on the wire so the

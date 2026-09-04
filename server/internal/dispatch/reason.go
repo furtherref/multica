@@ -70,6 +70,11 @@ const (
 	// ReasonIssueLimitReached means a create_issue Autopilot was admitted for a
 	// run, but Cloud's effective workspace issue-count limit blocked the issue.
 	ReasonIssueLimitReached ReasonCode = "issue_limit_reached"
+	// ReasonBudgetExceeded: the target's runtime has a cost budget (total or
+	// for the agent owner) whose current period is spent. The run is not
+	// queued; the user triggers it again after the period resets. Reveals
+	// nothing about a private target: the caller already sees the runtime.
+	ReasonBudgetExceeded ReasonCode = "budget_exceeded"
 	// ReasonInternalError: an unexpected server error prevented a clean decision.
 	ReasonInternalError ReasonCode = "internal_error"
 )

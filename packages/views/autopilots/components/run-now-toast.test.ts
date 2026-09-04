@@ -44,4 +44,8 @@ describe("runNowBlockedKey", () => {
     expect(runNowBlockedKey("some_future_code")).toBe("run_blocked_generic");
     expect(runNowBlockedKey(undefined)).toBe("run_blocked_generic");
   });
+
+  it("maps budget_exceeded to its own key", () => {
+    expect(runNowBlockedKey("budget_exceeded")).toBe("run_blocked_budget_exceeded");
+  });
 });
