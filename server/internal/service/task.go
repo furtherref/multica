@@ -4369,8 +4369,14 @@ func (s *TaskService) retireDueDeferredTasksOverBudget(
 		RuntimeID: runtimeID,
 	})
 	if err != nil {
-		// Leave the chat rows deferred for the next tick rather than retiring
-		// them through the bulk statement, which cannot write their outcome.
+		// Fail open, like every other read failure in this gate: these rows are
+		// not retired, and the promotion that runs immediately after this sweep
+		// in the same tick will make them claimable — a chat row carries no
+		// issue_id, so it clears both of that query's slot fences. Retiring
+		// them through the bulk statement instead is not the alternative: it
+		// cannot write the outcome message they owe. One tick of overshoot on a
+		// transient read is the gate's stated contract, and every enqueue path
+		// still fails closed on the same error.
 		slog.Warn("deferred promotion budget gate: list due chat tasks failed",
 			"agent_id", util.UUIDToString(agentID), "error", err)
 	}
@@ -4439,6 +4445,10 @@ func (s *TaskService) retireDeferredChatTaskOverBudget(
 				"chat_session_id", util.UUIDToString(task.ChatSessionID))
 			return db.AgentTaskQueue{}, false
 		}
+		// Same fail-open as the listing above: the row keeps its 'deferred'
+		// status and the promotion later in this tick makes it claimable, so a
+		// transient write failure costs one run against a limit the next tick
+		// re-checks rather than a turn stuck behind an unwritable transcript.
 		slog.Warn("deferred promotion budget gate: retire deferred chat task failed",
 			"task_id", util.UUIDToString(task.ID),
 			"chat_session_id", util.UUIDToString(task.ChatSessionID),

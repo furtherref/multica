@@ -555,6 +555,110 @@ func TestBudgetRetirementSettlesDeliveredDelegatedFailureRecoveries(t *testing.T
 	}
 }
 
+// The bulk statement and the per-row chat path must not overlap: if the bulk
+// UPDATE could still see a chat row, the two halves would race onto the same
+// row and a chat turn could reach 'failed' from the statement that cannot
+// write its outcome message — exactly the committed-terminal-row-with-no-reply
+// window the split exists to close. Asserted against the query itself, since
+// nothing above it can observe which half retired a row.
+func TestBulkBudgetRetirementNeverTouchesChatRows(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, ownerID, agentID, issueID := seedAttributionFixture(t, pool)
+	fx := testutil.New(pool, workspaceID, ownerID)
+	agent, err := q.GetAgent(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("load agent: %v", err)
+	}
+	runtimeID := util.UUIDToString(agent.RuntimeID)
+
+	due := time.Now().Add(-time.Minute)
+	sessionID := fx.ChatSession(t, agentID)
+	chatTaskID := fx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "chat_session_id": sessionID,
+		"status": "deferred", "fire_at": due,
+	})
+	issueTaskID := fx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "issue_id": issueID,
+		"status": "deferred", "fire_at": due,
+	})
+
+	failed, err := q.FailDueDeferredTasksForAgentOverBudget(ctx, db.FailDueDeferredTasksForAgentOverBudgetParams{
+		FailureReason: pgtype.Text{String: string(taskfailure.ReasonBudgetExceeded), Valid: true},
+		Error:         pgtype.Text{String: "runtime cost budget reached (runtime daily)", Valid: true},
+		AgentID:       agent.ID,
+		RuntimeID:     agent.RuntimeID,
+	})
+	if err != nil {
+		t.Fatalf("FailDueDeferredTasksForAgentOverBudget: %v", err)
+	}
+	if len(failed) != 1 || util.UUIDToString(failed[0].ID) != issueTaskID {
+		got := make([]string, 0, len(failed))
+		for _, row := range failed {
+			got = append(got, util.UUIDToString(row.ID))
+		}
+		t.Fatalf("bulk retirement returned %v, want only the non-chat row %s", got, issueTaskID)
+	}
+
+	var status string
+	fx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, chatTaskID).Scan(&status)
+	if status != "deferred" {
+		t.Fatalf("chat task = %q, want deferred (the bulk statement must leave it to the per-row path)", status)
+	}
+}
+
+// The per-row chat transaction is a terminal write like the bulk one, so it
+// owes SettleDeliveredDelegatedFailureRecoveries the same qtx: a coordinator
+// turn can be a chat turn, and its delivered recovery comment is stranded
+// unsettled if the settlement is skipped on this path.
+func TestChatBudgetRetirementSettlesDeliveredDelegatedFailureRecoveries(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, ownerID, agentID, issueID := seedAttributionFixture(t, pool)
+	fx := testutil.New(pool, workspaceID, ownerID)
+	agent, err := q.GetAgent(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("load agent: %v", err)
+	}
+	runtimeID := util.UUIDToString(agent.RuntimeID)
+
+	delegatedID := fx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "issue_id": issueID, "status": "failed",
+	})
+	recoveryID := fx.Comment(t, issueID, "delegated task failed", testutil.Cols{
+		// The zero uuid is what the platform authors recovery comments as.
+		"author_type": "system", "author_id": "00000000-0000-0000-0000-000000000000",
+		"type": "progress_update", "source_task_id": delegatedID,
+	})
+	sessionID := fx.ChatSession(t, agentID)
+	chatTaskID := fx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "chat_session_id": sessionID,
+		"status": "deferred", "fire_at": time.Now().Add(-time.Minute),
+		"delivered_comment_ids": testutil.Raw("ARRAY[" + quoteUUIDLiteral(recoveryID) + "]::uuid[]"),
+	})
+	listed, err := q.GetAgentTask(ctx, util.MustParseUUID(chatTaskID))
+	if err != nil {
+		t.Fatalf("load listed task: %v", err)
+	}
+
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	if _, ok := svc.retireDeferredChatTaskOverBudget(ctx, listed,
+		pgtype.Text{String: string(taskfailure.ReasonBudgetExceeded), Valid: true},
+		pgtype.Text{String: "runtime cost budget reached (runtime daily)", Valid: true}); !ok {
+		t.Fatal("a due deferred chat row was not retired")
+	}
+
+	if n := fx.Count(t, `
+		SELECT count(*) FROM comment WHERE id = $1 AND recovery_settled_at IS NOT NULL`, recoveryID); n != 1 {
+		t.Fatal("the retired chat row's delivered recovery comment was left unsettled")
+	}
+	if n := fx.Count(t, `SELECT count(*) FROM chat_message WHERE task_id = $1`, chatTaskID); n != 1 {
+		t.Fatalf("assistant messages for the retired turn = %d, want 1", n)
+	}
+}
+
 // quoteUUIDLiteral renders a UUID for inline SQL, for the array literals the
 // column-value fixtures cannot parameterize.
 func quoteUUIDLiteral(id string) string {

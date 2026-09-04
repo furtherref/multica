@@ -3730,8 +3730,12 @@ type FailDeferredTaskOverBudgetParams struct {
 // been promoted, cancelled or superseded. Returning no row then is the correct
 // outcome — whatever moved it owns its status now — and the caller skips it
 // rather than overwriting a state this sweep never priced. fire_at needs no
-// re-check: nothing ever pushes a deferred row's fire_at forward, it is only
-// cleared on promotion, which this status check already catches.
+// re-check of its own: promotion clears it, which the status check already
+// catches, and the one statement that pushes a deferred row's fire_at forward
+// — DeferChatTaskForSealedPendingMedia, which carries no status qualifier —
+// only ever runs against a task created in its own transaction (createChatTask
+// seals the input batch and corrects the deferral before that row is visible
+// to anyone). It can therefore never reach a row this sweep has listed.
 func (q *Queries) FailDeferredTaskOverBudget(ctx context.Context, arg FailDeferredTaskOverBudgetParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, failDeferredTaskOverBudget, arg.FailureReason, arg.Error, arg.ID)
 	var i AgentTaskQueue
