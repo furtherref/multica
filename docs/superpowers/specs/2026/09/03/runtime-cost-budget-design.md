@@ -196,7 +196,18 @@ executing agent is known and before the row is written:
   with `failure_reason = 'budget_exceeded'` (a new
   `taskfailure.ReasonBudgetExceeded`, sharing the dispatch reason's wire
   value) so the task is visible as a terminal outcome instead of held
-  silently. One refusal never stops the sweep — every other agent's rows
+  silently. Each retired row then runs the terminal side effects `FailTask`
+  runs for a non-retried failure, through the same two shared helpers:
+  `writeTerminalChatFailureOutcome` (onboarding-kickoff release plus the
+  assistant outcome message, in its own transaction behind the chat session
+  lock) and `reportTerminalTaskFailure` (delegated-failure recovery, the
+  per-failure issue comment, the quick-create requester's inbox outcome).
+  **Ruling:** a deferred row is not only an issue fallback — chat turns park
+  there (sealed pending media, retry backoff) and quick-creates are
+  retry-eligible — so flipping the status alone would end a refused chat turn
+  with a spinner and no reply, and leave a quick-create requester's pending
+  state unresolved forever. `budget_exceeded` therefore needs an entry in
+  chat's failure-copy map (`chatFailureCopy`) as well as the run-badge maps. One refusal never stops the sweep — every other agent's rows
   promote in the same tick — and an unreadable budget leaves that agent's
   rows to promote rather than retiring a member's work over a transient read.
   The pairs come from a query that joins `agent ON a.id = t.agent_id AND

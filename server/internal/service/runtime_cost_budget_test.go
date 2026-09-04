@@ -41,6 +41,27 @@ func seedSpend(t *testing.T, ctx context.Context, pool *pgxpool.Pool, agentID, i
 	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM task_usage WHERE task_id = $1`, taskID) })
 }
 
+// seedChatlessSpend records spend on a completed task with no issue link, for
+// tests whose only issue-linked rows are the ones under test.
+func seedChatlessSpend(t *testing.T, ctx context.Context, pool *pgxpool.Pool, agentID string, usd float64, createdAt time.Time) {
+	t.Helper()
+	var taskID string
+	err := pool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, originator_source, completed_at)
+		VALUES ($1, (SELECT runtime_id FROM agent WHERE id = $1), 'completed', 0, 'delegation', $2)
+		RETURNING id`, agentID, createdAt).Scan(&taskID)
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, created_at)
+		VALUES ($1, 'xai', 'grok-4.5', 0, 0, 0, 0, $2, $3)`, taskID, pricing.USDToTicks(usd), createdAt); err != nil {
+		t.Fatalf("seed usage: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM task_usage WHERE task_id = $1`, taskID) })
+}
+
 func seedBudget(t *testing.T, ctx context.Context, q *db.Queries, workspaceID, runtimeID string, userID *string, daily, weekly, monthly *float64) db.RuntimeCostBudget {
 	t.Helper()
 	toTicks := func(v *float64) pgtype.Int8 {

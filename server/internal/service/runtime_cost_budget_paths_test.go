@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -353,6 +354,111 @@ func TestRetrySuppressedWhenTheAgentCannotBeLoaded(t *testing.T) {
 	}
 	if n := fx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE parent_task_id = $1`, taskID); n != 0 {
 		t.Fatalf("retry children = %d, want 0", n)
+	}
+}
+
+// A chat turn can be deferred (sealed pending media, retry backoff), so the
+// budget sweep can be the thing that kills it. Failing the queue row alone
+// leaves the conversation with a spinner and no reply: a terminal chat failure
+// owes the transcript an assistant message, exactly as FailTask writes one.
+func TestDeferredChatTaskRetiredByBudgetWritesTheAssistantFailure(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, ownerID, agentID, _ := seedAttributionFixture(t, pool)
+	fx := testutil.New(pool, workspaceID, ownerID)
+	cleanupBudgetNotices(t, fx, workspaceID)
+	agent, err := q.GetAgent(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("load agent: %v", err)
+	}
+	runtimeID := util.UUIDToString(agent.RuntimeID)
+	daily := 5.0
+	seedBudget(t, ctx, q, workspaceID, runtimeID, nil, &daily, nil, nil)
+
+	sessionID := fx.ChatSession(t, agentID)
+	chatTaskID := fx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "chat_session_id": sessionID, "status": "deferred",
+		"fire_at": time.Now().Add(-time.Minute),
+	})
+	// Spend the budget with a separate completed task so the deferred row is
+	// the only thing the sweep can retire.
+	seedChatlessSpend(t, ctx, pool, agentID, 5, time.Now().Add(-time.Minute))
+
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	if err := svc.PromoteDueDeferredTasksForRuntime(ctx, agent.RuntimeID); err != nil {
+		t.Fatalf("PromoteDueDeferredTasksForRuntime: %v", err)
+	}
+
+	var status, failureReason string
+	fx.QueryRow(t, `SELECT status, COALESCE(failure_reason, '') FROM agent_task_queue WHERE id = $1`, chatTaskID).
+		Scan(&status, &failureReason)
+	if status != "failed" || failureReason != string(taskfailure.ReasonBudgetExceeded) {
+		t.Fatalf("deferred chat task = %s/%s, want failed/budget_exceeded", status, failureReason)
+	}
+	var role, messageReason, content string
+	fx.QueryRow(t, `
+		SELECT role, COALESCE(failure_reason, ''), content
+		FROM chat_message WHERE task_id = $1`, chatTaskID).Scan(&role, &messageReason, &content)
+	if role != "assistant" || messageReason != string(taskfailure.ReasonBudgetExceeded) {
+		t.Fatalf("chat outcome message = %s/%s, want assistant/budget_exceeded", role, messageReason)
+	}
+	if strings.ContainsAny(content, "0123456789") {
+		t.Fatalf("assistant failure content %q leaks budget amounts", content)
+	}
+}
+
+// A quick-create task is retry-eligible, so it too can be sitting deferred when
+// the budget is reached. Its requester is waiting on an inbox outcome that
+// nothing else will ever write: failing the row silently leaves the pending
+// state unresolved and the original prompt unrecoverable.
+func TestDeferredQuickCreateRetiredByBudgetNotifiesTheRequester(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	workspaceID, ownerID, agentID, _ := seedAttributionFixture(t, pool)
+	fx := testutil.New(pool, workspaceID, ownerID)
+	cleanupBudgetNotices(t, fx, workspaceID)
+	f := testutil.New(pool, workspaceID, ownerID)
+	f.Cleanup(t, `DELETE FROM inbox_item WHERE workspace_id = $1 AND type = 'quick_create_failed'`, workspaceID)
+	agent, err := q.GetAgent(ctx, util.MustParseUUID(agentID))
+	if err != nil {
+		t.Fatalf("load agent: %v", err)
+	}
+	runtimeID := util.UUIDToString(agent.RuntimeID)
+	daily := 5.0
+	seedBudget(t, ctx, q, workspaceID, runtimeID, nil, &daily, nil, nil)
+
+	quickCreate, err := json.Marshal(map[string]string{
+		"type":         QuickCreateContextType,
+		"prompt":       "file the flaky login bug",
+		"requester_id": ownerID,
+		"workspace_id": workspaceID,
+	})
+	if err != nil {
+		t.Fatalf("marshal quick-create context: %v", err)
+	}
+	quickCreateTaskID := fx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "status": "deferred",
+		"fire_at": time.Now().Add(-time.Minute), "context": string(quickCreate),
+	})
+	seedChatlessSpend(t, ctx, pool, agentID, 5, time.Now().Add(-time.Minute))
+
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+	if err := svc.PromoteDueDeferredTasksForRuntime(ctx, agent.RuntimeID); err != nil {
+		t.Fatalf("PromoteDueDeferredTasksForRuntime: %v", err)
+	}
+
+	var status string
+	fx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, quickCreateTaskID).Scan(&status)
+	if status != "failed" {
+		t.Fatalf("deferred quick-create task = %q, want failed", status)
+	}
+	if n := fx.Count(t, `
+		SELECT count(*) FROM inbox_item
+		WHERE workspace_id = $1 AND recipient_id = $2 AND type = 'quick_create_failed'`,
+		workspaceID, ownerID); n != 1 {
+		t.Fatalf("quick_create_failed notices = %d, want 1", n)
 	}
 }
 

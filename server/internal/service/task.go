@@ -3105,6 +3105,104 @@ func createAssistantChatMessage(ctx context.Context, qtx *db.Queries, params db.
 	return row, nil
 }
 
+// writeTerminalChatFailureOutcome persists what a dead chat turn owes its
+// transcript, on the caller's transaction. The caller MUST already hold the
+// chat session write lock (lockChatSessionForTaskWrite) and MUST have moved the
+// task out of the visible-head status set in this or an earlier transaction:
+// otherwise the successor turn could be claimed between the status flip and
+// this row, placing its user input before the failure it follows.
+//
+// Two effects, and both belong to any terminal, non-retried chat failure —
+// which is why FailTask and the deferred-promotion budget sweep share one
+// implementation rather than the sweep flipping rows to failed and stopping:
+//
+//   - The adopted onboarding kickoff is released. It would otherwise stay bound
+//     to a task that will never run again: the next turn would reach Mika with
+//     no onboarding context and no record that she had already greeted the
+//     member, and she would introduce herself a second time (MUL-5827). The
+//     query hands it to the session's next queued turn — including one the
+//     member queued while THIS turn was still running.
+//   - The assistant outcome message. Without it the conversation just stops:
+//     the user sees their own message, a spinner that never resolves, and no
+//     statement that anything failed.
+//
+// Never call this for a turn that has an auto-retry child. The retry inherits
+// the root's chat_input_task_id and the kickoff stays bound to that root, so
+// releasing here would strip the context off a turn that is about to run.
+func writeTerminalChatFailureOutcome(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue, errMsg, failureReason string) error {
+	if err := qtx.ReleaseOnboardingKickoffFromTask(ctx, chatInputOwnerID(task)); err != nil {
+		return fmt.Errorf("release onboarding kickoff: %w", err)
+	}
+	if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
+		ID:            dbid.NewV7(),
+		ChatSessionID: task.ChatSessionID,
+		Role:          "assistant",
+		Content:       redact.Text(errMsg),
+		TaskID:        task.ID,
+		FailureReason: pgtype.Text{String: failureReason, Valid: failureReason != ""},
+		ElapsedMs:     computeChatElapsedMs(task),
+	}); err != nil {
+		return fmt.Errorf("write chat failure outcome: %w", err)
+	}
+	return nil
+}
+
+// reportTerminalTaskFailure runs the post-commit half of a terminal,
+// non-retried failure: hand a delegated task's control back to its delegator,
+// write the per-failure issue comment, and resolve a quick-create requester's
+// pending state. FailTask calls it; so does the deferred-promotion budget
+// sweep, whose rows reach 'failed' through a bulk UPDATE and would otherwise
+// leave a quick-create requester waiting on an outcome nothing else will ever
+// write.
+//
+// Every step is best-effort and logs its own failure. The row is already
+// terminal, and a comment or inbox write that does not land must not be
+// mistaken for a failure to fail the task.
+func (s *TaskService) reportTerminalTaskFailure(ctx context.Context, task db.AgentTaskQueue, errMsg string) {
+	// A delegated task that has reached a terminal failure must hand control
+	// back to the task that delegated it. The recovery signal is a
+	// platform-authored comment on the source task's issue, routed explicitly to
+	// that task's agent; recoverDelegatedTaskFailure coalesces it with an
+	// existing coordinator run and deduplicates by the failed task id.
+	if _, recoveryErr := s.recoverDelegatedTaskFailure(ctx, task); recoveryErr != nil {
+		slog.Warn("delegated task failure recovery failed",
+			"task_id", util.UUIDToString(task.ID),
+			"delegated_from_task_id", util.UUIDToString(task.DelegatedFromTaskID),
+			"error", recoveryErr,
+		)
+	}
+
+	// Delegated failures keep this failed-issue comment in addition to the
+	// coordinator recovery signal, preserving visibility on both sides of a
+	// cross-issue handoff.
+	if errMsg != "" && task.IssueID.Valid {
+		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
+	}
+
+	// Quick-create tasks: push a failure inbox notification to the requester so
+	// they can either retry or fall back to the advanced form without losing
+	// their original prompt.
+	qc, ok := s.parseQuickCreateContext(task)
+	if !ok {
+		return
+	}
+	attached, attachedErr := s.sourceContextAttachedByTask(ctx, task, qc)
+	switch {
+	case attachedErr != nil:
+		slog.Error("quick-create failure: source context outcome lookup failed",
+			"task_id", util.UUIDToString(task.ID), "error", attachedErr)
+		s.notifyQuickCreateUnconfirmed(ctx, task, qc)
+	case attached:
+		// The CLI create committed before the runtime reported its own failure.
+		// The attached context is authoritative proof that the target exists, so
+		// reconcile the normal success inbox rather than inviting a duplicate
+		// retry from a misleading failure row.
+		s.notifyQuickCreateCompleted(ctx, task, qc, nil)
+	default:
+		s.notifyQuickCreateFailed(ctx, task, qc, errMsg)
+	}
+}
+
 func (s *TaskService) settleQueuedChatInput(
 	ctx context.Context,
 	qtx *db.Queries,
@@ -4220,10 +4318,50 @@ func (s *TaskService) failDueDeferredTasksOnRuntimeOverBudget(ctx context.Contex
 				"scope", exceeded.Scope, "period", exceeded.Period,
 			)
 			s.captureTaskFailed(ctx, task)
+			s.finishBudgetRetiredTask(ctx, task)
 			s.ReconcileAgentStatus(ctx, task.AgentID)
 			s.broadcastTaskFailedEvent(ctx, task, task.Error.String, string(taskfailure.ReasonBudgetExceeded), false)
 		}
 	}
+}
+
+// finishBudgetRetiredTask runs, for one row the budget sweep flipped to
+// 'failed', the terminal side effects FailTask would have run. The sweep
+// retires rows with a bulk UPDATE rather than through FailTask — it has already
+// priced the budget and must not re-derive a retry decision it has just refused
+// — but a task is not terminated by its status column alone.
+//
+// A deferred row is not only an issue fallback: DeferChatTaskForSealedPending-
+// Media and the retry backoff both park chat turns there, and quick-create
+// tasks are retry-eligible, so both can be sitting deferred when a limit is
+// reached. Without this, a budget-refused chat turn ends with a spinner and no
+// assistant reply, and a quick-create requester's pending state is never
+// resolved by anything.
+//
+// The chat outcome keeps FailTask's transactional shape: its own transaction,
+// session lock first, so a successor turn cannot be claimed between the bulk
+// UPDATE and this row and land its user input before the failure it follows.
+// The row is already committed as failed, so it is out of the visible-head
+// status set by the time createAssistantChatMessage reanchors the next head.
+// Failures are logged, never propagated — the refusal itself is already
+// decided, and one unwritable transcript row must not stop the rest of the
+// sweep.
+func (s *TaskService) finishBudgetRetiredTask(ctx context.Context, task db.AgentTaskQueue) {
+	errMsg := task.Error.String
+	if task.ChatSessionID.Valid {
+		if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+			if err := lockChatSessionForTaskWrite(ctx, qtx, task.ID); err != nil {
+				return err
+			}
+			return writeTerminalChatFailureOutcome(ctx, qtx, task, errMsg, string(taskfailure.ReasonBudgetExceeded))
+		}); err != nil {
+			slog.Warn("deferred promotion budget gate: write chat failure outcome failed",
+				"task_id", util.UUIDToString(task.ID),
+				"chat_session_id", util.UUIDToString(task.ChatSessionID),
+				"error", err)
+		}
+	}
+	s.reportTerminalTaskFailure(ctx, task, errMsg)
 }
 
 func (s *TaskService) PromoteDueDeferredTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) error {
@@ -5147,33 +5285,14 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		// held, then reanchor the next direct head. Otherwise the successor could
 		// be claimed between the status flip and this row, placing its user input
 		// before the failure it follows.
+		//
+		// Gated on retried == nil on purpose — see the helper: a retry child
+		// inherits the root's chat_input_task_id and the onboarding kickoff
+		// stays bound to that root, so releasing it here would strip the context
+		// off a turn that is about to run.
 		if t.ChatSessionID.Valid && retried == nil {
-			// This turn is dead, so anything it owned has to move on. An adopted
-			// onboarding kickoff would otherwise stay bound to a task that will
-			// never run again: the next turn would reach Mika with no onboarding
-			// context and no record that she had already greeted the member, and
-			// she would introduce herself a second time (MUL-5827). The query
-			// hands it to the session's next queued turn — including one the
-			// member queued while THIS turn was still running, which adoption at
-			// send time could not have caught.
-			//
-			// Gated on retried == nil on purpose. A retry child inherits the
-			// root's chat_input_task_id, and the kickoff stays bound to that
-			// root, so the retry still reads it — releasing here would strip
-			// the context off a turn that is about to run.
-			if err := qtx.ReleaseOnboardingKickoffFromTask(ctx, chatInputOwnerID(t)); err != nil {
-				return fmt.Errorf("release onboarding kickoff: %w", err)
-			}
-			if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
-				ID:            dbid.NewV7(),
-				ChatSessionID: t.ChatSessionID,
-				Role:          "assistant",
-				Content:       redact.Text(errMsg),
-				TaskID:        t.ID,
-				FailureReason: pgtype.Text{String: failureReason, Valid: failureReason != ""},
-				ElapsedMs:     computeChatElapsedMs(t),
-			}); err != nil {
-				return fmt.Errorf("write chat failure outcome: %w", err)
+			if err := writeTerminalChatFailureOutcome(ctx, qtx, t, errMsg, failureReason); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -5228,56 +5347,12 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		}
 	}
 
-	// A delegated task that has reached a terminal failure must hand control
-	// back to the task that delegated it. This runs only after the existing
-	// retry decision: retryable failures keep their current policy and remain
-	// silent while a child attempt is pending. The recovery signal is a
-	// platform-authored comment on the source task's issue, routed explicitly to
-	// that task's agent; recoverDelegatedTaskFailure coalesces it with an
-	// existing coordinator run and deduplicates by the failed task id.
+	// Everything a terminal failure owes its surfaces, skipped while an
+	// auto-retry is pending: the new attempt will surface its own outcome, and
+	// we don't want to spam the issue with "task timed out" messages on every
+	// daemon hiccup.
 	if retried == nil {
-		_, recoveryErr := s.recoverDelegatedTaskFailure(ctx, task)
-		if recoveryErr != nil {
-			slog.Warn("delegated task failure recovery failed",
-				"task_id", util.UUIDToString(task.ID),
-				"delegated_from_task_id", util.UUIDToString(task.DelegatedFromTaskID),
-				"error", recoveryErr,
-			)
-		}
-	}
-
-	// Skip the per-failure system comment when we'll immediately retry —
-	// the new task will surface its own status to the user, and we don't
-	// want to spam the issue with "task timed out" messages on every
-	// daemon hiccup. Delegated failures keep this existing failed-issue comment
-	// in addition to the coordinator recovery signal, preserving visibility on
-	// both sides of a cross-issue handoff.
-	if errMsg != "" && task.IssueID.Valid && retried == nil {
-		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
-	}
-
-	// Quick-create tasks: push a failure inbox notification to the
-	// requester so they can either retry or fall back to the advanced form
-	// without losing their original prompt. Skipped when an auto-retry is
-	// pending — the new attempt will write its own outcome.
-	if retried == nil {
-		if qc, ok := s.parseQuickCreateContext(task); ok {
-			attached, attachedErr := s.sourceContextAttachedByTask(ctx, task, qc)
-			switch {
-			case attachedErr != nil:
-				slog.Error("quick-create failure: source context outcome lookup failed",
-					"task_id", util.UUIDToString(task.ID), "error", attachedErr)
-				s.notifyQuickCreateUnconfirmed(ctx, task, qc)
-			case attached:
-				// The CLI create committed before the runtime reported its own
-				// failure. The attached context is authoritative proof that the
-				// target exists, so reconcile the normal success inbox rather than
-				// inviting a duplicate retry from a misleading failure row.
-				s.notifyQuickCreateCompleted(ctx, task, qc, nil)
-			default:
-				s.notifyQuickCreateFailed(ctx, task, qc, errMsg)
-			}
-		}
+		s.reportTerminalTaskFailure(ctx, task, errMsg)
 	}
 	// Reconcile agent status
 	s.ReconcileAgentStatus(ctx, task.AgentID)

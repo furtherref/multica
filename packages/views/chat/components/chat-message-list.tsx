@@ -984,6 +984,10 @@ function FailureBubble({
     skill_bundle_unavailable: t(($) => $.message_list.failure.skill_bundle_unavailable),
     runtime_cli_timeout: t(($) => $.message_list.failure.runtime_cli_timeout),
     environment_prepare_failed: t(($) => $.message_list.failure.environment_prepare_failed),
+    // The deferred-promotion budget sweep retires a due chat turn with this
+    // reason and writes the assistant outcome itself, so a chat bubble does
+    // meet it — the send-time refusal in chat-input is a different surface.
+    budget_exceeded: t(($) => $.message_list.failure.budget_exceeded),
     "agent_error.provider_network": t(($) => $.message_list.failure.provider_network),
     "agent_error.provider_auth_or_access": t(($) => $.message_list.failure.provider_auth_or_access),
     "agent_error.provider_quota_limit": t(($) => $.message_list.failure.provider_quota_limit),
