@@ -15,22 +15,30 @@ func budgetRequest(t *testing.T, userID, method, runtimeID string, body any) *ht
 	return withURLParam(req, "runtimeId", runtimeID)
 }
 
-func TestPutRuntimeCostBudgetRequiresOwnerOrAdmin(t *testing.T) {
+// The budget caps the runtime owner's own machine and credentials, so only
+// they may set it — workspace owners and admins have no override, the same
+// rule that gates runtime visibility. An ownerless runtime has nobody who
+// qualifies and stays read-only for everyone.
+func TestPutRuntimeCostBudgetRequiresRuntimeOwner(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	runtimeID := dbfx.Runtime(t, "budget-rt", testutil.Cols{"visibility": "public"})
-	memberUserID := dbfx.User(t, "Budget Member", "budget-member@example.com")
-	dbfx.Member(t, testWorkspaceID, memberUserID, "member")
+	ownerUserID := dbfx.User(t, "Budget Runtime Owner", "budget-rt-owner@example.com")
+	dbfx.Member(t, testWorkspaceID, ownerUserID, "member")
 	adminUserID := dbfx.User(t, "Budget Admin", "budget-admin@example.com")
 	dbfx.Member(t, testWorkspaceID, adminUserID, "admin")
+	runtimeID := dbfx.Runtime(t, "budget-rt", testutil.Cols{"visibility": "public", "owner_id": ownerUserID})
+	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM runtime_cost_budget WHERE runtime_id = $1`, runtimeID) })
 	body := map[string]any{"runtime": map[string]any{"daily_usd": 20}, "users": []any{}}
 
-	testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, memberUserID, http.MethodPut, runtimeID, body)).Want(http.StatusForbidden)
-	testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, adminUserID, http.MethodPut, runtimeID, body)).Want(http.StatusOK)
-	// testUserID is the workspace owner.
+	// testUserID is the workspace owner; neither they nor the admin own this
+	// runtime, so both are refused.
+	testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, adminUserID, http.MethodPut, runtimeID, body)).Want(http.StatusForbidden)
+	testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, testUserID, http.MethodPut, runtimeID, body)).Want(http.StatusForbidden)
+
+	// The runtime owner is a plain workspace member and still writes it.
 	var out map[string]any
-	testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, testUserID, http.MethodPut, runtimeID, body)).Want(http.StatusOK).JSON(&out)
+	testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, ownerUserID, http.MethodPut, runtimeID, body)).Want(http.StatusOK).JSON(&out)
 	rt := out["runtime"].(map[string]any)
 	if rt["daily"].(map[string]any)["limit_usd"].(float64) != 20 {
 		t.Fatalf("runtime.daily = %#v", rt["daily"])
@@ -41,7 +49,15 @@ func TestPutRuntimeCostBudgetRequiresOwnerOrAdmin(t *testing.T) {
 	if out["can_manage"] != true {
 		t.Fatalf("can_manage = %#v", out["can_manage"])
 	}
-	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM runtime_cost_budget WHERE runtime_id = $1`, runtimeID) })
+
+	// An ownerless runtime is read-only, including for the workspace owner.
+	ownerlessID := dbfx.Runtime(t, "budget-rt-ownerless", testutil.Cols{"visibility": "public", "owner_id": nil})
+	testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, testUserID, http.MethodPut, ownerlessID, body)).Want(http.StatusForbidden)
+	testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, adminUserID, http.MethodPut, ownerlessID, body)).Want(http.StatusForbidden)
+	testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, ownerUserID, http.MethodPut, ownerlessID, body)).Want(http.StatusForbidden)
+	if n := dbfx.Count(t, `SELECT count(*) FROM runtime_cost_budget WHERE runtime_id = $1`, ownerlessID); n != 0 {
+		t.Fatalf("ownerless runtime got %d budget rows, want 0", n)
+	}
 }
 
 func TestPutRuntimeCostBudgetValidatesAmountsAndMembers(t *testing.T) {
@@ -131,17 +147,36 @@ func TestGetRuntimeCostBudgetReportsUsedAndReached(t *testing.T) {
 	}
 }
 
-func TestGetRuntimeCostBudgetMemberSeesCanManageFalse(t *testing.T) {
+// can_manage mirrors the PUT gate, so it is true only for the runtime owner —
+// a workspace admin reading the same card gets false and no Edit button.
+func TestGetRuntimeCostBudgetCanManageIsRuntimeOwnerOnly(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	runtimeID := dbfx.Runtime(t, "budget-rt-member", testutil.Cols{"visibility": "public"})
+	ownerUserID := dbfx.User(t, "Budget Card Owner", "budget-card-owner@example.com")
+	dbfx.Member(t, testWorkspaceID, ownerUserID, "member")
+	runtimeID := dbfx.Runtime(t, "budget-rt-member", testutil.Cols{"visibility": "public", "owner_id": ownerUserID})
 	memberUserID := dbfx.User(t, "Budget Viewer", "budget-viewer@example.com")
 	dbfx.Member(t, testWorkspaceID, memberUserID, "member")
-	var out map[string]any
-	testutil.Call(t, testHandler.GetRuntimeCostBudget, budgetRequest(t, memberUserID, http.MethodGet, runtimeID, nil)).Want(http.StatusOK).JSON(&out)
-	if out["can_manage"] != false {
-		t.Fatalf("can_manage = %#v, want false", out["can_manage"])
+	adminUserID := dbfx.User(t, "Budget Card Admin", "budget-card-admin@example.com")
+	dbfx.Member(t, testWorkspaceID, adminUserID, "admin")
+
+	for _, tc := range []struct {
+		name   string
+		userID string
+		want   bool
+	}{
+		{"runtime owner", ownerUserID, true},
+		{"plain member", memberUserID, false},
+		{"workspace admin", adminUserID, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out map[string]any
+			testutil.Call(t, testHandler.GetRuntimeCostBudget, budgetRequest(t, tc.userID, http.MethodGet, runtimeID, nil)).Want(http.StatusOK).JSON(&out)
+			if out["can_manage"] != tc.want {
+				t.Fatalf("can_manage = %#v, want %v", out["can_manage"], tc.want)
+			}
+		})
 	}
 }
 
@@ -183,40 +218,5 @@ func TestDeleteRuntimeRemovesItsBudgets(t *testing.T) {
 	testutil.Call(t, testHandler.DeleteAgentRuntime, req).WantOneOf(http.StatusOK, http.StatusNoContent)
 	if n := dbfx.Count(t, `SELECT count(*) FROM runtime_cost_budget WHERE runtime_id = $1`, runtimeID); n != 0 {
 		t.Fatalf("budget rows survived runtime delete: %d", n)
-	}
-}
-
-// A private runtime is readable only by its owner (canUseRuntimeForAgent), so
-// the PUT response must not become the second way an admin reads its spend:
-// the write still succeeds — budgets are workspace governance — but the body
-// that GET would refuse is withheld and the caller gets 204.
-func TestPutRuntimeCostBudgetHidesPrivateRuntimeSpendFromNonReaders(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	// Default fixture visibility is private and the owner is testUserID, the
-	// workspace owner — so the admin below can write it but cannot read it.
-	runtimeID := dbfx.Runtime(t, "budget-rt-private")
-	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM runtime_cost_budget WHERE runtime_id = $1`, runtimeID) })
-	adminUserID := dbfx.User(t, "Budget Private Admin", "budget-private-admin@example.com")
-	dbfx.Member(t, testWorkspaceID, adminUserID, "admin")
-	body := map[string]any{"runtime": map[string]any{"daily_usd": 12}, "users": []any{}}
-
-	// The admin's write lands...
-	res := testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, adminUserID, http.MethodPut, runtimeID, body)).Want(http.StatusNoContent)
-	if got := res.Text(); got != "" {
-		t.Fatalf("204 carried a body: %q", got)
-	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM runtime_cost_budget WHERE runtime_id = $1`, runtimeID); n != 1 {
-		t.Fatalf("rows after the admin PUT = %d, want 1", n)
-	}
-	// ...and GET stays the single read gate that refuses them.
-	testutil.Call(t, testHandler.GetRuntimeCostBudget, budgetRequest(t, adminUserID, http.MethodGet, runtimeID, nil)).Want(http.StatusNotFound)
-
-	// The runtime owner reads their own machine, so they still get the body.
-	var out map[string]any
-	testutil.Call(t, testHandler.PutRuntimeCostBudget, budgetRequest(t, testUserID, http.MethodPut, runtimeID, body)).Want(http.StatusOK).JSON(&out)
-	if out["runtime"].(map[string]any)["daily"].(map[string]any)["limit_usd"].(float64) != 12 {
-		t.Fatalf("owner PUT body = %#v", out)
 	}
 }

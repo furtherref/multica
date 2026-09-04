@@ -54,7 +54,10 @@ vi.mock("../../common/actor-avatar", () => ({
 
 import { BudgetSection } from "./budget-section";
 
+// The signed-in user is u-zhang (see the useCurrentMember mock), so `runtime`
+// is theirs and `othersRuntime` belongs to someone else.
 const runtime = { id: "rt-1", workspace_id: "ws-1", owner_id: "u-zhang" } as AgentRuntime;
+const othersRuntime = { id: "rt-2", workspace_id: "ws-1", owner_id: "u-li" } as AgentRuntime;
 
 const period = (limit: number, used: number) => ({
   limit_usd: limit, used_usd: used,
@@ -88,18 +91,27 @@ describe("BudgetSection", () => {
     expect(screen.getByText("Could not load the budget.")).toBeTruthy();
   });
 
-  it("renders the empty state and hides the edit button for members", () => {
+  it("renders the empty state and hides the edit button for a non-owner", () => {
     budgetState.data = { runtime: null, users: [], can_manage: false };
-    wrap(<BudgetSection runtime={runtime} />);
+    wrap(<BudgetSection runtime={othersRuntime} />);
     expect(screen.getByText("No limits set")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /budget/i })).toBeNull();
   });
 
-  it("shows Set budget for admins on the empty state", () => {
-    budgetState.role = "admin";
+  it("shows Set budget to the runtime owner, whose workspace role is member", () => {
     budgetState.data = { runtime: null, users: [], can_manage: true };
     wrap(<BudgetSection runtime={runtime} />);
     expect(screen.getByRole("button", { name: "Set budget" })).toBeTruthy();
+  });
+
+  // Budgets are the runtime owner's call, not workspace governance: a drifted
+  // backend answering can_manage must still not open the dialog to an admin
+  // who does not own the machine.
+  it("hides the edit button from a workspace admin who does not own the runtime", () => {
+    budgetState.role = "admin";
+    budgetState.data = { runtime: null, users: [], can_manage: true };
+    wrap(<BudgetSection runtime={othersRuntime} />);
+    expect(screen.queryByRole("button", { name: /budget/i })).toBeNull();
   });
 
   it("is collapsed by default, shows the reached badge, and expands member rows", () => {
