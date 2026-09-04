@@ -375,11 +375,32 @@ describe("canDeleteRuntime", () => {
 });
 
 describe("canManageRuntimeBudget", () => {
-  it("allows owner and admin, denies member and signed-out", () => {
-    expect(canManageRuntimeBudget({ userId: ALICE, role: "owner" }).allowed).toBe(true);
-    expect(canManageRuntimeBudget({ userId: ALICE, role: "admin" }).allowed).toBe(true);
-    expect(canManageRuntimeBudget({ userId: ALICE, role: "member" }).allowed).toBe(false);
-    expect(canManageRuntimeBudget({ userId: null, role: null }).allowed).toBe(false);
+  it("allows the runtime owner whatever their workspace role", () => {
+    const r = makeRuntime(ALICE);
+    expect(canManageRuntimeBudget(r, { userId: ALICE, role: "member" }).allowed).toBe(true);
+    expect(canManageRuntimeBudget(r, { userId: ALICE, role: "admin" }).allowed).toBe(true);
+    expect(canManageRuntimeBudget(r, { userId: ALICE, role: "owner" }).allowed).toBe(true);
+  });
+
+  it("denies workspace owner and admin who do not own the runtime", () => {
+    const r = makeRuntime(ALICE);
+    expect(canManageRuntimeBudget(r, { userId: BOB, role: "owner" }).reason).toBe(
+      "not_resource_owner",
+    );
+    expect(canManageRuntimeBudget(r, { userId: BOB, role: "admin" }).allowed).toBe(false);
+    expect(canManageRuntimeBudget(r, { userId: BOB, role: "member" }).allowed).toBe(false);
+  });
+
+  it("denies everyone on an ownerless runtime", () => {
+    const r = makeRuntime(null);
+    expect(canManageRuntimeBudget(r, { userId: ALICE, role: "owner" }).allowed).toBe(false);
+    expect(canManageRuntimeBudget(r, { userId: ALICE, role: "admin" }).allowed).toBe(false);
+    expect(canManageRuntimeBudget(r, { userId: ALICE, role: "member" }).allowed).toBe(false);
+  });
+
+  it("denies a signed-out caller", () => {
+    expect(canManageRuntimeBudget(makeRuntime(ALICE), { userId: null, role: null }).reason)
+      .toBe("not_authenticated");
   });
 });
 

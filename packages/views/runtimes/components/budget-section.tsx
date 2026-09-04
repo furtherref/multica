@@ -122,9 +122,11 @@ export function BudgetSection({ runtime }: { runtime: AgentRuntime }) {
   const [expanded, setExpanded] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
 
-  // Both signals must agree: the local rule keeps the button off for members
-  // even if a drifted backend claims can_manage, and vice versa.
-  const canManage = canManageRuntimeBudget({ userId, role }).allowed && budget?.can_manage === true;
+  // Both signals must agree: the local rule keeps the button off for anyone but
+  // the runtime owner even if a drifted backend claims can_manage, and vice
+  // versa.
+  const canManage =
+    canManageRuntimeBudget(runtime, { userId, role }).allowed && budget?.can_manage === true;
   const users = budget?.users ?? [];
   const hasAny = budget?.runtime != null || users.length > 0;
   const reachedCount = countReachedUsers(users);

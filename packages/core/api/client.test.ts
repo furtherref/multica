@@ -2223,9 +2223,9 @@ describe("ApiClient runtime cost budget writes", () => {
     can_manage: true,
   };
 
-  // The server saves the budget but withholds the spend from a writer who
-  // cannot READ the runtime (an admin on another member's private machine):
-  // 204, no body. The client must answer the empty budget rather than throw or
+  // Parsing tolerance, not a claim about the current server: an installed
+  // desktop build can talk to a backend that answers this PUT with 204 and no
+  // body. The client must then answer the empty budget rather than throw or
   // hand the caller `undefined` — the mutation's invalidation refetches through
   // GET, which is the single read gate.
   it("answers the empty budget when the write returns 204 with no body", async () => {
@@ -2243,7 +2243,7 @@ describe("ApiClient runtime cost budget writes", () => {
     expect(result).toEqual(EMPTY_RUNTIME_COST_BUDGET);
   });
 
-  it("still parses the body when the writer may read the runtime", async () => {
+  it("parses the budget body a 200 carries", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(

@@ -184,15 +184,26 @@ export function canDeleteRuntime(
 }
 
 /**
- * Set or change a runtime's cost budget. Mirrors `PutRuntimeCostBudget`
- * (`server/internal/handler/runtime_cost_budget.go`): workspace owner or
- * admin only. The runtime owner has no override — budgets are governance.
+ * Set or change a runtime's cost budget. Mirrors `canManageRuntimeBudget` in
+ * `server/internal/handler/runtime_cost_budget.go`: the runtime owner only.
+ * There is NO admin override — the budget caps the owner's own machine and
+ * credentials, the same reasoning that keeps `canSetRuntimeVisibility`
+ * owner-only. An ownerless runtime (profile-created, or an owner since
+ * removed) therefore has nobody who may set a budget and stays read-only.
  */
-export function canManageRuntimeBudget(ctx: PermissionContext): Decision {
-  if (isAdminLike(ctx.role)) return ALLOW;
+export function canManageRuntimeBudget(
+  runtime: RuntimeDevice,
+  ctx: PermissionContext,
+): Decision {
+  if (ctx.userId === null) {
+    return deny("not_authenticated", "Sign in to set a cost budget.");
+  }
+  if (runtime.owner_id !== null && runtime.owner_id === ctx.userId) {
+    return ALLOW;
+  }
   return deny(
-    "not_admin_role",
-    "Only workspace owners and admins can set runtime cost budgets.",
+    "not_resource_owner",
+    "Only the runtime owner can set its cost budget.",
   );
 }
 

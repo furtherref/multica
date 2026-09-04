@@ -57,8 +57,15 @@ const maxBudgetUSD = 1_000_000
 // all-zero uuid so one uuid[] can name both kinds of scope.
 var zeroBudgetScopeUUID = pgtype.UUID{Valid: true}
 
-func canManageRuntimeBudget(member db.Member) bool {
-	return roleAllowed(member.Role, "owner", "admin")
+// canManageRuntimeBudget reports whether a member may set this runtime's cost
+// budget. Runtime owner only, the same gate canSetRuntimeVisibility applies:
+// the budget caps what the owner's own machine and credentials may spend, so
+// it is the owner's call and not an administrative one. Workspace owners and
+// admins get no override — an ownerless runtime (profile-created, or an owner
+// since removed) therefore has no one who can set a budget and stays
+// read-only.
+func canManageRuntimeBudget(member db.Member, rt db.AgentRuntime) bool {
+	return rt.OwnerID.Valid && uuidToString(rt.OwnerID) == uuidToString(member.UserID)
 }
 
 func periodResponse(p *service.RuntimeBudgetPeriodStatus) *RuntimeBudgetPeriodResponse {
@@ -86,13 +93,13 @@ func scopeResponse(sc service.RuntimeBudgetScopeStatus) RuntimeBudgetScopeRespon
 	return out
 }
 
-func (h *Handler) writeRuntimeBudget(w http.ResponseWriter, r *http.Request, runtimeID pgtype.UUID, member db.Member) {
-	status, err := h.TaskService.RuntimeCostBudgetStatus(r.Context(), runtimeID, time.Now())
+func (h *Handler) writeRuntimeBudget(w http.ResponseWriter, r *http.Request, rt db.AgentRuntime, member db.Member) {
+	status, err := h.TaskService.RuntimeCostBudgetStatus(r.Context(), rt.ID, time.Now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load runtime budget")
 		return
 	}
-	resp := RuntimeBudgetResponse{Users: []RuntimeBudgetScopeResponse{}, CanManage: canManageRuntimeBudget(member)}
+	resp := RuntimeBudgetResponse{Users: []RuntimeBudgetScopeResponse{}, CanManage: canManageRuntimeBudget(member, rt)}
 	if status.Runtime != nil {
 		sc := scopeResponse(*status.Runtime)
 		resp.Runtime = &sc
@@ -110,7 +117,7 @@ func (h *Handler) GetRuntimeCostBudget(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	h.writeRuntimeBudget(w, r, rt.ID, member)
+	h.writeRuntimeBudget(w, r, rt, member)
 }
 
 // validBudgetAmount accepts a positive finite USD amount with at most two
@@ -130,9 +137,13 @@ func validBudgetAmount(v *float64) (pgtype.Int8, bool) {
 	return pgtype.Int8{Int64: pricing.USDToTicks(usd), Valid: true}, true
 }
 
-// PutRuntimeCostBudget replaces the whole budget set of a runtime. Owner and
-// admin only; the runtime owner has no say because budgets are workspace
-// governance, not machine access.
+// PutRuntimeCostBudget replaces the whole budget set of a runtime. Runtime
+// owner only (canManageRuntimeBudget): the budget caps the owner's own machine
+// and credentials, so workspace owners and admins are excluded exactly as they
+// are from changing the runtime's visibility. That gate is also what lets the
+// response echo the GET body unconditionally: the owner always passes
+// canUseRuntimeForAgent, so the reply never hands out spend the GET gate would
+// deny. Widening the gate again would need that 204-without-body branch back.
 func (h *Handler) PutRuntimeCostBudget(w http.ResponseWriter, r *http.Request) {
 	runtimeID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "runtimeId"), "runtime_id")
 	if !ok {
@@ -143,8 +154,12 @@ func (h *Handler) PutRuntimeCostBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "runtime not found")
 		return
 	}
-	member, ok := h.requireWorkspaceRole(w, r, uuidToString(rt.WorkspaceID), "runtime not found", "owner", "admin")
+	member, ok := h.requireWorkspaceMember(w, r, uuidToString(rt.WorkspaceID), "runtime not found")
 	if !ok {
+		return
+	}
+	if !canManageRuntimeBudget(member, rt) {
+		writeError(w, http.StatusForbidden, "only the runtime owner can set its cost budget")
 		return
 	}
 	var req runtimeBudgetPutRequest
@@ -231,14 +246,5 @@ func (h *Handler) PutRuntimeCostBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save runtime budget")
 		return
 	}
-	// The write is workspace governance, but the GET body is runtime data:
-	// requireRuntimeReadAccess 404s an admin on another member's private
-	// runtime, so echoing the spend here would hand out exactly the figures
-	// that gate withholds. Answer 204 for a caller who could not GET it; the
-	// client refetches through GET, which stays the single read gate.
-	if !canUseRuntimeForAgent(member, rt) {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	h.writeRuntimeBudget(w, r, rt.ID, member)
+	h.writeRuntimeBudget(w, r, rt, member)
 }
