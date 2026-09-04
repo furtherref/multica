@@ -162,7 +162,15 @@ executing agent is known and before the row is written:
   auto-pause monitor — for an autopilot that did nothing wrong. The leader is
   the right scope either way: a squad-assigned autopilot creates the issue
   against the squad and the issue listener routes it to that same leader. The
-  enqueue helper keeps its own gate for the window between the two.
+  enqueue helper keeps its own gate for the window between the two. **Ruling:**
+  a refusal that does land in that window stays a `failed` run, not a
+  `skipped` one — the issue is committed by then and a `skipped` run claims
+  nothing happened — but it is recorded with `reason_code = budget_exceeded`
+  and the amount-free `PublicReason()`, never `internal_error` and never the
+  limit or running total. `autopilot_run.failure_reason` is readable by anyone
+  who can see the autopilot, and the webhook worker persists the same string in
+  `webhook_delivery.error`, so the error returned up that chain is wrapped to
+  carry the public reason while `errors.As` still reaches the typed refusal.
 - **`RetrySourceContextQuickCreate`** (manual source-context retry) checks
   after the invoke gate and the issue-capacity preflight, before its
   transaction, and returns the error unchanged. The retry handler maps it to
@@ -199,17 +207,31 @@ executing agent is known and before the row is written:
   silently. Each retired row then runs the terminal side effects `FailTask`
   runs for a non-retried failure, through the same two shared helpers:
   `writeTerminalChatFailureOutcome` (onboarding-kickoff release plus the
-  assistant outcome message, in its own transaction behind the chat session
-  lock) and `reportTerminalTaskFailure` (delegated-failure recovery, the
-  per-failure issue comment, the quick-create requester's inbox outcome).
+  assistant outcome message) and `reportTerminalTaskFailure` (delegated-failure
+  recovery, the per-failure issue comment, the quick-create requester's inbox
+  outcome). The retirement is split by row kind, and the split is the
+  correctness boundary: a row with a `chat_session_id` is failed in its OWN
+  transaction — chat session lock, single-row fail while it is still
+  `deferred`, `writeTerminalChatFailureOutcome` — so the status flip and the
+  outcome message are atomic for that row, and a row that left `deferred` in
+  between is skipped for whatever promoted, cancelled or superseded it. Rows
+  without a chat session keep the bulk statement (narrowed to
+  `chat_session_id IS NULL`, routed through `terminateTasksInTx` so
+  `SettleDeliveredDelegatedFailureRecoveries` commits with the terminal
+  write); those carry no atomicity claim beyond their own UPDATE, which is the
+  best-effort behaviour the ruling below already states. All retirement writes
+  land before any `reportTerminalTaskFailure`, so no chat row waits behind
+  another row's recovery dispatch.
   **Ruling:** a deferred row is not only an issue fallback — chat turns park
   there (sealed pending media, retry backoff) and quick-creates are
   retry-eligible — so flipping the status alone would end a refused chat turn
   with a spinner and no reply, and leave a quick-create requester's pending
   state unresolved forever. `budget_exceeded` therefore needs an entry in
   chat's failure-copy map (`chatFailureCopy`) as well as the run-badge maps. One refusal never stops the sweep — every other agent's rows
-  promote in the same tick — and an unreadable budget leaves that agent's
-  rows to promote rather than retiring a member's work over a transient read.
+  promote in the same tick — and a budget or spend the sweep cannot read
+  leaves that whole runtime's rows to promote (the read is per runtime, not
+  per agent, so one failed load covers every agent on it) rather than retiring
+  a member's work over a transient read.
   The pairs come from a query that joins `agent ON a.id = t.agent_id AND
   a.runtime_id = t.runtime_id`, so the budget priced is always the one those
   rows would actually spend against: an agent rebound to another runtime leaves
