@@ -607,6 +607,8 @@ type Daemon struct {
 
 	runner             taskRunner    // executes agent tasks; set to d.runTask by New(), overridable in tests
 	cancelPollInterval time.Duration // how often handleTask polls for server-side cancellation; overridable in tests
+	// Zero uses the production grace period; tests can bound silent fake backends.
+	cancelledResultWait time.Duration
 	// envRootBusyWait is how long a task that is entitled to a prior env root
 	// waits for the previous run to let go of it before giving up and preparing
 	// a fresh one. New() sets it; the zero value means "do not wait", which is
@@ -5497,11 +5499,16 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 
 	// Report usage before any early return — the agent accumulates tokens
 	// whether the task completes, errors, or is cancelled mid-run by the poll
-	// goroutine. Both claude.go and codex.go populate result.Usage even when
-	// runCtx is cancelled, so dropping this on the cancelled path silently
-	// under-reports billing.
+	// goroutine. Backends can return their final accounting after cancellation;
+	// executeAndDrain preserves it through a bounded cleanup wait, so dropping
+	// it here would still silently under-report billing.
 	if len(result.Usage) > 0 {
-		if usageErr := d.client.ReportTaskUsage(ctx, task.ID, result.Usage); usageErr != nil {
+		// Cancellation ends execution, not accounting. Keep context values but
+		// give this final write its own bounded lifetime, including on shutdown.
+		usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		usageErr := d.client.ReportTaskUsage(usageCtx, task.ID, result.Usage)
+		usageCancel()
+		if usageErr != nil {
 			taskLog.Warn("report task usage failed", "error", usageErr)
 		}
 	}
@@ -9078,53 +9085,38 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		}
 	}
 
+	var result agent.Result
+	// Sample before selecting: cancellation already observable here wins even
+	// if the result is ready too. A cancellation observed only during transcript
+	// flushing must not rewrite an already received backend result.
+	stopErr := drainCtx.Err()
 	select {
-	case result := <-session.Result:
-		waitForDrain()
-		if idleWatchdogFired.Load() {
-			// The backend's wait goroutine (e.g. claude.go) translates the
-			// SIGKILL we delivered via agentCancel into Status="aborted".
-			// Re-tag it as "idle_watchdog" so runTask routes the
-			// disposition through a dedicated failure_reason, not the
-			// generic "agent_error" bucket the aborted path falls into.
-			result.Status = "idle_watchdog"
-			if result.Error == "" {
-				result.Error = idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load()))
-			}
+	case r, ok := <-session.Result:
+		result = r
+		if !ok {
+			result = agent.Result{Status: "failed", Error: "agent result channel closed without a result"}
 		}
-		return result, toolCount.Load(), nil
 	case <-drainCtx.Done():
-		// The drain loop is exiting on this same Done signal; wait for its
-		// final flush so the timeout/watchdog/cancel terminals below cannot
-		// hand back (and let runTask fail-and-broadcast) a still-flushing
-		// transcript either.
-		waitForDrain()
-		// Idle watchdog cancels via agentCancel(), which propagates here as
-		// context.Canceled. Check this BEFORE the generic cancelled/timeout
-		// classifiers so a watchdog-induced stop isn't misreported as
-		// "task cancelled by server".
-		if idleWatchdogFired.Load() {
-			return agent.Result{
-				Status: "idle_watchdog",
-				Error:  idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load())),
-			}, toolCount.Load(), nil
-		}
-		// Distinguish external cancellation (e.g. server-initiated cancel
-		// because the issue was reassigned, or the user invoked CancelTask)
-		// from genuine drain-deadline timeouts. context.Canceled means the
-		// upstream runCtx fired runCancel(); context.DeadlineExceeded is the
-		// drain deadline expiring on its own.
-		if errors.Is(drainCtx.Err(), context.Canceled) {
-			return agent.Result{
-				Status: "cancelled",
-				Error:  "task cancelled by upstream context (server cancel or daemon shutdown)",
-			}, toolCount.Load(), nil
-		}
-		return agent.Result{
-			Status: "timeout",
-			Error:  "agent did not produce result within drain timeout",
-		}, toolCount.Load(), nil
+		stopErr = drainCtx.Err()
+		// A drain deadline is a child of agentCtx and does not cancel the
+		// backend by itself. Stop it before waiting for its final accounting.
+		agentCancel()
+		result = d.waitForCancelledAgentResult(session.Result, taskLog)
 	}
+	stoppedByWatchdog := idleWatchdogFired.Load()
+	waitForDrain()
+	switch {
+	case stoppedByWatchdog:
+		result.Status = "idle_watchdog"
+		result.Error = idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load()))
+	case errors.Is(stopErr, context.Canceled):
+		result.Status = "cancelled"
+		result.Error = "task cancelled by upstream context (server cancel or daemon shutdown)"
+	case errors.Is(stopErr, context.DeadlineExceeded):
+		result.Status = "timeout"
+		result.Error = "agent did not produce result within drain timeout"
+	}
+	return result, toolCount.Load(), nil
 }
 
 // idleWatchdogReason formats the human-facing explanation surfaced on

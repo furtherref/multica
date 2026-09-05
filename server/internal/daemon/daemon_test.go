@@ -1644,8 +1644,9 @@ func newTestDaemon(t *testing.T) *Daemon {
 	}))
 	t.Cleanup(srv.Close)
 	return &Daemon{
-		client: NewClient(srv.URL),
-		logger: slog.Default(),
+		client:              NewClient(srv.URL),
+		logger:              slog.Default(),
+		cancelledResultWait: 10 * time.Millisecond,
 	}
 }
 
@@ -2431,7 +2432,7 @@ func newTranscriptRecorder(t *testing.T) (*Daemon, *transcriptRecorder) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(srv.Close)
-	return &Daemon{client: NewClient(srv.URL), logger: slog.Default()}, rec
+	return &Daemon{client: NewClient(srv.URL), logger: slog.Default(), cancelledResultWait: 10 * time.Millisecond}, rec
 }
 
 // TestExecuteAndDrain_FlushesTranscriptBeforeReturningResult pins the
