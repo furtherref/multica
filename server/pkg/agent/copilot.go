@@ -456,6 +456,10 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		}
 	}()
 
+	if err := validateCopilotTaskEnvironment(b.cfg.Env, cmd.Env); err != nil {
+		cancel()
+		return nil, err
+	}
 	// Capture the session's counters before the CLI can append to them: a
 	// resumed run's own usage is the growth over this baseline.
 	var resumeUsageBaseline copilotSessionUsageRead

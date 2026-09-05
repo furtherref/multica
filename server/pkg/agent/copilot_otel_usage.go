@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"strings"
 )
 
 // Each Execute gets a fresh file. Copilot exports completed request spans while
@@ -28,12 +29,26 @@ func prepareCopilotOTelUsage(env []string) ([]string, string, error) {
 		_ = os.Remove(path)
 		return env, "", err
 	}
-	return mergeEnv(env, map[string]string{
+	overrides := map[string]string{
 		"COPILOT_OTEL_ENABLED":                               "true",
 		"COPILOT_OTEL_EXPORTER_TYPE":                         "file",
 		"COPILOT_OTEL_FILE_EXPORTER_PATH":                    path,
 		"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "false",
-	}), path, nil
+	}
+	// env has already passed buildEnv's boundary filtering and contains the
+	// current task credentials. mergeEnv would filter MULTICA_* a second time.
+	// Replace only telemetry-owned keys, preserving all other prepared entries.
+	prepared := make([]string, 0, len(env)+len(overrides))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if _, replaced := overrides[key]; !replaced {
+			prepared = append(prepared, entry)
+		}
+	}
+	for key, value := range overrides {
+		prepared = append(prepared, key+"="+value)
+	}
+	return prepared, path, nil
 }
 
 // A configured skip is expected, not an exporter failure. Only include the
