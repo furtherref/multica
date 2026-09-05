@@ -9237,14 +9237,29 @@ func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {
 	}
 	for model, u := range b {
 		existing := merged[model]
+		// Copilot can recover a provider quote from one failed attempt and
+		// token-only usage from the fresh retry. A partial quote cannot price
+		// the merged row: downstream treats every token on a priced row as
+		// already paid for. Fall back to estimating all tokens in that case.
+		// Never discard a cost-only operand; it cannot be reconstructed from
+		// token counts. This fallback is limited to token-bearing operands.
+		mixedPricing := usageHasTokenCounts(existing) && usageHasTokenCounts(u) &&
+			((existing.CostUSDTicks > 0) != (u.CostUSDTicks > 0))
 		existing.InputTokens += u.InputTokens
 		existing.OutputTokens += u.OutputTokens
 		existing.CacheReadTokens += u.CacheReadTokens
 		existing.CacheWriteTokens += u.CacheWriteTokens
 		existing.CostUSDTicks += u.CostUSDTicks
+		if mixedPricing {
+			existing.CostUSDTicks = 0
+		}
 		merged[model] = existing
 	}
 	return merged
+}
+
+func usageHasTokenCounts(u agent.TokenUsage) bool {
+	return u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheReadTokens > 0 || u.CacheWriteTokens > 0
 }
 
 // repoDataToInfo converts daemon RepoData to repocache RepoInfo.
