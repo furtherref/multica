@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -432,10 +434,27 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	hideAgentWindow(cmd)
 	b.cfg.logAgentCommand(cmd, newAgentCommandLogArgs(args))
 	cmd.WaitDelay = 10 * time.Second
+	// Let completed requests flush telemetry before the forced-kill backstop.
+	// The worker owns group-wide cancellation and joins it before reading usage.
+	cmd.Cancel = func() error { return nil }
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
+	telemetryEnv, telemetryPath, telemetryErr := prepareCopilotOTelUsage(cmd.Env)
+	if telemetryErr != nil {
+		b.cfg.Logger.Warn("Copilot request telemetry unavailable", "error", telemetryErr)
+	} else if telemetryPath == "" {
+		b.cfg.Logger.Debug("Copilot request telemetry skipped", "reason", copilotOTelSkipReason(cmd.Env))
+	} else {
+		cmd.Env = telemetryEnv
+	}
+	telemetryOwnedByWorker := false
+	defer func() {
+		if !telemetryOwnedByWorker && telemetryPath != "" {
+			_ = os.Remove(telemetryPath)
+		}
+	}()
 
 	// Capture the session's counters before the CLI can append to them: a
 	// resumed run's own usage is the growth over this baseline.
@@ -481,6 +500,9 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 
 	go func() {
 		defer cancel()
+		if telemetryPath != "" {
+			defer os.Remove(telemetryPath)
+		}
 		defer close(msgCh)
 		defer close(resCh)
 		if ownedResumeUsageUnlock != nil {
@@ -495,8 +517,21 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		// it until the stream reveals the real model (see copilotEventState).
 		st := newCopilotEventState(opts.Model, opts.ResumeSessionID != "")
 
+		procDone := make(chan struct{})
+		cancelDone := make(chan struct{})
 		go func() {
-			<-runCtx.Done()
+			defer close(cancelDone)
+			select {
+			case <-procDone:
+				return
+			case <-runCtx.Done():
+			}
+			signalProcessGroup(cmd, syscall.SIGTERM)
+			// Check the entire group, not just the leader: a tool or MCP child
+			// can ignore SIGTERM after Copilot itself has already exited.
+			if !waitProcessGroupGone(cmd, 2*time.Second) {
+				signalProcessGroup(cmd, syscall.SIGKILL)
+			}
 			_ = stdout.Close()
 		}()
 
@@ -523,6 +558,8 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		}
 
 		exitErr := cmd.Wait()
+		close(procDone)
+		<-cancelDone
 		releaseProcessGroup(cmd)
 		duration := time.Since(startTime)
 
@@ -553,6 +590,21 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		}
 
 		usage := st.resolveUsage()
+		// A clean session snapshot or stdout total stays authoritative. When
+		// neither is usable (notably cancellation or a stale resume baseline),
+		// recover this process's completed model calls from its private export.
+		// This also works when the process died before stdout revealed a session ID.
+		if telemetryPath != "" && !hasTokens(st.callUsage) &&
+			!hasTokens(st.sessionFileUsage) && (st.resumed || !hasTokens(st.shutdownUsage)) {
+			requestUsage, err := readCopilotOTelUsage(telemetryPath)
+			if err != nil {
+				b.cfg.Logger.Warn("Copilot request telemetry requires attention", "error", err)
+			}
+			if hasTokens(requestUsage) {
+				usage = requestUsage
+				b.cfg.Logger.Info("Copilot usage recovered from request telemetry", "models", len(usage))
+			}
+		}
 		// A run that produced output but no tokens is a silent billing hole:
 		// the daemon skips reporting empty usage, so nothing surfaces anywhere
 		// downstream. This is the current state on Copilot CLI 1.0.77 (see
@@ -576,6 +628,7 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	}()
 	// The goroutine owns the temp file from here on.
 	mcpFileCleanup = nil
+	telemetryOwnedByWorker = true
 	// The goroutine also owns the resumed session lock through the final
 	// snapshot read.
 	resumeUsageUnlock = nil
