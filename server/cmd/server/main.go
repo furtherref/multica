@@ -662,6 +662,7 @@ func main() {
 	// Reuse the handler's primary Queries handle so replica routing does not
 	// create a second wrapper around the same primary pool.
 	h.ReadSelector = dbreader.New(h.Queries, replicaQueries, readRecorder)
+	h.PRRefresh.SetReadSelector(h.ReadSelector)
 
 	// Cross-node suspension kick: the router wires h.DisconnectUser to the
 	// LOCAL hub, but in a multi-node deployment a suspended user's sockets
