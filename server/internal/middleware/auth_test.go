@@ -287,7 +287,7 @@ func TestAuth_StripsClientSuppliedActorSource(t *testing.T) {
 // since MUL-6951, act with the authority of that run's originator. MUL-3428.
 func TestAuth_StripsForgedAgentIdentityHeaders(t *testing.T) {
 	var gotAgentID, gotTaskID string
-	mw := Auth(nil, nil, nil)
+	mw := Auth(nil, nil, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAgentID = r.Header.Get("X-Agent-ID")
 		gotTaskID = r.Header.Get("X-Task-ID")

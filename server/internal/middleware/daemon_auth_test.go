@@ -81,7 +81,9 @@ func TestDaemonAuth_MissingAuth(t *testing.T) {
 // leaves the header empty downstream.
 func TestDaemonAuth_StripsClientSuppliedActorSource(t *testing.T) {
 	pool := openPool(t)
-	defer pool.Close()
+	// t.Cleanup, not defer: the workspace helper deletes its row in a
+	// t.Cleanup, and a defer would close the pool before that runs.
+	t.Cleanup(pool.Close)
 	queries := db.New(pool)
 
 	const rawToken = "mdt_strip_test"
@@ -126,19 +128,21 @@ func TestDaemonAuth_StripsClientSuppliedActorSource(t *testing.T) {
 // reachable through either middleware gets the same guarantee. The daemon's
 // own endpoints carry task ids in the request body, never in these headers,
 // so the strip costs the daemon nothing. MUL-3428.
+//
+// Upstream drives this through a cached mdt_ identity; this fork keeps mdt_
+// deliberately uncached (#91), so the request rides the PAT-cache fallback
+// instead. The strip happens before the token is even read, so the token
+// kind does not change what is being pinned.
 func TestDaemonAuth_StripsForgedAgentIdentityHeaders(t *testing.T) {
 	rdb := newRedisTestClient(t)
-	cache := auth.NewDaemonTokenCache(rdb)
+	cache := auth.NewPATCache(rdb)
 
-	const rawToken = "mdt_agent_header_strip_test"
+	const rawToken = "mul_agent_header_strip_test"
 	hash := auth.HashToken(rawToken)
-	cache.Set(context.Background(), hash, auth.DaemonTokenIdentity{
-		WorkspaceID: "ws-1",
-		DaemonID:    "daemon-1",
-	}, auth.AuthCacheTTL)
+	cache.Set(context.Background(), hash, "cached-user-id", auth.AuthCacheTTL)
 
 	var gotAgentID, gotTaskID string
-	mw := DaemonAuth(nil, nil, cache, nil)
+	mw := DaemonAuth(nil, cache, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAgentID = r.Header.Get("X-Agent-ID")
 		gotTaskID = r.Header.Get("X-Task-ID")
@@ -156,7 +160,7 @@ func TestDaemonAuth_StripsForgedAgentIdentityHeaders(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	if gotAgentID != "" || gotTaskID != "" {
-		t.Fatalf("agent identity headers must be cleared on the mdt_ path, got agent=%q task=%q", gotAgentID, gotTaskID)
+		t.Fatalf("agent identity headers must be cleared on the daemon path, got agent=%q task=%q", gotAgentID, gotTaskID)
 	}
 }
 
@@ -295,7 +299,6 @@ func TestDaemonAuth_MCN_FleetUnreachable(t *testing.T) {
 	}
 }
 
-
 // TestDaemonAuth_MCN_OwnerNotInLocalDB pins the new owner-existence
 // guard end-to-end through the middleware. Cloud verifies the token
 // successfully and returns an owner_id that does not exist in our
@@ -341,7 +344,9 @@ func TestDaemonAuth_MCN_OwnerNotInLocalDB(t *testing.T) {
 // ENTIRE /api/daemon surface, not after a cache TTL.
 func TestDaemonAuth_MDTDeletedTokenRejectedImmediately(t *testing.T) {
 	pool := openPool(t)
-	defer pool.Close()
+	// t.Cleanup, not defer: the workspace helper deletes its row in a
+	// t.Cleanup, and a defer would close the pool before that runs.
+	t.Cleanup(pool.Close)
 	queries := db.New(pool)
 	ctx := context.Background()
 
@@ -388,7 +393,6 @@ func TestDaemonAuth_MDTDeletedTokenRejectedImmediately(t *testing.T) {
 		t.Fatalf("next handler called %d times, want 1", okCalls)
 	}
 }
-
 
 // createDaemonAuthTestWorkspace seeds a workspace row: daemon_token still
 // carries a legacy FK to workspace, so mdt_ tests need a real parent row.
