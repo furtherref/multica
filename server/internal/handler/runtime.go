@@ -287,8 +287,14 @@ func (h *Handler) GetRuntimeUsageByAgent(w http.ResponseWriter, r *http.Request)
 
 	// pricing_date is always UTC; tz only sets the cutoff boundary so "last 30
 	// days" means 30 of the viewer's days.
+	//
+	// Exact window, not the N+1 headroom the date-bucketed series carry: these
+	// rows have no viewer-tz date the client could trim on, and the runtime
+	// detail page shows them beside KPIs sliced to exactly `days` calendar
+	// days. At days=1 the headroom would make "Cost by agent" cover today AND
+	// yesterday (see TestRuntimeUsageByAgentUsesExactWindow).
 	viewTZ := h.resolveViewingTZ(r)
-	since := parseSinceParamInTZ(r, 30, viewTZ)
+	since := parseExactSinceParamInTZ(r, 30, viewTZ)
 
 	rows, err := h.Queries.ListRuntimeUsageByAgent(r.Context(), db.ListRuntimeUsageByAgentParams{
 		RuntimeID: rt.ID,
@@ -404,14 +410,11 @@ func (h *Handler) GetRuntimeUsageByHour(w http.ResponseWriter, r *http.Request) 
 //
 // The cutoff yields N+1 calendar buckets (today-days … today inclusive).
 // The extra day versus a naive "-(days-1)" is deliberate headroom, not an
-// off-by-one:
-//   - Runtime detail's sliceWindow filters `date >= today-days` (closed) and
-//     its prior-window delta reaches back to today-2*days, so the today-days
-//     bucket MUST exist or the oldest bar / KPI delta silently loses data.
-//   - The workspace dashboard re-filters client-side with -(days-1); the one
-//     extra day the backend returns is trimmed there — harmless.
-//
-// Do not "tighten" this to -(days-1): it would break the runtime detail page.
+// off-by-one: both the runtime detail page and the workspace dashboard
+// re-filter date-bucketed series client-side to exactly N days with
+// -(days-1), and runtime detail's prior-window delta reads the trimmed
+// surplus. Endpoints whose rows carry no viewer-tz date cannot trim and use
+// parseExactSinceParamInTZ instead.
 func sinceFromDays(now time.Time, days int, loc *time.Location) time.Time {
 	local := now.In(loc)
 	startOfToday := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)

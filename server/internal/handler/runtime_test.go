@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -588,5 +590,68 @@ func TestRuntimeHeatmapEndpointsUseViewerTZ(t *testing.T) {
 				t.Fatalf("%s: expected 200, got %d: %s", c.name, w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// TestRuntimeUsageByAgentUsesExactWindow pins the by-agent cutoff to exactly
+// `days` calendar days. The runtime detail page shows this rollup beside KPIs
+// the client trims to `-(days-1)`; the rollup carries only a UTC pricing_date,
+// so the client cannot trim it the same way and the server must close the
+// window itself. At days=1 the N+1 headroom the date-bucketed series keep
+// would make "Cost by agent" cover today AND yesterday. Sibling of
+// TestDashboardPerAgentRollupsUseExactWindow.
+func TestRuntimeUsageByAgentUsesExactWindow(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	var runtimeID, agentID string
+	dbfx.QueryRow(t, `SELECT id FROM agent_runtime WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&runtimeID)
+	dbfx.QueryRow(t, `SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID)
+	issueID := dbfx.Issue(t, "by-agent exact window test")
+
+	// Pin the clock the cutoff reads so the fixtures below are placed
+	// relative to the same instant the handler computes "start of today" from.
+	now := pinDayWindowClock(t, time.Now().UTC())
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	const windowModel = "by-agent-exact-window-model"
+	dbfx.Cleanup(t, `DELETE FROM task_usage WHERE model = $1`, windowModel)
+	seed := func(at time.Time, input int64) {
+		taskID := dbfx.Task(t, agentID, testutil.Cols{
+			"issue_id":   issueID,
+			"runtime_id": runtimeID,
+			"status":     "completed",
+			"created_at": at,
+		})
+		dbfx.Exec(t, `
+			INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, created_at)
+			VALUES ($1, 'exact-window-test', $2, $3, 0, $4)
+		`, taskID, windowModel, input, at)
+	}
+	seed(now, 1000)                             // today
+	seed(startOfToday.Add(-12*time.Hour), 7777) // noon yesterday
+
+	seededTokens := func(days int) int64 {
+		req := newRequest("GET", "/api/runtimes/"+runtimeID+"/usage/by-agent?days="+strconv.Itoa(days)+"&tz=UTC", nil)
+		req = withURLParam(req, "runtimeId", runtimeID)
+		var rows []RuntimeUsageByAgentResponse
+		testutil.Call(t, testHandler.GetRuntimeUsageByAgent, req).Want(http.StatusOK).JSON(&rows)
+		var n int64
+		for _, r := range rows {
+			if r.Model == windowModel {
+				n += r.InputTokens
+			}
+		}
+		return n
+	}
+
+	// days=1 means "today". The rollup must not reach yesterday.
+	if got := seededTokens(1); got != 1000 {
+		t.Errorf("days=1 by-agent: want today's 1000 tokens only, got %d", got)
+	}
+	// days=2 is today plus yesterday, and no further.
+	if got := seededTokens(2); got != 8777 {
+		t.Errorf("days=2 by-agent: want 8777 (today + yesterday), got %d", got)
 	}
 }

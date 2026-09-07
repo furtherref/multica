@@ -1574,12 +1574,43 @@ describe("sliceWindow (timezone-aware)", () => {
       makeUsage("2026-05-19"),
       makeUsage("2026-05-20"),
     ];
+    // 7 calendar days ending today (May 14..20): May 13 is outside.
     const { filtered } = sliceWindow(usage, 7, "Asia/Shanghai");
-    expect(filtered.map((u) => u.date)).toEqual([
-      "2026-05-13",
-      "2026-05-19",
-      "2026-05-20",
-    ]);
+    expect(filtered.map((u) => u.date)).toEqual(["2026-05-19", "2026-05-20"]);
+  });
+
+  it("covers exactly N calendar days, not N+1", () => {
+    vi.setSystemTime(new Date("2026-05-20T12:00:00Z"));
+    const usage = [
+      makeUsage("2026-05-13"),
+      makeUsage("2026-05-14"),
+      makeUsage("2026-05-20"),
+    ];
+    const { filtered, prevFiltered } = sliceWindow(usage, 7, "UTC");
+    expect(filtered.map((u) => u.date)).toEqual(["2026-05-14", "2026-05-20"]);
+    expect(prevFiltered.map((u) => u.date)).toEqual(["2026-05-13"]);
+  });
+
+  it("1d means today only, with yesterday as the prior window", () => {
+    vi.setSystemTime(new Date("2026-05-20T12:00:00Z"));
+    const usage = [
+      makeUsage("2026-05-18"),
+      makeUsage("2026-05-19"),
+      makeUsage("2026-05-20"),
+    ];
+    const { filtered, prevFiltered } = sliceWindow(usage, 1, "UTC");
+    expect(filtered.map((u) => u.date)).toEqual(["2026-05-20"]);
+    expect(prevFiltered.map((u) => u.date)).toEqual(["2026-05-19"]);
+  });
+
+  it("1d follows the viewer's calendar day across the midnight edge", () => {
+    // 23:00 UTC on May 19 is already May 20 in Shanghai: the 1d window must
+    // hold May 20 only, and must not pull in May 19 as "the last 24 hours".
+    vi.setSystemTime(new Date("2026-05-19T23:00:00Z"));
+    const usage = [makeUsage("2026-05-19"), makeUsage("2026-05-20")];
+    const { filtered, prevFiltered } = sliceWindow(usage, 1, "Asia/Shanghai");
+    expect(filtered.map((u) => u.date)).toEqual(["2026-05-20"]);
+    expect(prevFiltered.map((u) => u.date)).toEqual(["2026-05-19"]);
   });
 
   it("returns the immediately prior window of equal length", () => {
@@ -1590,6 +1621,7 @@ describe("sliceWindow (timezone-aware)", () => {
       makeUsage("2026-05-15"),
       makeUsage("2026-05-19"),
     ];
+    // Current: May 13..19. Prior: May 6..12.
     const { filtered, prevFiltered } = sliceWindow(usage, 7, "UTC");
     expect(filtered.map((u) => u.date)).toEqual(["2026-05-15", "2026-05-19"]);
     expect(prevFiltered.map((u) => u.date)).toEqual(["2026-05-08"]);

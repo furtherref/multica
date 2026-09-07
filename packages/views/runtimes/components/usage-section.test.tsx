@@ -190,6 +190,7 @@ vi.mock("./custom-pricing-dialog", () => ({
 }));
 
 import { UsageSection } from "./usage-section";
+import { addDaysIso, todayIso } from "../utils";
 
 const RUNTIME: AgentRuntime = {
   id: "r-1",
@@ -258,6 +259,44 @@ describe("UsageSection — Viewing timezone wiring", () => {
     fireEvent.click(screen.getByRole("button", { name: "7d" }));
 
     expect(flows.at(-1)).toHaveAttribute("aria-label", "1K");
+  });
+
+  // Window arithmetic (exact N days, midnight edge) is covered in
+  // ../utils.test.ts (sliceWindow). This keeps the wiring: the 1d option
+  // exists on the Daily dimension, drives the KPI labels, and shows today's
+  // rows only — in the viewer's calendar, not the host's.
+  it("offers a 1d period that shows today's usage only", () => {
+    const today = todayIso(VIEWER_TZ);
+    const row = (date: string, input: number) => ({
+      runtime_id: "r-1",
+      date,
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      input_tokens: input,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+    });
+    usageOverride.rows = [row(today, 1_000), row(addDaysIso(today, -1), 5_000)];
+    try {
+      render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+      const flows = Array.from(document.querySelectorAll("number-flow-react"));
+
+      fireEvent.click(screen.getByRole("button", { name: "7d" }));
+      expect(flows.at(-1)).toHaveAttribute("aria-label", "6K");
+
+      fireEvent.click(screen.getByRole("button", { name: "1d" }));
+      expect(flows.at(-1)).toHaveAttribute("aria-label", "1K");
+      expect(screen.getByText("Cost · 1D")).toBeInTheDocument();
+
+      // Weekly has no 1d: switching dimension drops the option and resets
+      // the period to that dimension's default.
+      fireEvent.click(screen.getByRole("button", { name: "Weekly" }));
+      expect(screen.queryByRole("button", { name: "1d" })).toBeNull();
+      expect(screen.getByText("Cost · 90D")).toBeInTheDocument();
+    } finally {
+      usageOverride.rows = null;
+    }
   });
 });
 

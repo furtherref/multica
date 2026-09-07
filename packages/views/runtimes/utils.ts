@@ -1317,14 +1317,20 @@ export function aggregateByWeek(
 // timezone so the cutoff lands on the same calendar boundary the backend
 // used when bucketing rows — without this the browser/runtime tz gap could
 // shift the boundary by a day at the edges (#MUL-2382 sliceWindow tz bug).
+//
+// The window is exactly `days` calendar days ending today (today's partial
+// bucket + days-1 prior full days), matching the workspace dashboard's
+// `dailyCutoffIso`. `days=1` therefore means "today" in the viewer's
+// timezone, never "the last 24 hours". The backend still serves one extra
+// bucket of headroom (N+1); that surplus is what the prior window reads.
 export function sliceWindow<T extends { date: string }>(
   usage: readonly T[],
   days: number,
   tz: string,
 ): { filtered: T[]; prevFiltered: T[] } {
   const today = todayIso(tz);
-  const isoCurrent = addDaysIso(today, -days);
-  const isoPrev = addDaysIso(today, -days * 2);
+  const isoCurrent = addDaysIso(today, -(days - 1));
+  const isoPrev = addDaysIso(today, -(days * 2 - 1));
   return {
     filtered: usage.filter((u) => u.date >= isoCurrent),
     prevFiltered: usage.filter(
