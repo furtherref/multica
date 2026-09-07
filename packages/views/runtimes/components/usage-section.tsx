@@ -56,10 +56,16 @@ import { useT } from "../../i18n";
 // Cost-by tabs, and the CSV export all read from the same `days` value so
 // the labels ("· 30D") and the data slice never disagree.
 //
-// `dims` declares which dimensions each range is allowed in. 7 days at the
-// weekly grain is one bar, so 7d is daily-only; 180d is weekly-only because
-// 180 daily bars are visually unreadable.
+// `dims` declares which dimensions each range is allowed in. 1d / 7d at the
+// weekly grain collapse to one bar, so they are daily-only; 180d is
+// weekly-only because 180 daily bars are visually unreadable.
+//
+// Every range is exactly `days` calendar days ending today, so 1d means
+// "today" (from 00:00 in the viewer's timezone), not "the last 24 hours".
+// `sliceWindow` enforces this client-side; the by-agent endpoint closes its
+// window at the same boundary server-side. Mirrors the workspace dashboard.
 const TIME_RANGES = [
+  { label: "1d", days: 1, dims: ["daily"] as const },
   { label: "7d", days: 7, dims: ["daily"] as const },
   { label: "30d", days: 30, dims: ["daily", "weekly"] as const },
   { label: "90d", days: 90, dims: ["daily", "weekly"] as const },
@@ -130,7 +136,7 @@ function Segmented<T extends string | number>({
 // and threads everything into the four visual blocks below.
 //
 // 180 days (vs the older 90) is sized for the Heatmap tab — it shows 26
-// weeks (~6 months) so the long view actually looks long. The 7d/30d/90d
+// weeks (~6 months) so the long view actually looks long. The 1d..180d
 // period selector slices client-side; the prior-window delta on the Cost
 // KPI also benefits from having extra history available.
 // ---------------------------------------------------------------------------
