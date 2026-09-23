@@ -60,6 +60,9 @@ require_config "$config" 'SMTP_FROM_EMAIL: multica@example.com'
 require_config "$config" 'MULTICA_DATABASE_STARTUP_TIMEOUT: 3m'
 require_config "$config" 'MULTICA_DATABASE_CONNECT_TIMEOUT: 5s'
 require_config "$config" 'MAINTENANCE_PORT: ""'
+require_config "$config" 'MULTICA_TELEMETRY_ENABLED: ""'
+telemetry_config="$(MULTICA_TELEMETRY_ENABLED=true docker compose --env-file "$tmp_env" -f docker-compose.selfhost.yml config)"
+require_config "$telemetry_config" 'MULTICA_TELEMETRY_ENABLED: "true"'
 maintenance_config="$(MAINTENANCE_PORT=6061 docker compose --env-file "$tmp_env" -f docker-compose.selfhost.yml config)"
 require_config "$maintenance_config" 'MAINTENANCE_PORT: "6061"'
 if grep -Eq '(published|target):.*6061' <<<"$maintenance_config"; then

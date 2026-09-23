@@ -11,25 +11,29 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestConfigFromDoNotTrack(t *testing.T) {
+func TestConfigFromEnvIsOptIn(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		raw     string
-		enabled bool
+		name       string
+		optIn      string
+		doNotTrack string
+		want       Config
 	}{
-		{"", true},
-		{"0", true},
-		{"false", true},
-		{"yes", true},
-		{"1", false},
-		{" true ", false},
-		{"TRUE", false},
-		{" TrUe\t", false},
+		{name: "unset stays off", want: Config{}},
+		{name: "opt in with 1", optIn: "1", want: Config{Enabled: true}},
+		{name: "opt in with true", optIn: " TrUe\t", want: Config{Enabled: true}},
+		{name: "0 stays off", optIn: "0", want: Config{}},
+		{name: "false stays off", optIn: "false", want: Config{}},
+		{name: "yes stays off", optIn: "yes", want: Config{}},
+		{name: "do not track alone", doNotTrack: "1", want: Config{DoNotTrack: true}},
+		{name: "do not track beats opt in", optIn: "true", doNotTrack: " TRUE ", want: Config{DoNotTrack: true}},
+		{name: "do not track false keeps opt in", optIn: "true", doNotTrack: "false", want: Config{Enabled: true}},
+		{name: "do not track yes keeps opt in", optIn: "1", doNotTrack: "yes", want: Config{Enabled: true}},
 	} {
-		t.Run(tt.raw, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := ConfigFromDoNotTrack(tt.raw).Enabled; got != tt.enabled {
-				t.Fatalf("Enabled = %v, want %v", got, tt.enabled)
+			if got := ConfigFromEnv(tt.optIn, tt.doNotTrack); got != tt.want {
+				t.Fatalf("ConfigFromEnv(%q, %q) = %+v, want %+v", tt.optIn, tt.doNotTrack, got, tt.want)
 			}
 		})
 	}
@@ -42,7 +46,8 @@ func TestLogStartupStatus(t *testing.T) {
 		message string
 	}{
 		{name: "enabled", config: Config{Enabled: true}, message: "self-host telemetry enabled"},
-		{name: "disabled", config: Config{Enabled: false}, message: "self-host telemetry disabled via DO_NOT_TRACK"},
+		{name: "do not track", config: Config{DoNotTrack: true}, message: "self-host telemetry disabled via DO_NOT_TRACK"},
+		{name: "not opted in", config: Config{}, message: "self-host telemetry disabled by default; set MULTICA_TELEMETRY_ENABLED=true to opt in"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -63,27 +68,38 @@ func TestLogStartupStatus(t *testing.T) {
 
 func TestDisabledConfigConstructsNoTelemetryDependencies(t *testing.T) {
 	t.Parallel()
-	constructed := 0
-	factories := workerFactories{
-		store: func() leaderStore {
-			constructed++
-			return nil
-		},
-		collector: func() eventCollector {
-			constructed++
-			return nil
-		},
-		sender: func() eventSender {
-			constructed++
-			return nil
-		},
-	}
-	worker := newWithFactories(ConfigFromDoNotTrack(" TRUE "), "v1.0.0", nil, factories)
-	if worker != nil {
-		t.Fatal("disabled telemetry constructed a worker")
-	}
-	if constructed != 0 {
-		t.Fatalf("disabled telemetry constructed %d dependencies, want 0 DB collectors and 0 HTTP clients", constructed)
+	for _, tt := range []struct {
+		name   string
+		config Config
+	}{
+		{name: "default", config: ConfigFromEnv("", "")},
+		{name: "do not track", config: ConfigFromEnv("true", " TRUE ")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			constructed := 0
+			factories := workerFactories{
+				store: func() leaderStore {
+					constructed++
+					return nil
+				},
+				collector: func() eventCollector {
+					constructed++
+					return nil
+				},
+				sender: func() eventSender {
+					constructed++
+					return nil
+				},
+			}
+			worker := newWithFactories(tt.config, "v1.0.0", nil, factories)
+			if worker != nil {
+				t.Fatal("disabled telemetry constructed a worker")
+			}
+			if constructed != 0 {
+				t.Fatalf("disabled telemetry constructed %d dependencies, want 0 DB collectors and 0 HTTP clients", constructed)
+			}
+		})
 	}
 }
 

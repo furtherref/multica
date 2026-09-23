@@ -122,7 +122,7 @@ func testWorker(state telemetryState, collector *fakeCollector, sender *fakeSend
 	}, session
 }
 
-func TestDefaultConfigCollectsAndSends(t *testing.T) {
+func TestOptedInConfigCollectsAndSends(t *testing.T) {
 	t.Parallel()
 	id := uuid.MustParse("01010101-2222-3333-4444-555555555555")
 	today := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
@@ -130,19 +130,19 @@ func TestDefaultConfigCollectsAndSends(t *testing.T) {
 	session := &fakeSession{state: telemetryState{InstanceID: id}}
 	collector := &fakeCollector{}
 	sender := &fakeSender{}
-	worker := newWithFactories(ConfigFromDoNotTrack(""), "v1.2.3", nil, workerFactories{
+	worker := newWithFactories(ConfigFromEnv("true", ""), "v1.2.3", nil, workerFactories{
 		store:     func() leaderStore { return &fakeStore{session: session, leader: true} },
 		collector: func() eventCollector { return collector },
 		sender:    func() eventSender { return sender },
 	})
 	if worker == nil {
-		t.Fatal("default configuration did not construct telemetry worker")
+		t.Fatal("opted-in configuration did not construct telemetry worker")
 	}
 	if _, err := worker.runOnce(context.Background(), now); err != nil {
 		t.Fatal(err)
 	}
 	if collector.calls != 1 || len(sender.bodies) != 1 {
-		t.Fatalf("default collector/sender calls = %d/%d, want 1/1", collector.calls, len(sender.bodies))
+		t.Fatalf("opted-in collector/sender calls = %d/%d, want 1/1", collector.calls, len(sender.bodies))
 	}
 }
 

@@ -272,6 +272,12 @@ func envBool(name string, def bool) bool {
 	return v
 }
 
+// telemetryConfigFromEnv reads the self-host telemetry switches: off unless
+// MULTICA_TELEMETRY_ENABLED opts in, and DO_NOT_TRACK still vetoes it.
+func telemetryConfigFromEnv() selfhosttelemetry.Config {
+	return selfhosttelemetry.ConfigFromEnv(os.Getenv("MULTICA_TELEMETRY_ENABLED"), os.Getenv("DO_NOT_TRACK"))
+}
+
 func backgroundServices(h *handler.Handler) (*service.TaskService, *service.AutopilotService) {
 	return h.TaskService, h.AutopilotService
 }
@@ -308,9 +314,10 @@ func newMainHTTPServer(addr string, handler http.Handler) *http.Server {
 
 func main() {
 	logger.Init()
-	// Read the opt-out before constructing any telemetry dependency. In the
-	// disabled case no collector or HTTP client is ever created.
-	telemetryConfig := selfhosttelemetry.ConfigFromDoNotTrack(os.Getenv("DO_NOT_TRACK"))
+	// Read the telemetry switches before constructing any telemetry
+	// dependency. In the disabled case no collector or HTTP client is ever
+	// created.
+	telemetryConfig := telemetryConfigFromEnv()
 	selfhosttelemetry.LogStartupStatus(slog.Default(), telemetryConfig)
 	// Warn about missing configuration
 	if err := jwtSecretBootError(os.Getenv("JWT_SECRET"), os.Getenv("APP_ENV")); err != nil {

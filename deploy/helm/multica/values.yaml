@@ -136,8 +136,11 @@ backend:
     # every caller. Bootstrap the workspace with this false, then flip to
     # true so users can only join via invitation.
     disableWorkspaceCreation: false
-    # Set to "1" or "true" to disable first-party anonymous self-host
-    # telemetry collection and delivery.
+    # First-party anonymous self-host telemetry is off by default. Set to "1"
+    # or "true" to opt in to one deployment-level snapshot per UTC day.
+    telemetryEnabled: ""
+    # Set to "1" or "true" to disable self-host telemetry collection and
+    # delivery, even when telemetryEnabled opts in.
     doNotTrack: ""
     # Self-host-only VCS integration (Forgejo / Gitea / GitLab). The official
     # chart enables the product surface by default; operators must also provide

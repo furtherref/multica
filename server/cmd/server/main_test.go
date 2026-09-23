@@ -79,6 +79,26 @@ func TestShardedRelayConfigFromEnvDerivesSafeRetention(t *testing.T) {
 	}
 }
 
+// The opt-in/veto matrix lives in selfhosttelemetry's TestConfigFromEnvIsOptIn;
+// this test pins only the environment variable names main() reads.
+func TestTelemetryConfigFromEnvIsOptIn(t *testing.T) {
+	t.Setenv("MULTICA_TELEMETRY_ENABLED", "")
+	t.Setenv("DO_NOT_TRACK", "")
+	if telemetryConfigFromEnv().Enabled {
+		t.Fatal("telemetry enabled without MULTICA_TELEMETRY_ENABLED")
+	}
+
+	t.Setenv("MULTICA_TELEMETRY_ENABLED", "true")
+	if !telemetryConfigFromEnv().Enabled {
+		t.Fatal("MULTICA_TELEMETRY_ENABLED=true did not enable telemetry")
+	}
+
+	t.Setenv("DO_NOT_TRACK", "1")
+	if telemetryConfigFromEnv().Enabled {
+		t.Fatal("DO_NOT_TRACK=1 did not override MULTICA_TELEMETRY_ENABLED")
+	}
+}
+
 func TestShardedRelayConfigFromEnvEnablesTTLExplicitly(t *testing.T) {
 	t.Setenv("REALTIME_RELAY_STREAM_TTL_ENABLED", "true")
 

@@ -40,8 +40,8 @@ type workerFactories struct {
 	sender    func() eventSender
 }
 
-// New performs no database, DNS or HTTP work. When DO_NOT_TRACK disabled the
-// feature, it also returns before constructing any collector or HTTP client.
+// New performs no database, DNS or HTTP work. When the config is disabled, it
+// also returns before constructing any collector or HTTP client.
 func New(pool *pgxpool.Pool, serverVersion string, config Config, logger *slog.Logger) *Worker {
 	return newWithFactories(config, serverVersion, logger, workerFactories{
 		store:     func() leaderStore { return newPostgresStore(pool) },
