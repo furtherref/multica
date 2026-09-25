@@ -467,11 +467,14 @@ func TestPlatformSkillCoversPlatformContracts(t *testing.T) {
 				// both halves of it are pinned: a syntax problem is repairable
 				// by editing the PR, and an integration problem is not — an
 				// agent that keeps editing burns deliveries on a no-op.
-				"editing the title or adding a closing keyword re-runs the scan",
+				"editing the title re-runs the scan",
 				"stop editing the PR blind",
 				"whether the installation is bound to this workspace",
 				"redelivered once the receiving side is fixed",
-				"unless the issue should auto-advance",
+				// Only a closing keyword completes an issue on merge, so agents
+				// must not add one to a PR that delivers only part of the work.
+				"Only a closing keyword completes the issue",
+				"unless merging the PR should move the issue to `done`",
 				"include the PR URL when a PR exists",
 				"Closes MUL-123",
 				"--status backlog",

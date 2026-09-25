@@ -35,7 +35,9 @@
     "search_placeholder": "タスクを検索...",
     "searching": "検索中...",
     "no_results": "タスクが見つかりません。",
-    "prompt_to_search": "タスクを検索するには入力してください"
+    "prompt_to_search": "タスクを検索するには入力してください",
+    "suggested_similar": "タイトルが似ているタスク",
+    "suggested_recent": "最近表示したタスク"
   },
   "set_parent": {
     "title": "親タスクを設定",
@@ -268,5 +270,13 @@
     "cancel": "Cancel",
     "confirm": "Confirm",
     "confirming": "Confirming..."
+  },
+  "mark_duplicate": {
+    "title": "重複としてマーク",
+    "description": "元のタスクを検索してください。このタスクはキャンセルされ、元のタスクに関連付けられます。",
+    "toast_success": "{{identifier}} の重複としてマークしました",
+    "toast_failed": "重複としてマークできませんでした",
+    "error_target_is_duplicate": "{{identifier}} 自体が重複です。元のタスクを選択してください",
+    "error_has_duplicates": "他のタスクがこのタスクの重複としてマークされています。先にそのマークを解除してください"
   }
 }

@@ -57,7 +57,7 @@ export function OfficeAttachmentPreview({
 
   if (isPending) {
     return (
-      <div className="flex h-full w-full items-center justify-center">
+      <div className="dark flex h-full w-full items-center justify-center">
         <Loader2 className="size-6 animate-spin text-muted-foreground" />
       </div>
     );
@@ -70,5 +70,10 @@ export function OfficeAttachmentPreview({
       />
     );
   }
-  return <div id={placeholderId} className="h-full w-full" />;
+  return (
+    <div
+      id={placeholderId}
+      className="h-full w-full overflow-hidden rounded-lg bg-background"
+    />
+  );
 }

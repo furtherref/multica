@@ -688,54 +688,6 @@ func TestReclaimSkipsTasksOnArchivedIssue(t *testing.T) {
 	}
 }
 
-// getIssueRow loads the raw db.Issue row for direct service/handler calls.
-func getIssueRow(t *testing.T, issueID string) db.Issue {
-	t.Helper()
-	row, err := db.New(testPool).GetIssue(context.Background(), parseUUID(issueID))
-	if err != nil {
-		t.Fatalf("load issue row: %v", err)
-	}
-	return row
-}
-
-// Fix wave 2: advanceIssueToDone must be a conditional write — a snapshot
-// read racing a concurrent archive must not resurrect the issue to done.
-func TestAdvanceIssueToDoneSkipsSettledIssue(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	issue := createIssueViaHTTP(t, map[string]any{"title": "advance-settled-guard", "status": "in_progress"})
-	// Simulate the race: the webhook holds an active snapshot, but the user
-	// archives before the write lands.
-	loaded := getIssueRow(t, issue.ID)
-	if _, err := testPool.Exec(context.Background(), `UPDATE issue SET status = 'archive' WHERE id = $1`, issue.ID); err != nil {
-		t.Fatalf("archive issue: %v", err)
-	}
-	testHandler.advanceIssueToDone(context.Background(), loaded, testWorkspaceID)
-	var status string
-	if err := testPool.QueryRow(context.Background(), `SELECT status FROM issue WHERE id = $1`, issue.ID).Scan(&status); err != nil {
-		t.Fatalf("read status: %v", err)
-	}
-	if status != "archive" {
-		t.Fatalf("stale advance must not overwrite archive, got %q", status)
-	}
-}
-
-func TestAdvanceIssueToDoneAdvancesActiveIssue(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	issue := createIssueViaHTTP(t, map[string]any{"title": "advance-active-ok", "status": "in_progress"})
-	testHandler.advanceIssueToDone(context.Background(), getIssueRow(t, issue.ID), testWorkspaceID)
-	var status string
-	if err := testPool.QueryRow(context.Background(), `SELECT status FROM issue WHERE id = $1`, issue.ID).Scan(&status); err != nil {
-		t.Fatalf("read status: %v", err)
-	}
-	if status != "done" {
-		t.Fatalf("active issue must advance to done, got %q", status)
-	}
-}
-
 // Fix wave 2: restoring from archive must cancel straggler tasks that raced
 // past the archive-time cancel — they were inert under the claim/reclaim
 // guards and must not become runnable again.
@@ -837,6 +789,26 @@ func TestStartTaskRefusedOnArchivedIssue(t *testing.T) {
 	}
 	if status != "dispatched" {
 		t.Fatalf("refused start must leave the task untouched, got %q", status)
+	}
+
+	// The daemon's live start path is StartAgentTaskWithSupplement; it carries
+	// the same guard.
+	startWithSupplement := func() error {
+		_, err := db.New(testPool).StartAgentTaskWithSupplement(ctx, db.StartAgentTaskWithSupplementParams{
+			TaskID: parseUUID(taskID),
+		})
+		return err
+	}
+	if err := startWithSupplement(); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("supplement start must refuse the archived issue's task, got err=%v", err)
+	}
+	// Positive control: once restored, the same task starts, so the refusal
+	// above was the archive predicate and not an ineligible fixture.
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, issueID); err != nil {
+		t.Fatalf("restore issue: %v", err)
+	}
+	if err := startWithSupplement(); err != nil {
+		t.Fatalf("supplement start after restore: %v", err)
 	}
 }
 
