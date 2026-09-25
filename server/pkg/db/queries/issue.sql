@@ -8,7 +8,7 @@
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision
+       i.revision, i.duplicate_of_issue_id
 FROM issue i
 WHERE i.workspace_id = $1
   AND (sqlc.narg('status')::text IS NULL OR i.status = sqlc.narg('status'))
@@ -193,7 +193,14 @@ SELECT * FROM issue
 WHERE workspace_id = $1 AND number = $2;
 
 -- name: UpdateIssue :one
-WITH wakeup_source AS MATERIALIZED (SELECT set_config('multica.source_task_id', COALESCE(sqlc.narg('source_task_id')::uuid::text, ''), true)), candidate AS (
+WITH wakeup_source AS MATERIALIZED (SELECT set_config('multica.source_task_id', COALESCE(sqlc.narg('source_task_id')::uuid::text, ''), true)), candidate AS MATERIALIZED (
+    -- FOR UPDATE, so every next_* value below is computed from the row this
+    -- statement is about to write rather than from the snapshot the statement
+    -- started with. Without it a write that waits here behind a concurrent one
+    -- resumes with stale values and writes them back: an ordinary priority edit
+    -- could restore a duplicate mark another transaction had just cleared, and
+    -- did_change/did_activity would be decided against the pre-wait row too.
+    -- Materialized so the locking clause is never inlined away.
     SELECT
         i.*,
         COALESCE(sqlc.narg('title')::text, i.title) AS next_title,
@@ -234,28 +241,45 @@ WITH wakeup_source AS MATERIALIZED (SELECT set_config('multica.source_task_id', 
         sqlc.narg('due_date')::date AS next_due_date,
         sqlc.narg('parent_issue_id')::uuid AS next_parent_issue_id,
         sqlc.narg('project_id')::uuid AS next_project_id,
-        sqlc.narg('stage')::integer AS next_stage
+        sqlc.narg('stage')::integer AS next_stage,
+        -- A supplied pointer marks the issue (the handler also sets cancelled).
+        -- Otherwise a mark only survives a write that leaves an already
+        -- cancelled issue cancelled. Every other write drops it: reopening is
+        -- how a mark is removed, and re-entering cancelled does not revive a
+        -- pointer that a server predating this rule left on a reopened issue.
+        CASE
+            WHEN sqlc.narg('duplicate_of_issue_id')::uuid IS NOT NULL
+                THEN sqlc.narg('duplicate_of_issue_id')::uuid
+            WHEN i.status = 'cancelled' AND COALESCE(sqlc.narg('status')::text, i.status) = 'cancelled'
+                THEN i.duplicate_of_issue_id
+            ELSE NULL
+        END AS next_duplicate_of_issue_id
     FROM issue AS i
     WHERE i.id = $1
       AND (sqlc.narg('expected_revision')::bigint IS NULL OR i.revision = sqlc.narg('expected_revision')::bigint)
+    FOR UPDATE
 ), changed AS (
     SELECT
         candidate.*,
         ROW(
             title, description, status, priority, assignee_type, assignee_id,
-            position, start_date, due_date, parent_issue_id, project_id, stage
+            position, start_date, due_date, parent_issue_id, project_id, stage,
+            duplicate_of_issue_id
         ) IS DISTINCT FROM ROW(
             next_title, next_description, next_status, next_priority,
             next_assignee_type, next_assignee_id, next_position, next_start_date,
-            next_due_date, next_parent_issue_id, next_project_id, next_stage
+            next_due_date, next_parent_issue_id, next_project_id, next_stage,
+            next_duplicate_of_issue_id
         ) AS did_change,
         ROW(
             title, description, status, priority, assignee_type, assignee_id,
-            start_date, due_date, parent_issue_id, project_id, stage
+            start_date, due_date, parent_issue_id, project_id, stage,
+            duplicate_of_issue_id
         ) IS DISTINCT FROM ROW(
             next_title, next_description, next_status, next_priority,
             next_assignee_type, next_assignee_id, next_start_date, next_due_date,
-            next_parent_issue_id, next_project_id, next_stage
+            next_parent_issue_id, next_project_id, next_stage,
+            next_duplicate_of_issue_id
         ) AS did_activity
     FROM candidate
 )
@@ -272,6 +296,7 @@ UPDATE issue AS i SET
     parent_issue_id = changed.next_parent_issue_id,
     project_id = changed.next_project_id,
     stage = changed.next_stage,
+    duplicate_of_issue_id = changed.next_duplicate_of_issue_id,
     revision = i.revision + changed.did_change::integer,
     last_activity_at = CASE WHEN changed.did_activity
         THEN GREATEST(COALESCE(i.last_activity_at, i.updated_at), now())
@@ -296,6 +321,10 @@ RETURNING i.*;
 WITH wakeup_source AS MATERIALIZED (SELECT set_config('multica.source_task_id', COALESCE(sqlc.narg('source_task_id')::uuid::text, ''), true))
 UPDATE issue AS i SET
     status = $2,
+    -- Same rule as UpdateIssue: a mark only survives cancelled -> cancelled.
+    -- Background writers (GitHub, task recovery) go through here, so they
+    -- cannot leave a pointer on a reopened issue.
+    duplicate_of_issue_id = CASE WHEN $2 = 'cancelled' AND i.status = 'cancelled' THEN i.duplicate_of_issue_id ELSE NULL END,
     position = CASE WHEN i.status IS DISTINCT FROM $2 THEN (
         SELECT COALESCE(MIN(target.position), 0) - 1
         FROM issue AS target
@@ -312,31 +341,69 @@ FROM wakeup_source
 WHERE i.id = $1 AND i.workspace_id = $3
 RETURNING i.*;
 
--- name: AdvanceIssueStatusIfActive :one
--- Conditional status write for asynchronous (webhook/system) advancement:
--- fires only while the issue is still active, so a snapshot read racing a
--- concurrent archive (fork status #39) / done / cancel cannot resurrect or
--- double-advance it. No rows = a concurrent writer settled the issue first;
--- callers skip their side effects. The SET clause mirrors UpdateIssueStatus
--- so an advanced issue is repositioned and its revision bumped like any other
--- status write.
-UPDATE issue AS i SET
-    status = $2,
-    position = CASE WHEN i.status IS DISTINCT FROM $2 THEN (
-        SELECT COALESCE(MIN(target.position), 0) - 1
-        FROM issue AS target
-        WHERE target.workspace_id = i.workspace_id
-          AND target.status = $2
-    ) ELSE i.position END,
-    revision = i.revision + CASE WHEN i.status IS DISTINCT FROM $2 THEN 1 ELSE 0 END,
-    last_activity_at = CASE WHEN i.status IS DISTINCT FROM $2
-        THEN GREATEST(COALESCE(i.last_activity_at, i.updated_at), now())
-        ELSE i.last_activity_at
-    END,
-    updated_at = now()
-WHERE i.id = $1 AND i.workspace_id = $3
-  AND i.status NOT IN ('done', 'cancelled', 'archive')
-RETURNING i.*;
+-- name: LockIssuesForDuplicateMark :many
+-- Locks the issue being marked and its target, in id order, before the mark is
+-- validated. Two marks that share an issue (A -> B racing B -> A, or C -> A
+-- racing A -> B) then run one after the other, so the second one validates
+-- against what the first wrote. A target outside the workspace is not returned.
+-- is_duplicate applies the same validity rule as the reads below.
+SELECT i.id,
+       (i.status = 'cancelled' AND EXISTS (
+           SELECT 1 FROM issue AS original
+           WHERE original.id = i.duplicate_of_issue_id
+             AND original.workspace_id = i.workspace_id
+       ))::boolean AS is_duplicate
+FROM issue AS i
+WHERE i.workspace_id = sqlc.arg('workspace_id')
+  AND i.id = ANY(sqlc.arg('issue_ids')::uuid[])
+ORDER BY i.id
+FOR UPDATE OF i;
+
+-- A mark only counts while the duplicate is cancelled and its original still
+-- exists. Writes keep that true, but a server predating this feature (after a
+-- rollback that kept the column) can reopen a duplicate or delete an original
+-- without touching the pointer, so every read applies the rule itself.
+
+-- name: IssueHasDuplicates :one
+SELECT EXISTS (
+    SELECT 1 FROM issue
+    WHERE workspace_id = sqlc.arg('workspace_id')
+      AND duplicate_of_issue_id = sqlc.arg('issue_id')::uuid
+      AND status = 'cancelled'
+) AS has_duplicates;
+
+-- name: ListIssueDuplicates :many
+SELECT * FROM issue
+WHERE workspace_id = sqlc.arg('workspace_id')
+  AND duplicate_of_issue_id = sqlc.arg('issue_id')::uuid
+  AND status = 'cancelled'
+ORDER BY created_at ASC, id ASC;
+
+-- name: GetIssueRefInWorkspace :one
+-- The summary a duplicate's response carries for its original (MUL-7349).
+SELECT id, number, title, status FROM issue
+WHERE id = $1 AND workspace_id = $2;
+
+-- name: ListIssueRefsInWorkspace :many
+-- GetIssueRefInWorkspace for a page: every original the page's duplicates
+-- point at, in one read.
+SELECT id, number, title, status FROM issue
+WHERE workspace_id = sqlc.arg('workspace_id')
+  AND id = ANY(sqlc.arg('ids')::uuid[]);
+
+-- name: ClearIssueDuplicatesOf :many
+-- Deleting an issue clears the pointers of its duplicates, the way deleting a
+-- parent detaches its children. They stay cancelled. Issues deleted in the
+-- same batch are skipped.
+UPDATE issue
+SET duplicate_of_issue_id = NULL,
+    revision = revision + 1,
+    updated_at = now(),
+    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now())
+WHERE workspace_id = sqlc.arg(workspace_id)
+  AND duplicate_of_issue_id = sqlc.arg(issue_id)::uuid
+  AND NOT COALESCE(id = ANY(sqlc.arg(excluded_issue_ids)::uuid[]), false)
+RETURNING *;
 
 -- name: CreateIssueWithOrigin :one
 INSERT INTO issue (
@@ -417,8 +484,20 @@ cleared_wakeup_receipts AS (
 cleared_wakeups AS (
  DELETE FROM issue_wakeup WHERE issue_id IN (SELECT target.id FROM target)
 ),
+cleared_task_supplements AS (
+ DELETE FROM task_supplement WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_task_supplement_capabilities AS (
+ DELETE FROM task_supplement_capability WHERE issue_id IN (SELECT target.id FROM target)
+),
 cleared_vcs_pr_links AS (
     DELETE FROM issue_vcs_pull_request WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_pr_automation AS (
+    DELETE FROM issue_pr_automation WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_pr_exclusions AS (
+    DELETE FROM issue_pull_request_exclusion WHERE issue_id IN (SELECT target.id FROM target)
 )
 DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target);
 
@@ -428,7 +507,7 @@ DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target);
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision
+       i.revision, i.duplicate_of_issue_id
 FROM issue i
 WHERE i.workspace_id = $1
   -- Negate only known terminal keys so an unknown legacy key remains visible.

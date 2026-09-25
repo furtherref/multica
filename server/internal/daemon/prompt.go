@@ -51,7 +51,7 @@ func backendResumeContinuityNotice(task Task) string {
 // in the runtime brief (CLAUDE.md / AGENTS.md).
 //
 // Every value here changes from one run to the next on the same issue — the
-// initiator differs whenever another person comments, the continuity notice is
+// authorization human differs between runs, the continuity notice is
 // true of one run and false of the next, and the connected-app set is resolved
 // per run from the runtime MCP overlay. Claude Code loads the brief into
 // messages[0], ahead of the entire conversation, so rendering these there threw
@@ -67,7 +67,7 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 	if task.PriorSessionResumeUnavailable {
 		b.WriteString(sessionContinuityNoticeFor(task))
 	}
-	b.WriteString(execenv.BuildTaskInitiatorBlock(task.InitiatorType, task.InitiatorName, task.InitiatorEmail))
+	b.WriteString(execenv.BuildOnBehalfOfBlock(task.InitiatorName, task.InitiatorEmail))
 	b.WriteString(execenv.BuildConnectedAppsBlock(task.ConnectedApps))
 	return b.String()
 }

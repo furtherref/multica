@@ -136,7 +136,8 @@ describe("AttachmentPreviewModal — office kind", () => {
       content_type: "application/zip",
     };
     const { getByText, queryByText } = renderWithClient(<Harness attachment={zipStored} />);
-    await waitFor(() => expect(getByText("XLSX")).toBeTruthy());
+    // Upstream's header meta line joins type and size ("XLSX · 1.2 KB").
+    await waitFor(() => expect(getByText(/^XLSX\b/)).toBeTruthy());
     expect(queryByText("application/zip")).toBeNull();
   });
 });

@@ -18,7 +18,22 @@
     "full_log": "完全なログを開く",
     "message": "エージェントのメッセージ",
     "error": "エラー",
-    "waiting_result": "ツールの結果を待っています..."
+    "waiting_result": "ツールの結果を待っています...",
+    "supplement_failure_turn_ended": "配信前に実行が終了しました",
+    "supplement_failure_turn_not_started": "エージェントの準備ができていませんでした",
+    "supplement_failure_provider_rejected": "エージェントがメッセージを拒否しました",
+    "supplement_failure_timeout": "配信がタイムアウトしました",
+    "supplement_failure_unknown": "原因不明",
+    "supplement_retry": "再試行",
+    "supplement_retry_failed": "配信を再試行できませんでした。",
+    "steer_badge": "{{names}} の実行に追加",
+    "steer_waiting": "{{name}} が読むのを待っています",
+    "steer_read": "{{name}} が読みました",
+    "steer_not_received": "{{name}} は受け取れませんでした · {{reason}}",
+    "steer_resend": "新しい実行として送信",
+    "steer_resend_failed": "新しい実行として送信できませんでした。",
+    "steer_step": "{{name}} が追加",
+    "steer_step_read": "既読"
   },
   "status_catalog_error": {
     "title": "ステータス一覧を読み込めませんでした",
@@ -438,6 +453,7 @@
     "unpin_tooltip": "サイドバーのピン留めを解除",
     "thread_nav_label": "スレッドへ移動",
     "thread_nav_resolved_label": "{{title}}（解決済み）",
+    "thread_nav_reply_label": "{{author}}：{{title}}",
     "sidebar_tooltip": "右サイドバーの開閉",
     "find": {
       "placeholder": "タスク内を検索...",
@@ -485,7 +501,16 @@
     "squad_leader_failed_reason": "評価に失敗しました: {{reason}}",
     "coalesced_badge": "×{{count}}",
     "activity_count_other": "アクティビティ {{count}} 件",
-    "show_more_activities_other": "アクティビティをさらに {{count}} 件表示"
+    "show_more_activities_other": "アクティビティをさらに {{count}} 件表示",
+    "duplicate_marked": "このタスクを {{identifier}} の重複としてマークしました",
+    "duplicate_unmarked": "このタスクの {{identifier}} との重複マークを解除しました",
+    "duplicate_unmarked_to": "このタスクの {{identifier}} との重複マークを解除し、{{status}} に移動しました",
+    "duplicate_unmarked_original_deleted": "重複マークを解除しました（{{identifier}} は削除されました）",
+    "duplicate_added": "{{identifier}} をこのタスクの重複としてマークしました",
+    "duplicate_removed": "{{identifier}} の重複マークを解除しました",
+    "status_changed_pr": "関連するすべての PR がマージされたため（{{prs}}）、ステータスを {{from}} から {{to}} に変更しました",
+    "pr_auto_complete_disabled": "このタスクの PR による自動完了をオフにしました",
+    "pr_auto_complete_enabled": "このタスクの PR による自動完了を再開しました"
   },
   "comment": {
     "add_reaction": "リアクションを追加",
@@ -536,6 +561,7 @@
     "send_reply_failed": "返信を送信できませんでした",
     "delete_failed": "コメントを削除できませんでした",
     "reply_count_other": "返信 {{count}} 件",
+    "replying_to": "{{name}} への返信: {{preview}}",
     "leave_comment_placeholder": "コメントを残す...",
     "send_tooltip": "送信",
     "trigger_source_issue_assignee": "担当",
@@ -553,9 +579,9 @@
     "trigger_starts_now": "すぐに開始します。",
     "trigger_starts_when_online": "オフライン中。オンラインになり次第開始します。",
     "trigger_click_to_skip": "クリックで今回はスキップ。",
-    "trigger_click_to_manage": "クリックして今回実行する対象を選択。",
+    "trigger_click_to_manage": "クリックして、エージェントごとにこのメッセージの扱いを選択。",
     "trigger_click_to_restore": "今回は開始しません。クリックで元に戻せます。",
-    "trigger_preview_title": "送信後に開始する対象",
+    "trigger_preview_title": "受け取るエージェント",
     "trigger_chip_aria": "{{name}} のトリガー: {{state}}",
     "resolve": {
       "resolve_thread_action": "スレッドを解決",
@@ -571,7 +597,22 @@
       "resolve_failed": "スレッドを解決できませんでした",
       "unresolve_failed": "スレッドの解決を取り消せませんでした"
     },
-    "download_attachment": "Download {{filename}}"
+    "download_attachment": "Download {{filename}}",
+    "recipient_steer": "現在の実行に追加",
+    "recipient_steer_desc": "{{name}} は現在のステップの後に読み、元のタスクを続けます。テキストのみ。",
+    "recipient_after_run": "この実行の後に開始",
+    "recipient_after_run_desc": "現在の実行は止めず、終了後に新しい実行で扱います。",
+    "recipient_restart": "停止してやり直す",
+    "recipient_restart_desc": "現在の実行をすぐに停止し、このメッセージからやり直します。",
+    "recipient_join": "開始時に一緒に処理",
+    "recipient_join_desc": "{{name}} の実行はまだ待機中です。開始時にこのメッセージも一緒に処理します。",
+    "recipient_state_running": "実行中",
+    "recipient_state_starting": "起動中",
+    "recipient_state_queued": "待機中",
+    "recipient_count_other": "{{count}} 個のエージェントが受け取ります",
+    "steer_attachment_notice": "実行中に追加できるのはテキストのみのため、ファイル付きのメッセージはこの実行の後に処理されます。",
+    "restart_send": "停止して送信",
+    "restart_failed": "現在の実行を停止できませんでした。メッセージは送信されていません。"
   },
   "reply": {
     "placeholder": "返信を残す...",
@@ -744,7 +785,8 @@
     "remove_parent_issue": "親タスクを解除",
     "remove_parent_issue_success": "親タスクを解除しました",
     "add_sub_issue": "サブタスクを追加...",
-    "delete_issue": "タスクを削除"
+    "delete_issue": "タスクを削除",
+    "mark_duplicate": "重複としてマーク..."
   },
   "pickers": {
     "custom_property": {
@@ -792,6 +834,10 @@
       "manage_dialog_title": "ラベルを管理",
       "create_action": "作成",
       "create_failed": "ラベルを作成できませんでした"
+    },
+    "status": {
+      "mark_duplicate": "重複としてマーク",
+      "change_original": "元のタスクを変更"
     }
   },
   "labels_panel": {
@@ -1044,5 +1090,43 @@
     },
     "hourly": "毎時起動",
     "today_time": "今日 {{time}}"
+  },
+  "duplicates": {
+    "banner_prefix": "重複元:",
+    "unmark": "重複ではない",
+    "section_title": "重複",
+    "unmark_toast": "未着手として再開しました"
+  },
+  "pr_automation": {
+    "link_action": "PR を関連付け",
+    "link_placeholder": "PR の URL を貼り付け",
+    "link_hint": "タイトルかブランチ名に {{identifier}} を含む PR は自動で関連付けられます。",
+    "link_submit": "関連付け",
+    "link_not_found": "Multica はまだこの PR を受け取っていません。リポジトリが接続されているか確認してください。",
+    "link_failed": "PR を関連付けられませんでした。",
+    "row_menu": "PR の操作",
+    "section_menu": "PR の自動化",
+    "source_title": "タイトルの {{identifier}} で関連付け",
+    "source_branch": "ブランチ名で関連付け",
+    "source_manual": "手動で関連付け",
+    "source_auto": "自動で関連付け",
+    "unlink": "タスクから外す",
+    "unlinked": "{{pr}} を外しました",
+    "unlinked_completed": "{{pr}} を外しました。残りの PR はすべてマージ済みのため、タスクは完了しました。",
+    "unlink_failed": "PR を外せませんでした。",
+    "undo": "元に戻す",
+    "disable": "このタスクは自動完了しない",
+    "enable": "自動完了を再開",
+    "settings": "自動完了の設定",
+    "update_failed": "自動完了を更新できませんでした。",
+    "waiting_other": "{{prs}} がマージされると自動完了",
+    "not_merged": "{{prs}} はマージされずにクローズされました",
+    "not_merged_action": "外す",
+    "no_close_intent": "自動完了しません：「Closes {{identifier}}」なし",
+    "all_merged": "PR はすべてマージ済みです。次に PR がマージされると自動完了します。",
+    "issue_disabled": "このタスクは自動完了しません",
+    "issue_disabled_action": "再開",
+    "workspace_disabled": "このワークスペースでは PR による自動完了がオフです",
+    "workspace_disabled_action": "設定"
   }
 }

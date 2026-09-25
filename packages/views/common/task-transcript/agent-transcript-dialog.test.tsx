@@ -287,17 +287,15 @@ describe("AgentTranscriptDialog", () => {
     expect(screen.queryByText("A finished", { selector: "pre" })).not.toBeInTheDocument();
   });
 
-  it("explains unavailable live events for an empty Antigravity transcript", async () => {
+  it("waits for live events from Antigravity", async () => {
     vi.mocked(api.listRuntimes).mockResolvedValue([runtimeFor("antigravity")]);
 
     renderDialog([], { task: liveTask, isLive: true });
 
-    expect(
-      await screen.findByText(
-        "Antigravity does not currently provide live execution events. The transcript will be available after the run completes.",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Waiting for events...")).not.toBeInTheDocument();
+    // Antigravity now streams live events (MUL-7625), so it waits like every
+    // other runtime — via the fork's live-activity label (#72).
+    await screen.findByRole("button", { name: "Run details" });
+    expect(screen.getByText("Thinking", { ignore: SHIMMER_COPY })).toBeInTheDocument();
   });
 
   it("keeps waiting for live events from other runtimes", async () => {
@@ -312,6 +310,19 @@ describe("AgentTranscriptDialog", () => {
     // than a generic "Waiting for events...".
     await screen.findByRole("button", { name: "Run details" });
     expect(screen.getByText("Thinking", { ignore: SHIMMER_COPY })).toBeInTheDocument();
+  });
+
+  it("shows live Antigravity tool events", async () => {
+    vi.mocked(api.listRuntimes).mockResolvedValue([runtimeFor("antigravity")]);
+
+    renderDialog([
+      { seq: 1, type: "tool_use", tool: "run_command", input: { CommandLine: "echo hello" } },
+      { seq: 2, type: "tool_result", tool: "run_command", output: "hello" },
+    ], { task: liveTask, isLive: true });
+
+    await screen.findByRole("button", { name: "Run details" });
+    expect(screen.queryByText("Waiting for events...")).not.toBeInTheDocument();
+    expect(screen.getAllByText(/run_command/).length).toBeGreaterThan(0);
   });
 
   it("preserves selected filters across dialog remounts unconditionally", () => {

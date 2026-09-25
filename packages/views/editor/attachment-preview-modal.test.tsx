@@ -19,6 +19,7 @@ vi.mock("../platform", () => ({
 // declarations.
 const {
   getAttachmentTextContentMock,
+  getAttachmentMock,
   downloadMock,
   getBaseUrlMock,
   FakePreviewTooLargeError,
@@ -38,6 +39,9 @@ const {
   }
   return {
     getAttachmentTextContentMock: vi.fn(),
+    // Re-sign metadata. Rejects by default: a deployment with nothing to
+    // upgrade to, so the picked URL stands.
+    getAttachmentMock: vi.fn((): Promise<Attachment> => Promise.reject(new Error("no re-sign"))),
     downloadMock: vi.fn(),
     // Default to the web shape (empty base, same-origin). Tests covering
     // the desktop-renderer / standalone-shell case override per-test.
@@ -50,6 +54,7 @@ const {
 vi.mock("@multica/core/api", () => ({
   api: {
     getAttachmentTextContent: getAttachmentTextContentMock,
+    getAttachment: getAttachmentMock,
     getBaseUrl: getBaseUrlMock,
   },
   PreviewTooLargeError: FakePreviewTooLargeError,
@@ -324,6 +329,51 @@ describe("AttachmentPreviewModal — media previews load from the storage url", 
     expect(img?.getAttribute("src")).toBe("https://oss.example.test/att-1.png");
   });
 
+  // A client that cannot load the auth-gated endpoint natively (desktop,
+  // split-origin web) would fail on it, and a sequence reads that failure as
+  // a broken image and skips it. Nothing reaches <img> until the upgrade lands.
+  it("waits for the re-sign before loading an auth-gated image", async () => {
+    getBaseUrlMock.mockReturnValue("https://api.example.test");
+    let resolveMeta: (value: Attachment) => void = () => {};
+    getAttachmentMock.mockImplementationOnce(
+      () => new Promise<Attachment>((resolve) => { resolveMeta = resolve; }),
+    );
+    const onImageError = vi.fn();
+    // A real id: only the stable `/api/attachments/<uuid>/download` shape is
+    // recognised as the auth-gated endpoint.
+    const id = "11111111-1111-4111-8111-111111111111";
+    const att = makeAttachment({
+      id,
+      filename: "shot.png",
+      content_type: "image/png",
+      // No storage url: the preview falls back to download_url, which is the
+      // auth-gated endpoint the re-sign upgrades.
+      url: "",
+      download_url: `/api/attachments/${id}/download`,
+    });
+    render(
+      <AttachmentPreviewModal
+        source={{ kind: "full", attachment: att }}
+        open
+        onClose={() => {}}
+        onImageError={onImageError}
+      />,
+    );
+
+    expect(screen.getByRole("dialog").querySelector("img")).toBeNull();
+    expect(screen.getByText("Loading preview…")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveMeta({ ...att, download_url: "https://cdn.example.test/att-1.png?Signature=fresh" });
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("dialog").querySelector("img")?.getAttribute("src")).toBe(
+        "https://cdn.example.test/att-1.png?Signature=fresh",
+      );
+    });
+    expect(onImageError).not.toHaveBeenCalled();
+  });
+
   it("renders a full-source PDF from attachment.url", () => {
     const att = makeAttachment({
       filename: "manual.pdf",
@@ -435,6 +485,34 @@ describe("AttachmentPreviewModal — controls", () => {
     expect(buttons.length).toBeGreaterThan(0);
     fireEvent.click(buttons[0]!);
     expect(downloadMock).toHaveBeenCalledWith("att-1");
+  });
+
+  it("describes the file by type and size instead of its MIME type", () => {
+    const att = makeAttachment({
+      filename: "manual.pdf",
+      content_type: "application/pdf",
+      size_bytes: 2 * 1024 * 1024,
+    });
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
+    expect(screen.getByText("PDF · 2.0 MB")).toBeInTheDocument();
+    expect(screen.queryByText("application/pdf")).toBeNull();
+  });
+
+  it("hides the desktop window buttons while open and restores them on close", async () => {
+    const setImmersiveMode = vi.fn();
+    (window as unknown as { desktopAPI?: unknown }).desktopAPI = { setImmersiveMode };
+    try {
+      const att = makeAttachment({ filename: "manual.pdf", content_type: "application/pdf" });
+      render(<ClosablePreview attachment={att} />);
+      expect(setImmersiveMode).toHaveBeenLastCalledWith(true);
+
+      fireEvent.click(screen.getByTitle("Close"));
+      await waitFor(() => {
+        expect(setImmersiveMode).toHaveBeenLastCalledWith(false);
+      });
+    } finally {
+      delete (window as unknown as { desktopAPI?: unknown }).desktopAPI;
+    }
   });
 
   it("clicking the backdrop closes the modal", () => {
@@ -883,6 +961,18 @@ describe("AttachmentPreviewModal — image zoom", () => {
 
     fireEvent.keyDown(zoomCanvas(), { key: "+" });
     expect(currentScale()).toBeCloseTo(0.5 * 1.2, 5);
+  });
+
+  // The focus placed on open is for the keyboard controls; drawn as a ring it
+  // framed the whole full-window stage. It stays marked (CSS drops the ring)
+  // until focus leaves, so a reader tabbing back in still sees one.
+  it("keeps the focus ring off for the focus it places itself", () => {
+    stubNaturalSize({ width: 1600, height: 800 });
+    renderImagePreview();
+
+    expect(zoomCanvas()).toHaveAttribute("data-autofocused");
+    fireEvent.blur(zoomCanvas());
+    expect(zoomCanvas()).not.toHaveAttribute("data-autofocused");
   });
 
   it("re-fits on reopen instead of restoring the previous zoom", async () => {

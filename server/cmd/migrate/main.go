@@ -141,6 +141,12 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
 	"535_github_pr_address_index":                               "idx_github_pull_request_pr_owner_repo",
+	"539_task_supplement_request_index":                         "task_supplement_task_request_uidx",
+	"540_task_supplement_capability_index":                      "task_supplement_capability_task_uidx",
+	"541_task_supplement_comment_index":                         "task_supplement_comment_uidx",
+	"546_issue_pr_automation_workspace_index":                   "idx_issue_pr_automation_workspace",
+	"547_issue_pull_request_exclusion_workspace_index":          "idx_issue_pull_request_exclusion_workspace",
+	"548_task_supplement_comment_task_index":                    "task_supplement_comment_task_uidx",
 	"510_wakeup_id":                                             "issue_wakeup_id_idx",
 	"511_wakeup_issue":                                          "issue_wakeup_issue_idx",
 	"512_wakeup_due":                                            "issue_wakeup_due_idx",
@@ -334,8 +340,9 @@ var concurrentIndexCleanups = map[string]string{
 	"480_instance_telemetry_state_singleton_index":              "instance_telemetry_state_singleton_uidx",
 	"482_agent_task_queue_telemetry_started_index":              "idx_agent_task_queue_telemetry_started",
 	"484_issue_triage_state_index":                              "idx_issue_triage_state",
-	"539_runtime_cost_budget_pkey_index":                        "runtime_cost_budget_pkey_uidx",
-	"541_runtime_cost_budget_scope_index":                       "idx_runtime_cost_budget_scope",
+	"537_issue_duplicate_of_index":                              "idx_issue_duplicate_of",
+	"903_runtime_cost_budget_pkey_index":                        "runtime_cost_budget_pkey_uidx",
+	"905_runtime_cost_budget_scope_index":                       "idx_runtime_cost_budget_scope",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
@@ -361,6 +368,7 @@ var concurrentDownIndexCleanups = map[string]string{
 	"437_drop_agent_runtime_last_seen_at_index":             "idx_agent_runtime_last_seen_at",
 	"450_drop_comment_delegated_failure_pending_index":      "idx_comment_delegated_failure_pending",
 	"453_drop_pending_issue_agent_unique":                   "idx_one_pending_task_per_issue_agent_v2",
+	"548_task_supplement_comment_task_index":                "task_supplement_comment_uidx",
 	"454_drop_comment_content_bigm_index":                   "idx_comment_content_bigm",
 	"455_drop_comment_content_trgm_index":                   "idx_comment_content_trgm",
 	"463_drop_issue_description_bigm_index":                 "idx_issue_description_bigm",
@@ -457,10 +465,10 @@ var upMigrationConditions = map[string]migrationCondition{
 	// else, rather than failing the run (and with it backend startup) on every
 	// database without the extension.
 	"446_issue_properties_bigm_index": whenOperatorClassAvailable(pgBigmOperatorClass),
-	// Fork runtime cost budgets (renumbered 453 -> 539). A database that ran
-	// the pre-renumber stems already attached this index as the primary key,
+	// Fork runtime cost budgets (renumbered 453 -> 539 -> 903). A database that
+	// ran a pre-renumber stem already attached this index as the primary key,
 	// which renamed it, so IF NOT EXISTS would build a redundant duplicate.
-	"539_runtime_cost_budget_pkey_index": whenTableLacksPrimaryKey("public.runtime_cost_budget"),
+	"903_runtime_cost_budget_pkey_index": whenTableLacksPrimaryKey("public.runtime_cost_budget"),
 }
 
 // Migrations 454 and 455 restore the mutually exclusive comment search index
