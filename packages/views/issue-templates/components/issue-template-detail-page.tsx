@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  Archive,
+  ArchiveRestore,
   ArrowLeft,
   ChevronRight,
   Eye,
@@ -17,10 +19,18 @@ import { useQuery } from "@tanstack/react-query";
 import { useTimeAgo } from "../../i18n";
 import type { IssueTemplate, MemberWithUser, UpdateIssueTemplateRequest } from "@multica/core/types";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { issueTemplateDetailOptions, useDeleteIssueTemplate, useUpdateIssueTemplate } from "@multica/core/issue-templates";
+import {
+  issueTemplateDetailOptions,
+  useArchiveIssueTemplate,
+  useDeleteIssueTemplate,
+  useSetIssueTemplateEnabled,
+  useUnarchiveIssueTemplate,
+  useUpdateIssueTemplate,
+} from "@multica/core/issue-templates";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
+import { Badge } from "@multica/ui/components/ui/badge";
 import { Button, buttonVariants } from "@multica/ui/components/ui/button";
 import {
   Dialog,
@@ -33,17 +43,20 @@ import {
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
+import { Switch } from "@multica/ui/components/ui/switch";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
 import { ReadonlyContent } from "../../editor";
 import { AppLink, useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
+import { VariableEditor, variablesFromConfig, variablesToConfig, type VariableDraft } from "./variable-editor";
 
 function seedDraft(template: IssueTemplate) {
   return {
     name: template.name,
     issueTitle: template.issue_title,
     issueContent: template.issue_content,
+    variables: variablesFromConfig(template.config),
   };
 }
 
@@ -55,6 +68,9 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
   const navigation = useNavigation();
   const updateTemplate = useUpdateIssueTemplate();
   const deleteTemplate = useDeleteIssueTemplate();
+  const setEnabled = useSetIssueTemplateEnabled();
+  const archiveTemplate = useArchiveIssueTemplate();
+  const unarchiveTemplate = useUnarchiveIssueTemplate();
 
   const {
     data: template,
@@ -66,6 +82,7 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
   const [name, setName] = useState("");
   const [issueTitle, setIssueTitle] = useState("");
   const [issueContent, setIssueContent] = useState("");
+  const [variables, setVariables] = useState<VariableDraft[]>([]);
   const [editingContent, setEditingContent] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const seededIdRef = useRef<string | null>(null);
@@ -77,6 +94,7 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
     setName(draft.name);
     setIssueTitle(draft.issueTitle);
     setIssueContent(draft.issueContent);
+    setVariables(draft.variables);
     seededIdRef.current = template.id;
   }, [template]);
 
@@ -90,12 +108,15 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
 
   const isDirty = useMemo(() => {
     if (!template) return false;
+    const templateVars = JSON.stringify(template.config.variables ?? {});
+    const draftVars = JSON.stringify(variablesToConfig(variables));
     return (
       name.trim() !== template.name ||
       issueTitle.trim() !== template.issue_title ||
-      issueContent !== template.issue_content
+      issueContent !== template.issue_content ||
+      templateVars !== draftVars
     );
-  }, [template, name, issueTitle, issueContent]);
+  }, [template, name, issueTitle, issueContent, variables]);
 
   const handleSave = async () => {
     if (!template) return;
@@ -103,6 +124,11 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
     if (name.trim() !== template.name) payload.name = name.trim();
     if (issueTitle.trim() !== template.issue_title) payload.issue_title = issueTitle.trim();
     if (issueContent !== template.issue_content) payload.issue_content = issueContent;
+    const vars = variablesToConfig(variables);
+    const existingVars = (template.config.variables ?? {}) as Record<string, unknown>;
+    if (JSON.stringify(vars) !== JSON.stringify(existingVars)) {
+      payload.config = { ...template.config, variables: vars };
+    }
     try {
       const updated = await updateTemplate.mutateAsync({
         id: template.id,
@@ -121,6 +147,34 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
     setName(draft.name);
     setIssueTitle(draft.issueTitle);
     setIssueContent(draft.issueContent);
+    setVariables(draft.variables);
+  };
+
+  const handleToggleEnabled = () => {
+    if (!template) return;
+    setEnabled.mutate(
+      { id: template.id, enabled: !template.enabled },
+      {
+        onError: (err) =>
+          toast.error(err instanceof Error ? err.message : t(($) => $.toast.toggle_failed)),
+      },
+    );
+  };
+
+  const handleArchive = () => {
+    if (!template) return;
+    archiveTemplate.mutate(template.id, {
+      onError: (err) =>
+        toast.error(err instanceof Error ? err.message : t(($) => $.toast.archive_failed)),
+    });
+  };
+
+  const handleUnarchive = () => {
+    if (!template) return;
+    unarchiveTemplate.mutate(template.id, {
+      onError: (err) =>
+        toast.error(err instanceof Error ? err.message : t(($) => $.toast.unarchive_failed)),
+    });
   };
 
   const handleDelete = async () => {
@@ -197,15 +251,53 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
         <span className="truncate font-mono text-caption text-foreground">
           {template.name}
         </span>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={() => setConfirmDelete(true)}
-          className="ml-auto text-muted-foreground hover:text-destructive"
-          aria-label={t(($) => $.detail.delete_aria)}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
+        <div className="ml-auto flex items-center gap-2">
+          {template.archived ? (
+            <Badge variant="outline" className="text-micro">
+              {t(($) => $.table.status_archived)}
+            </Badge>
+          ) : !template.enabled ? (
+            <Badge variant="secondary" className="text-micro">
+              {t(($) => $.table.status_disabled)}
+            </Badge>
+          ) : null}
+          <label className="flex items-center gap-2 text-caption text-muted-foreground">
+            <Switch checked={template.enabled} onCheckedChange={handleToggleEnabled} disabled={template.archived} />
+            {t(($) => $.detail.enabled)}
+          </label>
+          {template.archived ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={handleUnarchive}
+              className="text-muted-foreground"
+            >
+              <ArchiveRestore className="h-3.5 w-3.5" />
+              {t(($) => $.table.actions.unarchive)}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={handleArchive}
+              className="text-muted-foreground"
+            >
+              <Archive className="h-3.5 w-3.5" />
+              {t(($) => $.table.actions.archive)}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => setConfirmDelete(true)}
+            className="text-muted-foreground hover:text-destructive"
+            aria-label={t(($) => $.detail.delete_aria)}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
       <div className="flex min-h-0 flex-1">
@@ -285,6 +377,8 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
                 </div>
               )}
             </div>
+
+            <VariableEditor value={variables} onChange={setVariables} />
           </div>
 
           {isDirty && (

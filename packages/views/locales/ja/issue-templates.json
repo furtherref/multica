@@ -21,7 +21,8 @@
       "title": "Could not load issue templates",
       "fallback": "Something went wrong while loading issue templates.",
       "retry": "Retry"
-    }
+    },
+    "show_archived": "アーカイブ済みを表示"
   },
   "table": {
     "name": "Name",
@@ -29,7 +30,20 @@
     "updated": "Updated",
     "no_content": "No content",
     "source_manual": "Manually created",
-    "by_creator": "Created by {{name}}"
+    "by_creator": "Created by {{name}}",
+    "status": "状態",
+    "status_enabled": "有効",
+    "status_disabled": "無効",
+    "status_archived": "アーカイブ済み",
+    "actions": {
+      "open": "{{name}} を管理",
+      "move_up": "上へ移動",
+      "move_down": "下へ移動",
+      "enable": "有効にする",
+      "disable": "無効にする",
+      "archive": "アーカイブ",
+      "unarchive": "アーカイブ解除"
+    }
   },
   "create": {
     "title": "New Issue Template",
@@ -80,6 +94,26 @@
       "cancel": "Cancel",
       "confirm": "Delete permanently",
       "deleting": "Deleting..."
-    }
+    },
+    "enabled": "有効"
+  },
+  "toast": {
+    "toggle_failed": "テンプレートの更新に失敗しました",
+    "archive_failed": "テンプレートのアーカイブに失敗しました",
+    "unarchive_failed": "アーカイブ解除に失敗しました",
+    "reorder_failed": "並べ替えに失敗しました"
+  },
+  "variables": {
+    "title": "変数",
+    "empty": "変数がありません。タイトルまたは本文に {{name}} トークンを追加してから、ここで宣言します。",
+    "key": "名前",
+    "key_placeholder": "area",
+    "label": "ラベル",
+    "label_placeholder": "どの領域？",
+    "default": "デフォルト",
+    "default_placeholder": "任意",
+    "required": "必須",
+    "add": "変数を追加",
+    "remove": "{{name}} を削除"
   }
 }

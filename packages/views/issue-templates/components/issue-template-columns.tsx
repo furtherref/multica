@@ -1,25 +1,56 @@
 "use client";
 
-import { ChevronRight, FileText, Pencil } from "lucide-react";
+import {
+  Archive,
+  ArchiveRestore,
+  ArrowDown,
+  ArrowUp,
+  ChevronRight,
+  FileText,
+  PauseCircle,
+  Pencil,
+  PlayCircle,
+} from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { IssueTemplateSummary, MemberWithUser } from "@multica/core/types";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
+import { Badge } from "@multica/ui/components/ui/badge";
+import { Button } from "@multica/ui/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@multica/ui/components/ui/dropdown-menu";
 import { readIssueTemplateOrigin } from "../lib/origin";
 import { useT, useTimeAgo } from "../../i18n";
 
 export interface IssueTemplateRow {
   template: IssueTemplateSummary;
   creator: MemberWithUser | null;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+}
+
+export interface TemplateRowActions {
+  onToggleEnabled: (template: IssueTemplateSummary) => void;
+  onArchive: (template: IssueTemplateSummary) => void;
+  onUnarchive: (template: IssueTemplateSummary) => void;
+  onMoveUp?: (template: IssueTemplateSummary) => void;
+  onMoveDown?: (template: IssueTemplateSummary) => void;
 }
 
 const COL_WIDTHS = {
   name: 360,
   source: 220,
+  status: 120,
   updated: 110,
-  chevron: 48,
+  actions: 48,
+  chevron: 24,
 } as const;
 
-export function useIssueTemplateColumns(): ColumnDef<IssueTemplateRow>[] {
+export function useIssueTemplateColumns(actions: TemplateRowActions): ColumnDef<IssueTemplateRow>[] {
   const { t } = useT("issue-templates");
   const timeAgo = useTimeAgo();
 
@@ -44,6 +75,12 @@ export function useIssueTemplateColumns(): ColumnDef<IssueTemplateRow>[] {
       ),
     },
     {
+      id: "status",
+      header: t(($) => $.table.status),
+      size: COL_WIDTHS.status,
+      cell: ({ row }) => <StatusCell template={row.original.template} />,
+    },
+    {
       id: "updated",
       header: t(($) => $.table.updated),
       size: COL_WIDTHS.updated,
@@ -52,6 +89,13 @@ export function useIssueTemplateColumns(): ColumnDef<IssueTemplateRow>[] {
           {timeAgo(row.original.template.updated_at)}
         </span>
       ),
+    },
+    {
+      id: "_actions",
+      header: () => null,
+      size: COL_WIDTHS.actions,
+      enableResizing: false,
+      cell: ({ row }) => <ActionsCell row={row.original} actions={actions} />,
     },
     {
       id: "_chevron",
@@ -89,6 +133,29 @@ function IssueTemplateNameCell({ row }: { row: IssueTemplateRow }) {
   );
 }
 
+function StatusCell({ template }: { template: IssueTemplateSummary }) {
+  const { t } = useT("issue-templates");
+  if (template.archived) {
+    return (
+      <Badge variant="outline" className="shrink-0 text-micro">
+        {t(($) => $.table.status_archived)}
+      </Badge>
+    );
+  }
+  if (!template.enabled) {
+    return (
+      <Badge variant="secondary" className="shrink-0 text-micro">
+        {t(($) => $.table.status_disabled)}
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="ghost" className="shrink-0 text-micro">
+      {t(($) => $.table.status_enabled)}
+    </Badge>
+  );
+}
+
 function SourceCell({
   template,
   creator,
@@ -123,5 +190,71 @@ function SourceCell({
         </div>
       )}
     </div>
+  );
+}
+
+function ActionsCell({
+  row,
+  actions,
+}: {
+  row: IssueTemplateRow;
+  actions: TemplateRowActions;
+}) {
+  const { t } = useT("issue-templates");
+  const { template } = row;
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t(($) => $.table.actions.open, { name: template.name })}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </Button>
+        }
+      />
+      <DropdownMenuContent align="end">
+        {template.archived ? (
+          <DropdownMenuItem onClick={() => actions.onUnarchive(template)}>
+            <ArchiveRestore className="size-4" />
+            {t(($) => $.table.actions.unarchive)}
+          </DropdownMenuItem>
+        ) : (
+          <>
+            {actions.onMoveUp && (
+              <DropdownMenuItem disabled={!row.canMoveUp} onClick={() => actions.onMoveUp?.(template)}>
+                <ArrowUp className="size-4" />
+                {t(($) => $.table.actions.move_up)}
+              </DropdownMenuItem>
+            )}
+            {actions.onMoveDown && (
+              <DropdownMenuItem disabled={!row.canMoveDown} onClick={() => actions.onMoveDown?.(template)}>
+                <ArrowDown className="size-4" />
+                {t(($) => $.table.actions.move_down)}
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuSeparator />
+            {template.enabled ? (
+              <DropdownMenuItem onClick={() => actions.onToggleEnabled(template)}>
+                <PauseCircle className="size-4" />
+                {t(($) => $.table.actions.disable)}
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem onClick={() => actions.onToggleEnabled(template)}>
+                <PlayCircle className="size-4" />
+                {t(($) => $.table.actions.enable)}
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuItem variant="destructive" onClick={() => actions.onArchive(template)}>
+              <Archive className="size-4" />
+              {t(($) => $.table.actions.archive)}
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

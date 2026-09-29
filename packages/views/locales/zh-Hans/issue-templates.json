@@ -21,7 +21,8 @@
       "title": "无法加载 Issue模板",
       "fallback": "拉取 Issue模板 列表时出错。",
       "retry": "重试"
-    }
+    },
+    "show_archived": "显示已归档"
   },
   "table": {
     "name": "名称",
@@ -29,7 +30,20 @@
     "updated": "更新时间",
     "no_content": "无内容",
     "source_manual": "手动创建",
-    "by_creator": "由 {{name}} 创建"
+    "by_creator": "由 {{name}} 创建",
+    "status": "状态",
+    "status_enabled": "已启用",
+    "status_disabled": "已停用",
+    "status_archived": "已归档",
+    "actions": {
+      "open": "管理 {{name}}",
+      "move_up": "上移",
+      "move_down": "下移",
+      "enable": "启用",
+      "disable": "停用",
+      "archive": "归档",
+      "unarchive": "取消归档"
+    }
   },
   "create": {
     "title": "新建 Issue模板",
@@ -80,6 +94,26 @@
       "cancel": "取消",
       "confirm": "永久删除",
       "deleting": "删除中..."
-    }
+    },
+    "enabled": "已启用"
+  },
+  "toast": {
+    "toggle_failed": "更新模板失败",
+    "archive_failed": "归档模板失败",
+    "unarchive_failed": "取消归档失败",
+    "reorder_failed": "排序失败"
+  },
+  "variables": {
+    "title": "变量",
+    "empty": "还没有变量。在标题或内容中添加 {{name}} 占位符后，在这里声明。",
+    "key": "名称",
+    "key_placeholder": "area",
+    "label": "标签",
+    "label_placeholder": "什么区域？",
+    "default": "默认值",
+    "default_placeholder": "可选",
+    "required": "必填",
+    "add": "添加变量",
+    "remove": "移除 {{name}}"
   }
 }

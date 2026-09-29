@@ -15,6 +15,7 @@ import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { useT } from "../../i18n";
+import { VariableEditor, variablesToConfig, type VariableDraft } from "./variable-editor";
 
 export function CreateIssueTemplateDialog({
   onClose,
@@ -28,6 +29,7 @@ export function CreateIssueTemplateDialog({
   const [name, setName] = useState("");
   const [issueTitle, setIssueTitle] = useState("");
   const [issueContent, setIssueContent] = useState("");
+  const [variables, setVariables] = useState<VariableDraft[]>([]);
   const [error, setError] = useState("");
 
   const submit = async () => {
@@ -37,10 +39,12 @@ export function CreateIssueTemplateDialog({
 
     setError("");
     try {
+      const vars = variablesToConfig(variables);
       const template = await createTemplate.mutateAsync({
         name: trimmedName,
         issue_title: trimmedTitle,
         issue_content: issueContent,
+        ...(Object.keys(vars).length > 0 ? { config: { variables: vars } } : {}),
       });
       toast.success(t(($) => $.create.toast_created));
       onCreated(template);
@@ -121,6 +125,8 @@ export function CreateIssueTemplateDialog({
               className="resize-none font-mono text-caption"
             />
           </div>
+
+          <VariableEditor value={variables} onChange={setVariables} />
 
           {error && (
             <div

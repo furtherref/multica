@@ -2,17 +2,25 @@
 
 import { useMemo, useState } from "react";
 import { AlertCircle, FileText, Plus, Search } from "lucide-react";
+import { toast } from "sonner";
 import type { MemberWithUser } from "@multica/core/types";
 import { useQuery } from "@tanstack/react-query";
 import { getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { issueTemplateListOptions } from "@multica/core/issue-templates";
+import {
+  issueTemplateListOptions,
+  useArchiveIssueTemplate,
+  useReorderIssueTemplates,
+  useSetIssueTemplateEnabled,
+  useUnarchiveIssueTemplate,
+} from "@multica/core/issue-templates";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { Button } from "@multica/ui/components/ui/button";
 import { DataTable } from "@multica/ui/components/ui/data-table";
 import { Input } from "@multica/ui/components/ui/input";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
+import { Switch } from "@multica/ui/components/ui/switch";
 import { useNavigation } from "../../navigation";
 import { PageHeader } from "../../layout/page-header";
 import { useT } from "../../i18n";
@@ -52,9 +60,13 @@ function PageHeaderBar({
 function CardToolbar({
   search,
   setSearch,
+  showArchived,
+  setShowArchived,
 }: {
   search: string;
   setSearch: (v: string) => void;
+  showArchived: boolean;
+  setShowArchived: (v: boolean) => void;
 }) {
   const { t } = useT("issue-templates");
   return (
@@ -67,6 +79,12 @@ function CardToolbar({
           placeholder={t(($) => $.page.search_placeholder)}
           className="h-8 w-72 pl-8 text-body"
         />
+      </div>
+      <div className="ml-auto">
+        <label className="flex items-center gap-2 text-caption text-muted-foreground">
+          <Switch checked={showArchived} onCheckedChange={setShowArchived} />
+          {t(($) => $.page.show_archived)}
+        </label>
       </div>
     </div>
   );
@@ -97,14 +115,20 @@ export function IssueTemplatesPage() {
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
   const [search, setSearch] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+
+  const toggleEnabled = useSetIssueTemplateEnabled();
+  const archiveTemplate = useArchiveIssueTemplate();
+  const unarchiveTemplate = useUnarchiveIssueTemplate();
+  const reorderTemplates = useReorderIssueTemplates();
 
   const {
     data: templates = [],
     isLoading,
     error: listError,
     refetch: refetchList,
-  } = useQuery(issueTemplateListOptions(wsId));
+  } = useQuery(issueTemplateListOptions(wsId, true));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
 
   const membersById = useMemo(() => {
@@ -115,25 +139,72 @@ export function IssueTemplatesPage() {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return templates;
-    return templates.filter((template) =>
+    const active = templates.filter((template) => (showArchived ? true : !template.archived));
+    return active.filter((template) =>
+      !q ||
       template.name.toLowerCase().includes(q) ||
       template.issue_title.toLowerCase().includes(q),
     );
-  }, [templates, search]);
+  }, [templates, search, showArchived]);
+
+  const visibleIds = useMemo(
+    () => filtered.filter((t) => !t.archived).map((t) => t.id),
+    [filtered],
+  );
 
   const rows = useMemo<IssueTemplateRow[]>(
     () =>
-      filtered.map((template) => ({
-        template,
-        creator: template.created_by
-          ? membersById.get(template.created_by) ?? null
-          : null,
-      })),
-    [filtered, membersById],
+      filtered.map((template) => {
+        const idx = visibleIds.indexOf(template.id);
+        return {
+          template,
+          creator: template.created_by
+            ? membersById.get(template.created_by) ?? null
+            : null,
+          canMoveUp: !template.archived && idx > 0,
+          canMoveDown: !template.archived && idx >= 0 && idx < visibleIds.length - 1,
+        };
+      }),
+    [filtered, visibleIds, membersById],
   );
 
-  const columns = useIssueTemplateColumns();
+  const move = (id: string, dir: -1 | 1) => {
+    const activeIds = filtered.filter((t) => !t.archived).map((t) => t.id);
+    const from = activeIds.indexOf(id);
+    const to = from + dir;
+    if (from < 0 || to < 0 || to >= activeIds.length) return;
+    const next = [...activeIds];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item!);
+    reorderTemplates.mutate(next, {
+      onError: (err) =>
+        toast.error(err instanceof Error ? err.message : t(($) => $.toast.reorder_failed)),
+    });
+  };
+
+  const columns = useIssueTemplateColumns({
+    onToggleEnabled: (template) =>
+      toggleEnabled.mutate(
+        { id: template.id, enabled: !template.enabled },
+        {
+          onError: (err) =>
+            toast.error(err instanceof Error ? err.message : t(($) => $.toast.toggle_failed)),
+        },
+      ),
+    onArchive: (template) =>
+      archiveTemplate.mutate(template.id, {
+        onError: (err) =>
+          toast.error(err instanceof Error ? err.message : t(($) => $.toast.archive_failed)),
+      }),
+    onUnarchive: (template) =>
+      unarchiveTemplate.mutate(template.id, {
+        onError: (err) =>
+          toast.error(err instanceof Error ? err.message : t(($) => $.toast.unarchive_failed)),
+      }),
+    onMoveUp: (template) => move(template.id, -1),
+    onMoveDown: (template) => move(template.id, 1),
+  });
+
   const table = useReactTable({
     data: rows,
     columns,
@@ -186,7 +257,8 @@ export function IssueTemplatesPage() {
   }
 
   const totalCount = templates.length;
-  const showEmpty = totalCount === 0;
+  const activeCount = templates.filter((t) => !t.archived).length;
+  const showEmpty = activeCount === 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -199,7 +271,12 @@ export function IssueTemplatesPage() {
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border bg-background">
-            <CardToolbar search={search} setSearch={setSearch} />
+            <CardToolbar
+              search={search}
+              setSearch={setSearch}
+              showArchived={showArchived}
+              setShowArchived={setShowArchived}
+            />
             {filtered.length === 0 ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-16 text-center text-muted-foreground">
                 <Search className="h-8 w-8 text-faint-foreground" />

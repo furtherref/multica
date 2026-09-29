@@ -9,6 +9,7 @@
     "tagline": "Manage reusable issue title and content templates.",
     "new_template": "New Issue Template",
     "search_placeholder": "Search template name, title, or content...",
+    "show_archived": "Show archived",
     "empty": {
       "title": "No issue templates yet",
       "description": "Create a template to reuse title and content when creating issues."
@@ -26,10 +27,29 @@
   "table": {
     "name": "Name",
     "source": "Source · Creator",
+    "status": "Status",
     "updated": "Updated",
     "no_content": "No content",
     "source_manual": "Manually created",
-    "by_creator": "Created by {{name}}"
+    "by_creator": "Created by {{name}}",
+    "status_enabled": "Enabled",
+    "status_disabled": "Disabled",
+    "status_archived": "Archived",
+    "actions": {
+      "open": "Manage {{name}}",
+      "move_up": "Move up",
+      "move_down": "Move down",
+      "enable": "Enable",
+      "disable": "Disable",
+      "archive": "Archive",
+      "unarchive": "Unarchive"
+    }
+  },
+  "toast": {
+    "toggle_failed": "Failed to update template",
+    "archive_failed": "Failed to archive template",
+    "unarchive_failed": "Failed to unarchive template",
+    "reorder_failed": "Failed to reorder templates"
   },
   "create": {
     "title": "New Issue Template",
@@ -80,6 +100,20 @@
       "cancel": "Cancel",
       "confirm": "Delete permanently",
       "deleting": "Deleting..."
-    }
+    },
+    "enabled": "Enabled"
+  },
+  "variables": {
+    "title": "Variables",
+    "empty": "No variables yet. Add {{name}} tokens to the title or content, then declare them here.",
+    "key": "Name",
+    "key_placeholder": "area",
+    "label": "Label",
+    "label_placeholder": "What area?",
+    "default": "Default",
+    "default_placeholder": "Optional",
+    "required": "Required",
+    "add": "Add variable",
+    "remove": "Remove {{name}}"
   }
 }

@@ -21,7 +21,8 @@
       "title": "Could not load issue templates",
       "fallback": "Something went wrong while loading issue templates.",
       "retry": "Retry"
-    }
+    },
+    "show_archived": "보관됨 표시"
   },
   "table": {
     "name": "Name",
@@ -29,7 +30,20 @@
     "updated": "Updated",
     "no_content": "No content",
     "source_manual": "Manually created",
-    "by_creator": "Created by {{name}}"
+    "by_creator": "Created by {{name}}",
+    "status": "상태",
+    "status_enabled": "사용 중",
+    "status_disabled": "사용 안 함",
+    "status_archived": "보관됨",
+    "actions": {
+      "open": "{{name}} 관리",
+      "move_up": "위로 이동",
+      "move_down": "아래로 이동",
+      "enable": "사용",
+      "disable": "사용 안 함",
+      "archive": "보관",
+      "unarchive": "보관 해제"
+    }
   },
   "create": {
     "title": "New Issue Template",
@@ -80,6 +94,26 @@
       "cancel": "Cancel",
       "confirm": "Delete permanently",
       "deleting": "Deleting..."
-    }
+    },
+    "enabled": "사용"
+  },
+  "toast": {
+    "toggle_failed": "템플릿 업데이트 실패",
+    "archive_failed": "템플릿 보관 실패",
+    "unarchive_failed": "보관 해제 실패",
+    "reorder_failed": "정렬 실패"
+  },
+  "variables": {
+    "title": "변수",
+    "empty": "변수가 없습니다. 제목이나 내용에 {{name}} 토큰을 추가한 후 여기에서 선언하세요.",
+    "key": "이름",
+    "key_placeholder": "area",
+    "label": "라벨",
+    "label_placeholder": "어떤 영역?",
+    "default": "기본값",
+    "default_placeholder": "선택 사항",
+    "required": "필수",
+    "add": "변수 추가",
+    "remove": "{{name}} 제거"
   }
 }

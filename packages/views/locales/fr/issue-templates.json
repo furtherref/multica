@@ -21,7 +21,8 @@
       "title": "Impossible de charger les modèles de tâche",
       "fallback": "Une erreur est survenue lors du chargement des modèles de tâche.",
       "retry": "Réessayer"
-    }
+    },
+    "show_archived": "Afficher les archivées"
   },
   "table": {
     "name": "Nom",
@@ -29,7 +30,20 @@
     "updated": "Mise à jour",
     "no_content": "Aucun contenu",
     "source_manual": "Créé manuellement",
-    "by_creator": "Créé par {{name}}"
+    "by_creator": "Créé par {{name}}",
+    "status": "Statut",
+    "status_enabled": "Activé",
+    "status_disabled": "Désactivé",
+    "status_archived": "Archivé",
+    "actions": {
+      "open": "Gérer {{name}}",
+      "move_up": "Monter",
+      "move_down": "Descendre",
+      "enable": "Activer",
+      "disable": "Désactiver",
+      "archive": "Archiver",
+      "unarchive": "Désarchiver"
+    }
   },
   "create": {
     "title": "Nouveau modèle de tâche",
@@ -80,6 +94,26 @@
       "cancel": "Annuler",
       "confirm": "Supprimer définitivement",
       "deleting": "Suppression..."
-    }
+    },
+    "enabled": "Activé"
+  },
+  "toast": {
+    "toggle_failed": "Échec de la mise à jour du modèle",
+    "archive_failed": "Échec de l'archivage du modèle",
+    "unarchive_failed": "Échec de la désarchivage du modèle",
+    "reorder_failed": "Échec de la réorganisation des modèles"
+  },
+  "variables": {
+    "title": "Variables",
+    "empty": "Aucune variable pour l'instant. Ajoutez des jetons {{name}} au titre ou au contenu, puis déclarez-les ici.",
+    "key": "Nom",
+    "key_placeholder": "area",
+    "label": "Libellé",
+    "label_placeholder": "Quelle zone ?",
+    "default": "Défaut",
+    "default_placeholder": "Facultatif",
+    "required": "Requis",
+    "add": "Ajouter une variable",
+    "remove": "Supprimer {{name}}"
   }
 }
