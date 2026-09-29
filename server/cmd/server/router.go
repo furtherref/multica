@@ -2324,6 +2324,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssueTemplate)
 					r.Put("/", h.UpdateIssueTemplate)
+					// Templates archive instead of delete (RIC-906); DELETE stays
+					// for workspace teardown and true removal.
+					r.Post("/archive", h.ArchiveIssueTemplate)
+					r.Post("/unarchive", h.UnarchiveIssueTemplate)
 					r.Delete("/", h.DeleteIssueTemplate)
 				})
 			})

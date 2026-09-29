@@ -8,6 +8,10 @@ const IssueTemplateSummarySchema = z.object({
   issue_title: z.string(),
   config: z.record(z.string(), z.unknown()).default({}),
   created_by: z.string().nullable(),
+  // Archived fields (RIC-906). Old servers omit them; default to false/null
+  // so archived handling degrades to "everything active".
+  archived: z.boolean().default(false),
+  archived_at: z.string().nullable().default(null),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -22,6 +26,8 @@ export const IssueTemplateDetailSchema = z.object({
   issue_content: z.string(),
   config: z.record(z.string(), z.unknown()).default({}),
   created_by: z.string().nullable(),
+  archived: z.boolean().default(false),
+  archived_at: z.string().nullable().default(null),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -36,6 +42,8 @@ export const EMPTY_ISSUE_TEMPLATE_DETAIL: IssueTemplate = {
   issue_content: "",
   config: {},
   created_by: null,
+  archived: false,
+  archived_at: null,
   created_at: "",
   updated_at: "",
 };

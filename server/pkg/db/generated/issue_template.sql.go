@@ -11,10 +11,45 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const archiveIssueTemplate = `-- name: ArchiveIssueTemplate :one
+UPDATE issue_template SET
+    archived_at = now(),
+    updated_at = now()
+WHERE id = $1
+  AND workspace_id = $2
+  AND archived_at IS NULL
+RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at
+`
+
+type ArchiveIssueTemplateParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Retires a template from future selection only. Issues already created from
+// the template keep their content — templates are only applied at creation.
+func (q *Queries) ArchiveIssueTemplate(ctx context.Context, arg ArchiveIssueTemplateParams) (IssueTemplate, error) {
+	row := q.db.QueryRow(ctx, archiveIssueTemplate, arg.ID, arg.WorkspaceID)
+	var i IssueTemplate
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.IssueTitle,
+		&i.IssueContent,
+		&i.Config,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ArchivedAt,
+	)
+	return i, err
+}
+
 const createIssueTemplate = `-- name: CreateIssueTemplate :one
 INSERT INTO issue_template (workspace_id, name, issue_title, issue_content, config, created_by)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at
+RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at
 `
 
 type CreateIssueTemplateParams struct {
@@ -46,6 +81,7 @@ func (q *Queries) CreateIssueTemplate(ctx context.Context, arg CreateIssueTempla
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -54,13 +90,15 @@ const deleteIssueTemplate = `-- name: DeleteIssueTemplate :exec
 DELETE FROM issue_template WHERE id = $1
 `
 
+// Hard delete remains for workspace teardown and the rare true-removal case;
+// normal user flows use ArchiveIssueTemplate.
 func (q *Queries) DeleteIssueTemplate(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteIssueTemplate, id)
 	return err
 }
 
 const getIssueTemplateInWorkspace = `-- name: GetIssueTemplateInWorkspace :one
-SELECT id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at
+SELECT id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at
 FROM issue_template
 WHERE id = $1 AND workspace_id = $2
 `
@@ -70,6 +108,8 @@ type GetIssueTemplateInWorkspaceParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
+// Resolves by id AND workspace so a template id from another workspace can
+// never be read or mutated through this handler.
 func (q *Queries) GetIssueTemplateInWorkspace(ctx context.Context, arg GetIssueTemplateInWorkspaceParams) (IssueTemplate, error) {
 	row := q.db.QueryRow(ctx, getIssueTemplateInWorkspace, arg.ID, arg.WorkspaceID)
 	var i IssueTemplate
@@ -83,6 +123,7 @@ func (q *Queries) GetIssueTemplateInWorkspace(ctx context.Context, arg GetIssueT
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -92,6 +133,7 @@ const listIssueTemplateSummariesByWorkspace = `-- name: ListIssueTemplateSummari
 SELECT id, workspace_id, name, issue_title, config, created_by, created_at, updated_at
 FROM issue_template
 WHERE workspace_id = $1
+  AND archived_at IS NULL
 ORDER BY name ASC
 `
 
@@ -107,6 +149,14 @@ type ListIssueTemplateSummariesByWorkspaceRow struct {
 }
 
 // Issue Template CRUD
+//
+// Templates archive instead of delete (RIC-906): archived_at IS NOT NULL
+// retires a template from the default list and the create-issue template
+// picker, while keeping the row for audit and unarchiving. See migration
+// 542/543.
+// Default list — active templates only. The create-issue picker and the
+// management list use this, so archived templates are never offered for
+// selection.
 func (q *Queries) ListIssueTemplateSummariesByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]ListIssueTemplateSummariesByWorkspaceRow, error) {
 	rows, err := q.db.Query(ctx, listIssueTemplateSummariesByWorkspace, workspaceID)
 	if err != nil {
@@ -136,6 +186,92 @@ func (q *Queries) ListIssueTemplateSummariesByWorkspace(ctx context.Context, wor
 	return items, nil
 }
 
+const listIssueTemplateSummariesIncludingArchivedByWorkspace = `-- name: ListIssueTemplateSummariesIncludingArchivedByWorkspace :many
+SELECT id, workspace_id, name, issue_title, config, created_by, created_at, updated_at, archived_at
+FROM issue_template
+WHERE workspace_id = $1
+ORDER BY archived_at IS NULL ASC, name ASC
+`
+
+type ListIssueTemplateSummariesIncludingArchivedByWorkspaceRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Name        string             `json:"name"`
+	IssueTitle  string             `json:"issue_title"`
+	Config      []byte             `json:"config"`
+	CreatedBy   pgtype.UUID        `json:"created_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ArchivedAt  pgtype.Timestamptz `json:"archived_at"`
+}
+
+// Admin view: includes archived templates so they can be unarchived.
+func (q *Queries) ListIssueTemplateSummariesIncludingArchivedByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]ListIssueTemplateSummariesIncludingArchivedByWorkspaceRow, error) {
+	rows, err := q.db.Query(ctx, listIssueTemplateSummariesIncludingArchivedByWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListIssueTemplateSummariesIncludingArchivedByWorkspaceRow{}
+	for rows.Next() {
+		var i ListIssueTemplateSummariesIncludingArchivedByWorkspaceRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.IssueTitle,
+			&i.Config,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ArchivedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const unarchiveIssueTemplate = `-- name: UnarchiveIssueTemplate :one
+UPDATE issue_template SET
+    archived_at = NULL,
+    updated_at = now()
+WHERE id = $1
+  AND workspace_id = $2
+  AND archived_at IS NOT NULL
+RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at
+`
+
+type UnarchiveIssueTemplateParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Brings a template back to the active list. The partial unique index on
+// (workspace_id, name) WHERE archived_at IS NULL rejects an unarchive when
+// the freed name was already reused by an active template.
+func (q *Queries) UnarchiveIssueTemplate(ctx context.Context, arg UnarchiveIssueTemplateParams) (IssueTemplate, error) {
+	row := q.db.QueryRow(ctx, unarchiveIssueTemplate, arg.ID, arg.WorkspaceID)
+	var i IssueTemplate
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.IssueTitle,
+		&i.IssueContent,
+		&i.Config,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ArchivedAt,
+	)
+	return i, err
+}
+
 const updateIssueTemplate = `-- name: UpdateIssueTemplate :one
 UPDATE issue_template SET
     name = COALESCE($2, name),
@@ -144,7 +280,7 @@ UPDATE issue_template SET
     config = COALESCE($5, config),
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at
+RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at
 `
 
 type UpdateIssueTemplateParams struct {
@@ -174,6 +310,7 @@ func (q *Queries) UpdateIssueTemplate(ctx context.Context, arg UpdateIssueTempla
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ArchivedAt,
 	)
 	return i, err
 }

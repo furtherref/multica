@@ -65,6 +65,28 @@ describe("IssueTemplateSummaryListSchema", () => {
     expect(result).toHaveLength(1);
     expect(result[0]!.created_by).toBeNull();
   });
+
+  it("defaults archived fields when the server omits them", () => {
+    const result = parseWithFallback(
+      [validSummary],
+      IssueTemplateSummaryListSchema,
+      EMPTY_ISSUE_TEMPLATE_SUMMARY_LIST,
+      { endpoint: "listIssueTemplates" },
+    );
+    expect(result[0]!.archived).toBe(false);
+    expect(result[0]!.archived_at).toBeNull();
+  });
+
+  it("parses an archived template with archived fields set", () => {
+    const result = parseWithFallback(
+      [{ ...validSummary, archived: true, archived_at: "2026-05-13T00:00:00Z" }],
+      IssueTemplateSummaryListSchema,
+      EMPTY_ISSUE_TEMPLATE_SUMMARY_LIST,
+      { endpoint: "listIssueTemplates" },
+    );
+    expect(result[0]!.archived).toBe(true);
+    expect(result[0]!.archived_at).toBe("2026-05-13T00:00:00Z");
+  });
 });
 
 describe("IssueTemplateDetailSchema", () => {

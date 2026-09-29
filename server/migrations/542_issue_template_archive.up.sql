@@ -1,0 +1,13 @@
+-- Issue templates archive instead of delete (RIC-906).
+--
+-- Follows the codebase convention shared by issue_property, issue_status,
+-- agent and squad: archived_at IS NOT NULL means the template is archived.
+-- Archiving retires a template from the default list (and therefore from the
+-- create-issue template picker), while keeping its row for audit and for
+-- unarchiving later. Historic issues already created from the template keep
+-- their content — templates are only used at creation time.
+--
+-- The concurrent unique index that enforces active-name uniqueness per
+-- workspace lives in its own single-statement migration (543) per the repo
+-- convention that every concurrent index build gets its own migration file.
+ALTER TABLE issue_template ADD COLUMN archived_at TIMESTAMPTZ;

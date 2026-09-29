@@ -19,6 +19,8 @@ type IssueTemplateResponse struct {
 	IssueContent string  `json:"issue_content"`
 	Config       any     `json:"config"`
 	CreatedBy    *string `json:"created_by"`
+	Archived     bool    `json:"archived"`
+	ArchivedAt   *string `json:"archived_at"`
 	CreatedAt    string  `json:"created_at"`
 	UpdatedAt    string  `json:"updated_at"`
 }
@@ -30,6 +32,8 @@ type IssueTemplateSummaryResponse struct {
 	IssueTitle  string  `json:"issue_title"`
 	Config      any     `json:"config"`
 	CreatedBy   *string `json:"created_by"`
+	Archived    bool    `json:"archived"`
+	ArchivedAt  *string `json:"archived_at"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
 }
@@ -49,7 +53,7 @@ type UpdateIssueTemplateRequest struct {
 }
 
 func issueTemplateToResponse(t db.IssueTemplate) IssueTemplateResponse {
-	return IssueTemplateResponse{
+	resp := IssueTemplateResponse{
 		ID:           uuidToString(t.ID),
 		WorkspaceID:  uuidToString(t.WorkspaceID),
 		Name:         t.Name,
@@ -57,9 +61,15 @@ func issueTemplateToResponse(t db.IssueTemplate) IssueTemplateResponse {
 		IssueContent: t.IssueContent,
 		Config:       decodeSkillConfig(t.Config),
 		CreatedBy:    uuidToPtr(t.CreatedBy),
+		Archived:     t.ArchivedAt.Valid,
 		CreatedAt:    timestampToString(t.CreatedAt),
 		UpdatedAt:    timestampToString(t.UpdatedAt),
 	}
+	if t.ArchivedAt.Valid {
+		s := timestampToString(t.ArchivedAt)
+		resp.ArchivedAt = &s
+	}
+	return resp
 }
 
 func validateIssueTemplateFields(name, issueTitle string) (string, string, bool) {
@@ -108,10 +118,45 @@ func issueTemplateSummaryToResponse(t db.ListIssueTemplateSummariesByWorkspaceRo
 	}
 }
 
+func issueTemplateSummaryIncludingArchivedToResponse(t db.ListIssueTemplateSummariesIncludingArchivedByWorkspaceRow) IssueTemplateSummaryResponse {
+	resp := IssueTemplateSummaryResponse{
+		ID:          uuidToString(t.ID),
+		WorkspaceID: uuidToString(t.WorkspaceID),
+		Name:        t.Name,
+		IssueTitle:  t.IssueTitle,
+		Config:      decodeSkillConfig(t.Config),
+		CreatedBy:   uuidToPtr(t.CreatedBy),
+		Archived:    t.ArchivedAt.Valid,
+		CreatedAt:   timestampToString(t.CreatedAt),
+		UpdatedAt:   timestampToString(t.UpdatedAt),
+	}
+	if t.ArchivedAt.Valid {
+		s := timestampToString(t.ArchivedAt)
+		resp.ArchivedAt = &s
+	}
+	return resp
+}
+
 func (h *Handler) ListIssueTemplates(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
 	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
 	if !ok {
+		return
+	}
+
+	// Default list is active-only; the management page passes include_archived
+	// to surface archived templates for unarchiving.
+	if r.URL.Query().Get("include_archived") == "true" {
+		templates, err := h.Queries.ListIssueTemplateSummariesIncludingArchivedByWorkspace(r.Context(), workspaceUUID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list issue templates")
+			return
+		}
+		resp := make([]IssueTemplateSummaryResponse, len(templates))
+		for i, template := range templates {
+			resp[i] = issueTemplateSummaryIncludingArchivedToResponse(template)
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -272,6 +317,64 @@ func (h *Handler) UpdateIssueTemplate(w http.ResponseWriter, r *http.Request) {
 
 	resp := issueTemplateToResponse(template)
 	h.publish(protocol.EventIssueTemplateUpdated, uuidToString(template.WorkspaceID), "member", requestUserID(r), map[string]any{"issue_template": resp})
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) ArchiveIssueTemplate(w http.ResponseWriter, r *http.Request) {
+	template, ok := h.loadIssueTemplateForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	if !h.canManageIssueTemplate(w, r, template) {
+		return
+	}
+	if template.ArchivedAt.Valid {
+		writeError(w, http.StatusConflict, "issue template is already archived")
+		return
+	}
+
+	archived, err := h.Queries.ArchiveIssueTemplate(r.Context(), db.ArchiveIssueTemplateParams{
+		ID:          template.ID,
+		WorkspaceID: template.WorkspaceID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to archive issue template")
+		return
+	}
+
+	resp := issueTemplateToResponse(archived)
+	h.publish(protocol.EventIssueTemplateUpdated, uuidToString(archived.WorkspaceID), "member", requestUserID(r), map[string]any{"issue_template": resp})
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) UnarchiveIssueTemplate(w http.ResponseWriter, r *http.Request) {
+	template, ok := h.loadIssueTemplateForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	if !h.canManageIssueTemplate(w, r, template) {
+		return
+	}
+	if !template.ArchivedAt.Valid {
+		writeError(w, http.StatusConflict, "issue template is not archived")
+		return
+	}
+
+	unarchived, err := h.Queries.UnarchiveIssueTemplate(r.Context(), db.UnarchiveIssueTemplateParams{
+		ID:          template.ID,
+		WorkspaceID: template.WorkspaceID,
+	})
+	if err != nil {
+		if isUniqueViolation(err) {
+			writeError(w, http.StatusConflict, "an active issue template with this name already exists")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to unarchive issue template")
+		return
+	}
+
+	resp := issueTemplateToResponse(unarchived)
+	h.publish(protocol.EventIssueTemplateUpdated, uuidToString(unarchived.WorkspaceID), "member", requestUserID(r), map[string]any{"issue_template": resp})
 	writeJSON(w, http.StatusOK, resp)
 }
 

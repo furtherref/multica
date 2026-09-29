@@ -71,6 +71,7 @@ Fields:
 - `issue_content`
 - `config` or equivalent source metadata
 - `created_by`
+- `archived_at` (RIC-906: templates archive instead of delete)
 - `created_at`
 - `updated_at`
 
@@ -81,18 +82,20 @@ Initial source behavior:
 
 API behavior:
 
-- List templates for the current workspace.
-- Get template detail, including full issue content.
-- Create template.
-- Update template.
-- Delete template.
+- `GET /api/issue-templates` — list active templates for the current workspace (archived templates excluded). `?include_archived=true` surfaces archived templates for the management view, ordered active-first then by name.
+- `POST /api/issue-templates` — create template.
+- `GET /api/issue-templates/{id}` — template detail, including full issue content.
+- `PUT /api/issue-templates/{id}` — update template.
+- `POST /api/issue-templates/{id}/archive` — archive template (RIC-906): retires it from the default list and the create-issue template picker while keeping the row for audit and unarchiving. Conflict (409) if already archived.
+- `POST /api/issue-templates/{id}/unarchive` — restore an archived template to the active list. Conflict (409) if the freed name was reused by an active template (enforced by the partial unique index on `(workspace_id, name) WHERE archived_at IS NULL`).
+- `DELETE /api/issue-templates/{id}` — hard delete, kept for workspace teardown and true removal.
 
-The list endpoint should return enough fields for the table. The detail endpoint should return full `issue_content`.
+The list endpoint should return enough fields for the table. The detail endpoint should return full `issue_content`. Both expose `archived` (boolean) and `archived_at`; archived templates carry `archived=true`.
 
 Permissions:
 
 - Workspace members can view templates.
-- Create, edit, and delete permissions should align with the existing Skill permissions model unless implementation discovers a stronger existing workspace settings convention.
+- Create, edit, and delete permissions should align with the existing Skill permissions model unless implementation discovers a stronger existing workspace settings convention. Archive/unarchive follow the same manage rule as update/delete (workspace owner/admin, or the template creator).
 
 ## Issue Template Page
 

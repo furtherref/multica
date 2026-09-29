@@ -44,6 +44,48 @@ export function useUpdateIssueTemplate() {
   });
 }
 
+export function useArchiveIssueTemplate() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: (id: string) => api.archiveIssueTemplate(id),
+    onSuccess: (template) => {
+      // Archived templates leave the active list cache; the include_archived
+      // list and the detail cache get the authoritative response.
+      qc.setQueryData<IssueTemplate[]>(issueTemplateKeys.list(wsId), (old) =>
+        old ? old.filter((item) => item.id !== template.id) : old,
+      );
+      qc.setQueryData(issueTemplateKeys.detail(wsId, template.id), template);
+    },
+    onSettled: (_data, _err, id) => {
+      qc.invalidateQueries({ queryKey: issueTemplateKeys.list(wsId) });
+      qc.invalidateQueries({ queryKey: issueTemplateKeys.detail(wsId, id) });
+    },
+  });
+}
+
+export function useUnarchiveIssueTemplate() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: (id: string) => api.unarchiveIssueTemplate(id),
+    onSuccess: (template) => {
+      qc.setQueryData<IssueTemplate[]>(issueTemplateKeys.list(wsId), (old) =>
+        old && !old.some((item) => item.id === template.id)
+          ? [...old, template].sort((a, b) => a.name.localeCompare(b.name))
+          : old,
+      );
+      qc.setQueryData(issueTemplateKeys.detail(wsId, template.id), template);
+    },
+    onSettled: (_data, _err, id) => {
+      qc.invalidateQueries({ queryKey: issueTemplateKeys.list(wsId) });
+      qc.invalidateQueries({ queryKey: issueTemplateKeys.detail(wsId, id) });
+    },
+  });
+}
+
 export function useDeleteIssueTemplate() {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();

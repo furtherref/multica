@@ -6,6 +6,8 @@ export interface IssueTemplate {
   issue_content: string;
   config: Record<string, unknown>;
   created_by: string | null;
+  archived: boolean;
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -17,6 +19,8 @@ export interface IssueTemplateSummary {
   issue_title: string;
   config: Record<string, unknown>;
   created_by: string | null;
+  archived: boolean;
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_issue_template_workspace_name_active;
