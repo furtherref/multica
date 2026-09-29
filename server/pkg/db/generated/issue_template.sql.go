@@ -18,7 +18,7 @@ UPDATE issue_template SET
 WHERE id = $1
   AND workspace_id = $2
   AND archived_at IS NULL
-RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at
+RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at, enabled, position
 `
 
 type ArchiveIssueTemplateParams struct {
@@ -42,14 +42,17 @@ func (q *Queries) ArchiveIssueTemplate(ctx context.Context, arg ArchiveIssueTemp
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ArchivedAt,
+		&i.Enabled,
+		&i.Position,
 	)
 	return i, err
 }
 
 const createIssueTemplate = `-- name: CreateIssueTemplate :one
-INSERT INTO issue_template (workspace_id, name, issue_title, issue_content, config, created_by)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at
+INSERT INTO issue_template (workspace_id, name, issue_title, issue_content, config, created_by, position)
+SELECT $1, $2, $3, $4, $5, $6,
+       COALESCE((SELECT MAX(position) FROM issue_template WHERE workspace_id = $1), 0) + 1
+RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at, enabled, position
 `
 
 type CreateIssueTemplateParams struct {
@@ -82,6 +85,8 @@ func (q *Queries) CreateIssueTemplate(ctx context.Context, arg CreateIssueTempla
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ArchivedAt,
+		&i.Enabled,
+		&i.Position,
 	)
 	return i, err
 }
@@ -98,7 +103,7 @@ func (q *Queries) DeleteIssueTemplate(ctx context.Context, id pgtype.UUID) error
 }
 
 const getIssueTemplateInWorkspace = `-- name: GetIssueTemplateInWorkspace :one
-SELECT id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at
+SELECT id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at, enabled, position
 FROM issue_template
 WHERE id = $1 AND workspace_id = $2
 `
@@ -124,17 +129,20 @@ func (q *Queries) GetIssueTemplateInWorkspace(ctx context.Context, arg GetIssueT
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ArchivedAt,
+		&i.Enabled,
+		&i.Position,
 	)
 	return i, err
 }
 
 const listIssueTemplateSummariesByWorkspace = `-- name: ListIssueTemplateSummariesByWorkspace :many
 
-SELECT id, workspace_id, name, issue_title, config, created_by, created_at, updated_at
+SELECT id, workspace_id, name, issue_title, config, created_by, created_at, updated_at, enabled, position
 FROM issue_template
 WHERE workspace_id = $1
   AND archived_at IS NULL
-ORDER BY name ASC
+  AND enabled = true
+ORDER BY position ASC, name ASC
 `
 
 type ListIssueTemplateSummariesByWorkspaceRow struct {
@@ -146,6 +154,8 @@ type ListIssueTemplateSummariesByWorkspaceRow struct {
 	CreatedBy   pgtype.UUID        `json:"created_by"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	Enabled     bool               `json:"enabled"`
+	Position    float64            `json:"position"`
 }
 
 // Issue Template CRUD
@@ -154,9 +164,13 @@ type ListIssueTemplateSummariesByWorkspaceRow struct {
 // retires a template from the default list and the create-issue template
 // picker, while keeping the row for audit and unarchiving. See migration
 // 542/543.
-// Default list — active templates only. The create-issue picker and the
-// management list use this, so archived templates are never offered for
-// selection.
+//
+// Templates can additionally be disabled (RIC-904): enabled = false hides a
+// template from the create-issue picker without archiving it, so it stays in
+// the management list for re-enabling. The management list shows both disabled
+// and archived templates so their state can be corrected.
+// Picker list — active AND enabled templates only. Disabled or archived
+// templates are never offered for selection.
 func (q *Queries) ListIssueTemplateSummariesByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]ListIssueTemplateSummariesByWorkspaceRow, error) {
 	rows, err := q.db.Query(ctx, listIssueTemplateSummariesByWorkspace, workspaceID)
 	if err != nil {
@@ -175,6 +189,8 @@ func (q *Queries) ListIssueTemplateSummariesByWorkspace(ctx context.Context, wor
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Enabled,
+			&i.Position,
 		); err != nil {
 			return nil, err
 		}
@@ -187,10 +203,10 @@ func (q *Queries) ListIssueTemplateSummariesByWorkspace(ctx context.Context, wor
 }
 
 const listIssueTemplateSummariesIncludingArchivedByWorkspace = `-- name: ListIssueTemplateSummariesIncludingArchivedByWorkspace :many
-SELECT id, workspace_id, name, issue_title, config, created_by, created_at, updated_at, archived_at
+SELECT id, workspace_id, name, issue_title, config, created_by, created_at, updated_at, archived_at, enabled, position
 FROM issue_template
 WHERE workspace_id = $1
-ORDER BY archived_at IS NULL ASC, name ASC
+ORDER BY archived_at IS NULL ASC, position ASC, name ASC
 `
 
 type ListIssueTemplateSummariesIncludingArchivedByWorkspaceRow struct {
@@ -203,9 +219,13 @@ type ListIssueTemplateSummariesIncludingArchivedByWorkspaceRow struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 	ArchivedAt  pgtype.Timestamptz `json:"archived_at"`
+	Enabled     bool               `json:"enabled"`
+	Position    float64            `json:"position"`
 }
 
-// Admin view: includes archived templates so they can be unarchived.
+// Management view: includes archived templates so they can be unarchived.
+// Disabled (but not archived) templates are included here too, since the
+// management page is where they get re-enabled.
 func (q *Queries) ListIssueTemplateSummariesIncludingArchivedByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]ListIssueTemplateSummariesIncludingArchivedByWorkspaceRow, error) {
 	rows, err := q.db.Query(ctx, listIssueTemplateSummariesIncludingArchivedByWorkspace, workspaceID)
 	if err != nil {
@@ -225,6 +245,8 @@ func (q *Queries) ListIssueTemplateSummariesIncludingArchivedByWorkspace(ctx con
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ArchivedAt,
+			&i.Enabled,
+			&i.Position,
 		); err != nil {
 			return nil, err
 		}
@@ -236,6 +258,68 @@ func (q *Queries) ListIssueTemplateSummariesIncludingArchivedByWorkspace(ctx con
 	return items, nil
 }
 
+const reorderIssueTemplates = `-- name: ReorderIssueTemplates :execrows
+UPDATE issue_template s
+SET position = ($1::float8[])[v.ordinality],
+    updated_at = now()
+FROM unnest($3::uuid[]) WITH ORDINALITY AS v(id, ordinality)
+WHERE s.id = v.id
+  AND s.workspace_id = $2::uuid
+  AND s.archived_at IS NULL
+`
+
+type ReorderIssueTemplatesParams struct {
+	Positions   []float64     `json:"positions"`
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	Ids         []pgtype.UUID `json:"ids"`
+}
+
+// Atomic workspace reorder. One statement, so a failure leaves the whole
+// order untouched instead of the partially-applied prefix a per-row PATCH
+// loop produces. Archived rows remain frozen; disabled rows keep their slot.
+func (q *Queries) ReorderIssueTemplates(ctx context.Context, arg ReorderIssueTemplatesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, reorderIssueTemplates, arg.Positions, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setIssueTemplateEnabled = `-- name: SetIssueTemplateEnabled :one
+UPDATE issue_template SET
+    enabled = $3,
+    updated_at = now()
+WHERE id = $1
+  AND workspace_id = $2
+RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at, enabled, position
+`
+
+type SetIssueTemplateEnabledParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Enabled     bool        `json:"enabled"`
+}
+
+func (q *Queries) SetIssueTemplateEnabled(ctx context.Context, arg SetIssueTemplateEnabledParams) (IssueTemplate, error) {
+	row := q.db.QueryRow(ctx, setIssueTemplateEnabled, arg.ID, arg.WorkspaceID, arg.Enabled)
+	var i IssueTemplate
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.IssueTitle,
+		&i.IssueContent,
+		&i.Config,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ArchivedAt,
+		&i.Enabled,
+		&i.Position,
+	)
+	return i, err
+}
+
 const unarchiveIssueTemplate = `-- name: UnarchiveIssueTemplate :one
 UPDATE issue_template SET
     archived_at = NULL,
@@ -243,7 +327,7 @@ UPDATE issue_template SET
 WHERE id = $1
   AND workspace_id = $2
   AND archived_at IS NOT NULL
-RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at
+RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at, enabled, position
 `
 
 type UnarchiveIssueTemplateParams struct {
@@ -268,6 +352,8 @@ func (q *Queries) UnarchiveIssueTemplate(ctx context.Context, arg UnarchiveIssue
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ArchivedAt,
+		&i.Enabled,
+		&i.Position,
 	)
 	return i, err
 }
@@ -280,7 +366,7 @@ UPDATE issue_template SET
     config = COALESCE($5, config),
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at
+RETURNING id, workspace_id, name, issue_title, issue_content, config, created_by, created_at, updated_at, archived_at, enabled, position
 `
 
 type UpdateIssueTemplateParams struct {
@@ -311,6 +397,8 @@ func (q *Queries) UpdateIssueTemplate(ctx context.Context, arg UpdateIssueTempla
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ArchivedAt,
+		&i.Enabled,
+		&i.Position,
 	)
 	return i, err
 }

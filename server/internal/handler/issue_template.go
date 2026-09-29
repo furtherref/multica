@@ -2,11 +2,14 @@ package handler
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -19,6 +22,8 @@ type IssueTemplateResponse struct {
 	IssueContent string  `json:"issue_content"`
 	Config       any     `json:"config"`
 	CreatedBy    *string `json:"created_by"`
+	Enabled      bool    `json:"enabled"`
+	Position     float64 `json:"position"`
 	Archived     bool    `json:"archived"`
 	ArchivedAt   *string `json:"archived_at"`
 	CreatedAt    string  `json:"created_at"`
@@ -32,6 +37,8 @@ type IssueTemplateSummaryResponse struct {
 	IssueTitle  string  `json:"issue_title"`
 	Config      any     `json:"config"`
 	CreatedBy   *string `json:"created_by"`
+	Enabled     bool    `json:"enabled"`
+	Position    float64 `json:"position"`
 	Archived    bool    `json:"archived"`
 	ArchivedAt  *string `json:"archived_at"`
 	CreatedAt   string  `json:"created_at"`
@@ -52,6 +59,14 @@ type UpdateIssueTemplateRequest struct {
 	Config       any     `json:"config"`
 }
 
+type ReorderIssueTemplatesRequest struct {
+	IDs []string `json:"ids"`
+}
+
+type SetIssueTemplateEnabledRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
 func issueTemplateToResponse(t db.IssueTemplate) IssueTemplateResponse {
 	resp := IssueTemplateResponse{
 		ID:           uuidToString(t.ID),
@@ -61,6 +76,8 @@ func issueTemplateToResponse(t db.IssueTemplate) IssueTemplateResponse {
 		IssueContent: t.IssueContent,
 		Config:       decodeSkillConfig(t.Config),
 		CreatedBy:    uuidToPtr(t.CreatedBy),
+		Enabled:      t.Enabled,
+		Position:     t.Position,
 		Archived:     t.ArchivedAt.Valid,
 		CreatedAt:    timestampToString(t.CreatedAt),
 		UpdatedAt:    timestampToString(t.UpdatedAt),
@@ -113,6 +130,8 @@ func issueTemplateSummaryToResponse(t db.ListIssueTemplateSummariesByWorkspaceRo
 		IssueTitle:  t.IssueTitle,
 		Config:      decodeSkillConfig(t.Config),
 		CreatedBy:   uuidToPtr(t.CreatedBy),
+		Enabled:     t.Enabled,
+		Position:    t.Position,
 		CreatedAt:   timestampToString(t.CreatedAt),
 		UpdatedAt:   timestampToString(t.UpdatedAt),
 	}
@@ -126,6 +145,8 @@ func issueTemplateSummaryIncludingArchivedToResponse(t db.ListIssueTemplateSumma
 		IssueTitle:  t.IssueTitle,
 		Config:      decodeSkillConfig(t.Config),
 		CreatedBy:   uuidToPtr(t.CreatedBy),
+		Enabled:     t.Enabled,
+		Position:    t.Position,
 		Archived:    t.ArchivedAt.Valid,
 		CreatedAt:   timestampToString(t.CreatedAt),
 		UpdatedAt:   timestampToString(t.UpdatedAt),
@@ -393,4 +414,92 @@ func (h *Handler) DeleteIssueTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	h.publish(protocol.EventIssueTemplateDeleted, uuidToString(template.WorkspaceID), "member", requestUserID(r), map[string]any{"issue_template_id": uuidToString(template.ID)})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// SetIssueTemplateEnabled flips the enabled flag (RIC-904). A disabled
+// template is hidden from the create-issue picker but remains in the
+// management list so it can be re-enabled. Any workspace member who can manage
+// the template (owner/admin or creator) may toggle it.
+func (h *Handler) SetIssueTemplateEnabled(w http.ResponseWriter, r *http.Request) {
+	template, ok := h.loadIssueTemplateForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	if !h.canManageIssueTemplate(w, r, template) {
+		return
+	}
+
+	var req SetIssueTemplateEnabledRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	updated, err := h.Queries.SetIssueTemplateEnabled(r.Context(), db.SetIssueTemplateEnabledParams{
+		ID:          template.ID,
+		WorkspaceID: template.WorkspaceID,
+		Enabled:     req.Enabled,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update issue template")
+		return
+	}
+
+	resp := issueTemplateToResponse(updated)
+	h.publish(protocol.EventIssueTemplateUpdated, uuidToString(updated.WorkspaceID), "member", requestUserID(r), map[string]any{"issue_template": resp})
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ReorderIssueTemplates rewrites the intra-workspace order of a template
+// subset. The request lists the active template ids in their new order;
+// archived templates are left frozen wherever they are. Mirrors
+// ReorderIssueStatuses.
+func (h *Handler) ReorderIssueTemplates(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
+	if !ok {
+		return
+	}
+	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin", "member"); !ok {
+		return
+	}
+
+	var req ReorderIssueTemplatesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "ids are required")
+		return
+	}
+
+	ids := make([]pgtype.UUID, len(req.IDs))
+	positions := make([]float64, len(req.IDs))
+	for i, id := range req.IDs {
+		parsed, err := util.ParseUUID(id)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid id")
+			return
+		}
+		ids[i] = parsed
+		positions[i] = float64(i + 1)
+	}
+
+	affected, err := h.Queries.ReorderIssueTemplates(r.Context(), db.ReorderIssueTemplatesParams{
+		WorkspaceID: workspaceUUID,
+		Ids:         ids,
+		Positions:   positions,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to reorder issue templates")
+		return
+	}
+	if int(affected) != len(req.IDs) {
+		slog.Warn("ReorderIssueTemplates touched an unexpected row count",
+			append(logger.RequestAttrs(r), "expected", len(req.IDs), "affected", affected)...)
+	}
+
+	h.publish(protocol.EventIssueTemplateUpdated, uuidToString(workspaceUUID), "member", requestUserID(r), map[string]any{"reordered": req.IDs})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

@@ -943,6 +943,8 @@ type IssueTemplate struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 	ArchivedAt   pgtype.Timestamptz `json:"archived_at"`
+	Enabled      bool               `json:"enabled"`
+	Position     float64            `json:"position"`
 }
 
 type IssueToLabel struct {

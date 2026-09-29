@@ -445,3 +445,171 @@ func TestIssueTemplateValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestIssueTemplateEnabledToggle(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	id := createIssueTemplateForTest(t, "Toggle me")
+	t.Cleanup(func() {
+		req := withURLParam(newRequest(http.MethodDelete, "/api/issue-templates/"+id+"?workspace_id="+testWorkspaceID, nil), "id", id)
+		testHandler.DeleteIssueTemplate(httptest.NewRecorder(), req)
+	})
+
+	// New templates default to enabled.
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest(http.MethodGet, "/api/issue-templates/"+id+"?workspace_id="+testWorkspaceID, nil), "id", id)
+	testHandler.GetIssueTemplate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GetIssueTemplate status = %d body=%s", w.Code, w.Body.String())
+	}
+	var detail map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail["enabled"] != true {
+		t.Fatalf("new template should default enabled=true: %#v", detail)
+	}
+
+	// Disabling hides it from the default (picker) list.
+	w = httptest.NewRecorder()
+	req = withURLParam(newRequest(http.MethodPost, "/api/issue-templates/"+id+"/enabled?workspace_id="+testWorkspaceID, map[string]any{"enabled": false}), "id", id)
+	testHandler.SetIssueTemplateEnabled(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("SetIssueTemplateEnabled status = %d body=%s", w.Code, w.Body.String())
+	}
+	var disabled map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&disabled); err != nil {
+		t.Fatal(err)
+	}
+	if disabled["enabled"] != false {
+		t.Fatalf("disabled response should mark enabled=false: %#v", disabled)
+	}
+
+	w = httptest.NewRecorder()
+	testHandler.ListIssueTemplates(w, newRequest(http.MethodGet, "/api/issue-templates?workspace_id="+testWorkspaceID, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListIssueTemplates status = %d", w.Code)
+	}
+	var list []map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range list {
+		if item["id"] == id {
+			t.Fatalf("disabled template still in default list: %#v", item)
+		}
+	}
+
+	// The management list (include_archived) still surfaces it, marked disabled.
+	w = httptest.NewRecorder()
+	testHandler.ListIssueTemplates(w, newRequest(http.MethodGet, "/api/issue-templates?workspace_id="+testWorkspaceID+"&include_archived=true", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListIssueTemplates include_archived status = %d", w.Code)
+	}
+	var full []map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&full); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range full {
+		if item["id"] == id {
+			found = true
+			if item["enabled"] != false {
+				t.Fatalf("include_archived should mark enabled=false: %#v", item)
+			}
+			if item["archived"] != false {
+				t.Fatalf("disabled template should not be archived: %#v", item)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("include_archived list missing disabled template %s: %#v", id, full)
+	}
+
+	// Re-enabling restores it to the picker list.
+	w = httptest.NewRecorder()
+	req = withURLParam(newRequest(http.MethodPost, "/api/issue-templates/"+id+"/enabled?workspace_id="+testWorkspaceID, map[string]any{"enabled": true}), "id", id)
+	testHandler.SetIssueTemplateEnabled(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("SetIssueTemplateEnabled re-enable status = %d body=%s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	testHandler.ListIssueTemplates(w, newRequest(http.MethodGet, "/api/issue-templates?workspace_id="+testWorkspaceID, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListIssueTemplates status = %d", w.Code)
+	}
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	found = false
+	for _, item := range list {
+		if item["id"] == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("re-enabled template missing from default list: %#v", list)
+	}
+}
+
+func TestIssueTemplateReorder(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	first := createIssueTemplateForTest(t, "Reorder A")
+	second := createIssueTemplateForTest(t, "Reorder B")
+	t.Cleanup(func() {
+		for _, id := range []string{first, second} {
+			req := withURLParam(newRequest(http.MethodDelete, "/api/issue-templates/"+id+"?workspace_id="+testWorkspaceID, nil), "id", id)
+			testHandler.DeleteIssueTemplate(httptest.NewRecorder(), req)
+		}
+	})
+
+	// Reorder so second appears before first.
+	w := httptest.NewRecorder()
+	testHandler.ReorderIssueTemplates(w, newRequest(http.MethodPatch, "/api/issue-templates/reorder?workspace_id="+testWorkspaceID, ReorderIssueTemplatesRequest{
+		IDs: []string{second, first},
+	}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("ReorderIssueTemplates status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	// Default list should return second before first.
+	w = httptest.NewRecorder()
+	testHandler.ListIssueTemplates(w, newRequest(http.MethodGet, "/api/issue-templates?workspace_id="+testWorkspaceID, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListIssueTemplates status = %d", w.Code)
+	}
+	var list []map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	positions := make(map[string]int, len(list))
+	for i, item := range list {
+		positions[item["id"].(string)] = i
+	}
+	posSecond, secondOK := positions[second]
+	posFirst, firstOK := positions[first]
+	if !secondOK || !firstOK {
+		t.Fatalf("reordered templates missing from list: %#v", list)
+	}
+	if posSecond >= posFirst {
+		t.Fatalf("expected second before first after reorder, got second=%d first=%d list=%#v", posSecond, posFirst, list)
+	}
+
+	// Reordering must reject a missing workspace or invalid id.
+	w = httptest.NewRecorder()
+	testHandler.ReorderIssueTemplates(w, newRequest(http.MethodPatch, "/api/issue-templates/reorder?workspace_id="+testWorkspaceID, ReorderIssueTemplatesRequest{IDs: []string{"not-a-uuid"}}))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("ReorderIssueTemplates invalid id status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	testHandler.ReorderIssueTemplates(w, newRequest(http.MethodPatch, "/api/issue-templates/reorder?workspace_id="+testWorkspaceID, ReorderIssueTemplatesRequest{IDs: []string{}}))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("ReorderIssueTemplates empty ids status = %d body=%s", w.Code, w.Body.String())
+	}
+}
