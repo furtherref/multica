@@ -4,6 +4,10 @@ export type {
   IssueTemplateSummary,
   CreateIssueTemplateRequest,
   UpdateIssueTemplateRequest,
+  IssueTemplateVariableDefinition,
+  IssueTemplateVariables,
+  IssueTemplateDefaults,
+  IssueTemplateConfig,
 } from "./issue-template";
 export type {
   IssueStatusCategory,

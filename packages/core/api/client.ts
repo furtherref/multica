@@ -3612,6 +3612,23 @@ export class ApiClient {
     });
   }
 
+  async setIssueTemplateEnabled(id: string, enabled: boolean): Promise<IssueTemplate> {
+    const raw = await this.fetch(`/api/issue-templates/${id}/enabled`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
+    return parseWithFallback(raw, IssueTemplateDetailSchema, EMPTY_ISSUE_TEMPLATE_DETAIL, {
+      endpoint: "setIssueTemplateEnabled",
+    });
+  }
+
+  async reorderIssueTemplates(ids: string[]): Promise<void> {
+    await this.fetch("/api/issue-templates/reorder", {
+      method: "PATCH",
+      body: JSON.stringify({ ids }),
+    });
+  }
+
   async deleteIssueTemplate(id: string): Promise<void> {
     await this.fetch(`/api/issue-templates/${id}`, { method: "DELETE" });
   }

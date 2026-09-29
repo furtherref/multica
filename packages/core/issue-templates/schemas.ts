@@ -12,6 +12,11 @@ const IssueTemplateSummarySchema = z.object({
   // so archived handling degrades to "everything active".
   archived: z.boolean().default(false),
   archived_at: z.string().nullable().default(null),
+  // Enabled/position (RIC-904). Old servers omit them; enabled defaults to
+  // true so disabled handling degrades to "everything enabled", position
+  // defaults to 0 for a stable name tiebreak.
+  enabled: z.boolean().default(true),
+  position: z.number().default(0),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -28,6 +33,8 @@ export const IssueTemplateDetailSchema = z.object({
   created_by: z.string().nullable(),
   archived: z.boolean().default(false),
   archived_at: z.string().nullable().default(null),
+  enabled: z.boolean().default(true),
+  position: z.number().default(0),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -42,6 +49,8 @@ export const EMPTY_ISSUE_TEMPLATE_DETAIL: IssueTemplate = {
   issue_content: "",
   config: {},
   created_by: null,
+  enabled: true,
+  position: 0,
   archived: false,
   archived_at: null,
   created_at: "",

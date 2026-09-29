@@ -77,6 +77,17 @@ describe("IssueTemplateSummaryListSchema", () => {
     expect(result[0]!.archived_at).toBeNull();
   });
 
+  it("defaults enabled to true and position to 0 when the server omits them", () => {
+    const result = parseWithFallback(
+      [validSummary],
+      IssueTemplateSummaryListSchema,
+      EMPTY_ISSUE_TEMPLATE_SUMMARY_LIST,
+      { endpoint: "listIssueTemplates" },
+    );
+    expect(result[0]!.enabled).toBe(true);
+    expect(result[0]!.position).toBe(0);
+  });
+
   it("parses an archived template with archived fields set", () => {
     const result = parseWithFallback(
       [{ ...validSummary, archived: true, archived_at: "2026-05-13T00:00:00Z" }],
@@ -86,6 +97,17 @@ describe("IssueTemplateSummaryListSchema", () => {
     );
     expect(result[0]!.archived).toBe(true);
     expect(result[0]!.archived_at).toBe("2026-05-13T00:00:00Z");
+  });
+
+  it("parses a disabled template with enabled/position set", () => {
+    const result = parseWithFallback(
+      [{ ...validSummary, enabled: false, position: 3 }],
+      IssueTemplateSummaryListSchema,
+      EMPTY_ISSUE_TEMPLATE_SUMMARY_LIST,
+      { endpoint: "listIssueTemplates" },
+    );
+    expect(result[0]!.enabled).toBe(false);
+    expect(result[0]!.position).toBe(3);
   });
 });
 

@@ -19,7 +19,7 @@ export function useCreateIssueTemplate() {
       qc.setQueryData(issueTemplateKeys.detail(wsId, template.id), template);
     },
     onSettled: () => {
-      qc.invalidateQueries({ queryKey: issueTemplateKeys.list(wsId) });
+      qc.invalidateQueries({ queryKey: issueTemplateKeys.all(wsId) });
     },
   });
 }
@@ -38,7 +38,7 @@ export function useUpdateIssueTemplate() {
       qc.setQueryData(issueTemplateKeys.detail(wsId, template.id), template);
     },
     onSettled: (_data, _err, vars) => {
-      qc.invalidateQueries({ queryKey: issueTemplateKeys.list(wsId) });
+      qc.invalidateQueries({ queryKey: issueTemplateKeys.all(wsId) });
       qc.invalidateQueries({ queryKey: issueTemplateKeys.detail(wsId, vars.id) });
     },
   });
@@ -59,7 +59,7 @@ export function useArchiveIssueTemplate() {
       qc.setQueryData(issueTemplateKeys.detail(wsId, template.id), template);
     },
     onSettled: (_data, _err, id) => {
-      qc.invalidateQueries({ queryKey: issueTemplateKeys.list(wsId) });
+      qc.invalidateQueries({ queryKey: issueTemplateKeys.all(wsId) });
       qc.invalidateQueries({ queryKey: issueTemplateKeys.detail(wsId, id) });
     },
   });
@@ -80,8 +80,37 @@ export function useUnarchiveIssueTemplate() {
       qc.setQueryData(issueTemplateKeys.detail(wsId, template.id), template);
     },
     onSettled: (_data, _err, id) => {
-      qc.invalidateQueries({ queryKey: issueTemplateKeys.list(wsId) });
+      qc.invalidateQueries({ queryKey: issueTemplateKeys.all(wsId) });
       qc.invalidateQueries({ queryKey: issueTemplateKeys.detail(wsId, id) });
+    },
+  });
+}
+
+export function useSetIssueTemplateEnabled() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      api.setIssueTemplateEnabled(id, enabled),
+    onSuccess: (template) => {
+      qc.setQueryData(issueTemplateKeys.detail(wsId, template.id), template);
+    },
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({ queryKey: issueTemplateKeys.all(wsId) });
+      qc.invalidateQueries({ queryKey: issueTemplateKeys.detail(wsId, vars.id) });
+    },
+  });
+}
+
+export function useReorderIssueTemplates() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationFn: (ids: string[]) => api.reorderIssueTemplates(ids),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: issueTemplateKeys.all(wsId) });
     },
   });
 }
@@ -105,7 +134,7 @@ export function useDeleteIssueTemplate() {
       if (ctx?.prevList) qc.setQueryData(issueTemplateKeys.list(wsId), ctx.prevList);
     },
     onSettled: () => {
-      qc.invalidateQueries({ queryKey: issueTemplateKeys.list(wsId) });
+      qc.invalidateQueries({ queryKey: issueTemplateKeys.all(wsId) });
     },
   });
 }
