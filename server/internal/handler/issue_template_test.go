@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func createIssueTemplateForTest(t *testing.T, name string) string {
+func createNamedIssueTemplateForTest(t *testing.T, name string) string {
 	t.Helper()
 	createReq := map[string]any{
 		"name":        name,
@@ -35,7 +35,7 @@ func TestIssueTemplateArchiveUnarchive(t *testing.T) {
 		t.Skip("database not available")
 	}
 
-	id := createIssueTemplateForTest(t, "Archive me")
+	id := createNamedIssueTemplateForTest(t, "Archive me")
 	t.Cleanup(func() {
 		req := withURLParam(newRequest(http.MethodDelete, "/api/issue-templates/"+id+"?workspace_id="+testWorkspaceID, nil), "id", id)
 		testHandler.DeleteIssueTemplate(httptest.NewRecorder(), req)
@@ -145,7 +145,7 @@ func TestIssueTemplateArchiveIdempotency(t *testing.T) {
 		t.Skip("database not available")
 	}
 
-	id := createIssueTemplateForTest(t, "Archive twice")
+	id := createNamedIssueTemplateForTest(t, "Archive twice")
 	t.Cleanup(func() {
 		req := withURLParam(newRequest(http.MethodDelete, "/api/issue-templates/"+id+"?workspace_id="+testWorkspaceID, nil), "id", id)
 		testHandler.DeleteIssueTemplate(httptest.NewRecorder(), req)
@@ -178,7 +178,7 @@ func TestIssueTemplateArchiveNameReuseConflict(t *testing.T) {
 		t.Skip("database not available")
 	}
 
-	id := createIssueTemplateForTest(t, "Name reuse")
+	id := createNamedIssueTemplateForTest(t, "Name reuse")
 	t.Cleanup(func() {
 		req := withURLParam(newRequest(http.MethodDelete, "/api/issue-templates/"+id+"?workspace_id="+testWorkspaceID, nil), "id", id)
 		testHandler.DeleteIssueTemplate(httptest.NewRecorder(), req)
@@ -187,7 +187,7 @@ func TestIssueTemplateArchiveNameReuseConflict(t *testing.T) {
 	// Archive it, then reuse the name for a new active template.
 	req := withURLParam(newRequest(http.MethodPost, "/api/issue-templates/"+id+"/archive?workspace_id="+testWorkspaceID, nil), "id", id)
 	testHandler.ArchiveIssueTemplate(httptest.NewRecorder(), req)
-	reusedID := createIssueTemplateForTest(t, "Name reuse")
+	reusedID := createNamedIssueTemplateForTest(t, "Name reuse")
 	t.Cleanup(func() {
 		req := withURLParam(newRequest(http.MethodDelete, "/api/issue-templates/"+reusedID+"?workspace_id="+testWorkspaceID, nil), "id", reusedID)
 		testHandler.DeleteIssueTemplate(httptest.NewRecorder(), req)

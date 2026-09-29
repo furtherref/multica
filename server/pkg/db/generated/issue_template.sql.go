@@ -130,7 +130,7 @@ func (q *Queries) GetIssueTemplateInWorkspace(ctx context.Context, arg GetIssueT
 
 const listIssueTemplateSummariesByWorkspace = `-- name: ListIssueTemplateSummariesByWorkspace :many
 
-SELECT id, workspace_id, name, issue_title, config, created_by, created_at, updated_at
+SELECT id, workspace_id, name, issue_title, config, created_by, created_at, updated_at, archived_at
 FROM issue_template
 WHERE workspace_id = $1
   AND archived_at IS NULL
@@ -146,6 +146,7 @@ type ListIssueTemplateSummariesByWorkspaceRow struct {
 	CreatedBy   pgtype.UUID        `json:"created_by"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ArchivedAt  pgtype.Timestamptz `json:"archived_at"`
 }
 
 // Issue Template CRUD
@@ -175,6 +176,7 @@ func (q *Queries) ListIssueTemplateSummariesByWorkspace(ctx context.Context, wor
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ArchivedAt,
 		); err != nil {
 			return nil, err
 		}

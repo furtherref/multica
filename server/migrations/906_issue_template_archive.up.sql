@@ -8,6 +8,6 @@
 -- their content — templates are only used at creation time.
 --
 -- The concurrent unique index that enforces active-name uniqueness per
--- workspace lives in its own single-statement migration (543) per the repo
+-- workspace lives in its own single-statement migration (907) per the repo
 -- convention that every concurrent index build gets its own migration file.
 ALTER TABLE issue_template ADD COLUMN archived_at TIMESTAMPTZ;

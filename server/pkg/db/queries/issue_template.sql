@@ -3,13 +3,13 @@
 -- Templates archive instead of delete (RIC-906): archived_at IS NOT NULL
 -- retires a template from the default list and the create-issue template
 -- picker, while keeping the row for audit and unarchiving. See migration
--- 542/543.
+-- 906/907.
 
 -- name: ListIssueTemplateSummariesByWorkspace :many
 -- Default list — active templates only. The create-issue picker and the
 -- management list use this, so archived templates are never offered for
 -- selection.
-SELECT id, workspace_id, name, issue_title, config, created_by, created_at, updated_at
+SELECT id, workspace_id, name, issue_title, config, created_by, created_at, updated_at, archived_at
 FROM issue_template
 WHERE workspace_id = $1
   AND archived_at IS NULL
