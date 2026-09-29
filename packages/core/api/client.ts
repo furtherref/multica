@@ -69,6 +69,8 @@ import type {
   IssueTemplateSummary,
   CreateIssueTemplateRequest,
   UpdateIssueTemplateRequest,
+  InstantiatedIssuePayload,
+  InstantiateIssueTemplateRequest,
   SetAgentRuntimeSkillEnabledRequest,
   PersonalAccessToken,
   CreatePersonalAccessTokenRequest,
@@ -492,6 +494,8 @@ import {
 import {
   EMPTY_ISSUE_TEMPLATE_DETAIL,
   EMPTY_ISSUE_TEMPLATE_SUMMARY_LIST,
+  EMPTY_INSTANTIATED_ISSUE_PAYLOAD,
+  InstantiatedIssuePayloadSchema,
   IssueTemplateDetailSchema,
   IssueTemplateSummaryListSchema,
 } from "../issue-templates/schemas";
@@ -3634,6 +3638,25 @@ export class ApiClient {
 
   async deleteIssueTemplate(id: string): Promise<void> {
     await this.fetch(`/api/issue-templates/${id}`, { method: "DELETE" });
+  }
+
+  /**
+   * Instantiate a template: parse its {{variable}} tokens, validate the
+   * supplied values (missing / redundant / illegal all fail), interpolate them
+   * into title/content, apply the template's defaults with live validation, and
+   * return a prefilled new-issue payload. Never creates an issue; idempotent.
+   */
+  async instantiateIssueTemplate(
+    id: string,
+    data: InstantiateIssueTemplateRequest,
+  ): Promise<InstantiatedIssuePayload> {
+    const raw = await this.fetch(`/api/issue-templates/${id}/instantiate`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, InstantiatedIssuePayloadSchema, EMPTY_INSTANTIATED_ISSUE_PAYLOAD, {
+      endpoint: "instantiateIssueTemplate",
+    });
   }
 
   // Incremental attach: POST /skills/add only inserts the given ids (the

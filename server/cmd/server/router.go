@@ -2329,6 +2329,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/archive", h.ArchiveIssueTemplate)
 					r.Post("/unarchive", h.UnarchiveIssueTemplate)
 					r.Delete("/", h.DeleteIssueTemplate)
+					// Instantiate parses template variables and returns a
+					// prefilled new-issue payload without creating an issue.
+					r.Post("/instantiate", h.InstantiateIssueTemplate)
 				})
 			})
 
