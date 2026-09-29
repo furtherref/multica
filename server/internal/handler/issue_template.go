@@ -64,6 +64,7 @@ func issueTemplateToResponse(t db.IssueTemplate) IssueTemplateResponse {
 		Archived:     t.ArchivedAt.Valid,
 		CreatedAt:    timestampToString(t.CreatedAt),
 		UpdatedAt:    timestampToString(t.UpdatedAt),
+		ArchivedAt:   timestampToPtr(t.ArchivedAt),
 	}
 	if t.ArchivedAt.Valid {
 		s := timestampToString(t.ArchivedAt)
@@ -115,6 +116,7 @@ func issueTemplateSummaryToResponse(t db.ListIssueTemplateSummariesByWorkspaceRo
 		CreatedBy:   uuidToPtr(t.CreatedBy),
 		CreatedAt:   timestampToString(t.CreatedAt),
 		UpdatedAt:   timestampToString(t.UpdatedAt),
+		ArchivedAt:  timestampToPtr(t.ArchivedAt),
 	}
 }
 
