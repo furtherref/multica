@@ -358,6 +358,12 @@ func (h *Handler) TriggerIssueWakeup(w http.ResponseWriter, r *http.Request) {
 	}
 	svc := service.IssueWakeupService{Tasks: h.TaskService}
 	if err := svc.Trigger(r.Context(), issue.ID, id, member); err != nil {
+		// Fork: the same 409 budget_exceeded every other refused dispatch uses.
+		var budgetErr *service.RuntimeBudgetExceededError
+		if errors.As(err, &budgetErr) {
+			h.writeDispatchBlocked(w, http.StatusConflict, ReasonBudgetExceeded)
+			return
+		}
 		wakeupError(w, err)
 		return
 	}
