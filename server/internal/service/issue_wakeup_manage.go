@@ -87,6 +87,12 @@ func (s *IssueWakeupService) Trigger(ctx context.Context, issueID, id, member pg
 	if err = tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
 		return err
 	}
+	// Fork: a person asking for a run right away hears about a reached runtime
+	// cost budget now, as a RuntimeBudgetExceededError, rather than being told
+	// the agent will run while the dispatch gate drops the firing.
+	if err = s.Tasks.checkRuntimeCostBudget(ctx, q, agent, now); err != nil {
+		return err
+	}
 	key := "manual:" + util.UUIDToString(dbid.NewV7())
 	payload, _ := json.Marshal(map[string]any{"event_id": key, "requested_at": now.UTC().Format(time.RFC3339),
 		"actor_type": "member", "actor_id": util.UUIDToString(member)})

@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { ApiError } from "@multica/core/api";
 import type { IssueWakeup, SystemWakeup } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { WakeupsSection } from "./wakeups-section";
+const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }));
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: toastError },
+}));
 const mutate = vi.fn();
 const enable = vi.fn();
 const updateSystem = vi.fn();
@@ -466,6 +471,23 @@ describe("conditions, limits and history", () => {
     expect(confirm).toHaveTextContent("Emacs is no longer woken by it");
     fireEvent.click(within(confirm).getByRole("button", { name: "Delete" }));
     expect(remove).toHaveBeenCalledWith("wake", expect.anything());
+  });
+
+  it("says the runtime's cost budget is reached when waking now is refused for it", async () => {
+    trigger.mockImplementation((_id: string, options: { onError?: (err: unknown) => void }) =>
+      options.onError?.(
+        new ApiError("the target's runtime has reached its cost budget", 409, "Conflict", {
+          error: "the target's runtime has reached its cost budget",
+          reason_code: "budget_exceeded",
+        }),
+      ),
+    );
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    fireEvent.click(screen.getByRole("button", { name: /Wake every hour/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Wake now" }));
+    expect(toastError).toHaveBeenCalledWith(
+      "This target's runtime has reached its cost budget — try again after the period resets",
+    );
   });
 
   it("offers neither action on an ended issue", async () => {

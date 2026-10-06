@@ -7,6 +7,7 @@ import type {
   WakeupPreview,
 } from "@multica/core/types";
 import { useLocale, useT } from "../../i18n";
+import { blockedReasonLabel } from "../blocked-trigger-copy";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
 import { parseCron } from "../../autopilots/components/schedule-editor/cron-mapping";
 import { useDescribeSchedule } from "../../autopilots/components/schedule-editor/describe";
@@ -340,6 +341,15 @@ export function useWakeupText() {
     return `${t(($) => $.wakeups.expiry_at, { time: at })} · ${then}`;
   };
   const error = (err: unknown, fallback: string) => {
+    // A refused dispatch (e.g. "wake now" against a reached runtime cost
+    // budget) names its reason; say that, not the generic conflict.
+    const body =
+      err && typeof err === "object" && "body" in err ? err.body : undefined;
+    const reason =
+      body && typeof body === "object" && "reason_code" in body
+        ? body.reason_code
+        : undefined;
+    if (typeof reason === "string" && reason) return blockedReasonLabel(reason, t);
     const status =
       err && typeof err === "object" && "status" in err
         ? err.status

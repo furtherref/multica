@@ -1061,6 +1061,28 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if err = guardIssueNotInTriage(ctx, q, issue.ID, OriginNamed); err != nil {
 			return err
 		}
+		// Fork: the run starts outside every Enqueue* helper, so it carries the
+		// runtime cost budget gate itself. A reached budget refuses this firing:
+		// its inputs are used up, the rule moves on as if it had fired and says
+		// why until a later run clears it, and the owner gets the budget notice.
+		if err = s.Tasks.checkRuntimeCostBudget(ctx, q, agent, now); err != nil {
+			var budgetErr *RuntimeBudgetExceededError
+			if !errors.As(err, &budgetErr) {
+				return err
+			}
+			if err = q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+				return err
+			}
+			if err = q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next, LastError: pgtype.Text{String: wakeupBudgetRefusal(budgetErr), Valid: true}}); err != nil {
+				return err
+			}
+			if timedOut {
+				if err = markTimedOut(); err != nil {
+					return err
+				}
+			}
+			return commit()
+		}
 		contextJSON, _ := json.Marshal(map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_chain": chain})
 		task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{ID: dbid.NewV7(), AgentID: w.AgentID, RuntimeID: agent.RuntimeID, IssueID: w.IssueID, Priority: priorityToInt(issue.Priority), TriggerCommentID: w.ParentCommentID, TriggerSummary: pgtype.Text{String: "Wakeup: " + truncateForSummary(w.Instruction, 160), Valid: true}, HandoffNote: pgtype.Text{String: noteText, Valid: true}, OriginatorUserID: w.CreatedBy, AccountableUserID: w.CreatedBy, OriginatorSource: pgtype.Text{String: "trigger_owner", Valid: true}, TriggerEvidenceKind: pgtype.Text{String: "issue_wakeup", Valid: true}, TriggerEvidenceRefID: w.ID, DelegatedFromTaskID: w.SourceTaskID, WakeupContext: contextJSON, RuntimeMcpOverlay: overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps})
 	}

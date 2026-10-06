@@ -59,6 +59,14 @@ func (e *RuntimeBudgetExceededError) PublicReason() string {
 	return fmt.Sprintf("runtime cost budget reached (%s %s)", e.Scope, e.Period)
 }
 
+// wakeupBudgetRefusal is what a wakeup rule shows (issue_wakeup.last_error,
+// readable by everyone who can see the issue) after a reached budget refused
+// its firing, so it carries PublicReason and never the amounts. The rule's
+// next run clears it.
+func wakeupBudgetRefusal(e *RuntimeBudgetExceededError) string {
+	return "Not run: " + e.PublicReason() + "; later firings start runs again once the period resets"
+}
+
 // budgetLimit returns the configured limit of one period on a row, or false.
 func budgetLimit(row db.RuntimeCostBudget, p pricing.Period) (int64, bool) {
 	var v pgtype.Int8
