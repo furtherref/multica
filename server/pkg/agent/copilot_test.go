@@ -1481,8 +1481,8 @@ func TestAnnotateCopilotThinking(t *testing.T) {
 	}
 
 	fake := writeFakeCopilotHelpBinary(t)
-	resetThinkingCacheForTests()
-	defer resetThinkingCacheForTests()
+	resetCopilotThinkingCacheForTests()
+	defer resetCopilotThinkingCacheForTests()
 
 	models := []Model{
 		{ID: "gpt-5.5", Provider: "openai"},

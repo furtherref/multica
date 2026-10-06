@@ -1383,6 +1383,7 @@ func isTextPreviewable(contentType, filename string) bool {
 	}
 	switch ct {
 	case "application/json",
+		"application/x-ndjson",
 		"application/javascript",
 		"application/xml",
 		"application/x-yaml",
@@ -1399,7 +1400,7 @@ func isTextPreviewable(contentType, filename string) bool {
 		".txt", ".log",
 		".csv", ".tsv",
 		".html", ".htm",
-		".json", ".xml",
+		".json", ".jsonl", ".ndjson", ".xml",
 		".yml", ".yaml", ".toml", ".ini", ".conf",
 		".sh", ".bash", ".zsh",
 		".py", ".rb", ".go", ".rs",

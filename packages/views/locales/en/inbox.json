@@ -80,6 +80,7 @@
     "quick_create_failed": "Create with agent failed",
     "quick_create_unconfirmed": "Create with agent unconfirmed",
     "autopilot_paused": "Autopilot paused",
+    "children_done": "Sub-issues finished",
     "autopilot_quota_exceeded": "Autopilot run limit reached",
     "runtime_budget_exceeded": "Runtime cost budget reached"
   },
@@ -96,6 +97,7 @@
     "created_with_agent": "Created with agent: {{identifier}}",
     "failed_with_detail": "Failed: {{detail}}",
     "autopilot_quota_blocked": "Run blocked because the limit was reached",
+    "children_done_stage": "Stage {{stage}}'s sub-issues finished",
     "runtime_budget_blocked": "New runs are refused until the period resets"
   },
   "toasts": {
