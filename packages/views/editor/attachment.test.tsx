@@ -792,21 +792,20 @@ describe("Attachment — image dispatch", () => {
 });
 
 describe("Attachment — html dispatch", () => {
-  it("record html with attachmentId renders HtmlAttachmentPreview (no file-card chrome)", () => {
-    getAttachmentTextContentMock.mockResolvedValueOnce({
-      text: "<p>chart</p>",
-      originalContentType: "text/html",
-    });
+  // An HTML file is a file (MUL-7649): the row opens it in the viewer, and
+  // nothing is fetched to embed it inline.
+  it("record html renders the file-card row, not an embedded preview", () => {
     const att = makeRecord({
       filename: "report.html",
       content_type: "text/html",
       url: "https://cdn.example.test/report.html",
     });
     renderWithQuery(<Attachment attachment={{ kind: "record", attachment: att }} />);
-    // HtmlAttachmentPreview hides the filename row.
-    expect(screen.queryByText("report.html")).toBeNull();
+    expect(screen.getByText("report.html")).toBeTruthy();
     expect(screen.getByTitle("Preview")).toBeTruthy();
     expect(screen.getByTitle("Download")).toBeTruthy();
+    expect(document.querySelector("iframe")).toBeNull();
+    expect(getAttachmentTextContentMock).not.toHaveBeenCalled();
   });
 
   it("url-only html (no resolver match) falls back to AttachmentCard chrome", () => {
@@ -862,6 +861,35 @@ describe("Attachment — file-card dispatch", () => {
     expect(screen.getByText("manual.pdf")).toBeTruthy();
     fireEvent.mouseDown(screen.getByTitle("Download"));
     expect(downloadMock).toHaveBeenCalledWith(id);
+  });
+
+  describe("card layout — office preview gating", () => {
+    const docx = () =>
+      makeRecord({
+        filename: "report.docx",
+        content_type:
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      });
+    afterEach(() => configStore.setState({ officePreviewEnabled: false }));
+
+    it("downloads an office file on click when OnlyOffice preview is unavailable", () => {
+      configStore.setState({ officePreviewEnabled: false });
+      renderWithQuery(
+        <Attachment attachment={{ kind: "record", attachment: docx() }} layout="card" />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "report.docx" }));
+      expect(downloadMock).toHaveBeenCalledWith("att-1");
+    });
+
+    it("opens the viewer instead when OnlyOffice preview is enabled", () => {
+      configStore.setState({ officePreviewEnabled: true });
+      renderWithQuery(
+        <Attachment attachment={{ kind: "record", attachment: docx() }} layout="card" />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "report.docx" }));
+      expect(downloadMock).not.toHaveBeenCalled();
+      expect(screen.getByRole("dialog", { name: "report.docx" })).toBeTruthy();
+    });
   });
 
   it("uploading file-card surfaces the uploading template, no Preview/Download", () => {

@@ -141,6 +141,21 @@ multica skill import --url <skill-url> --on-conflict skip
 
 `overwrite` is only allowed for the skill's creator and preserves the original ID and agent bindings.
 
+### Agent run history
+
+`multica agent tasks <agent-id> --limit 200` returns the newest page of runs.
+The default and maximum page size is 200. If more runs exist, stderr prints a
+cursor; pass it unchanged as `--before '<cursor>'` to read the next page.
+`--output json` keeps the array output and includes usage for that page only.
+
+The corresponding `GET /api/agents/{id}/tasks` endpoint accepts `limit` and
+`before`, and keeps its JSON array response. The `X-Agent-Tasks-Next-Cursor`
+response header supplies the next cursor; its absence marks the final page.
+Cursors preserve `(created_at, id)` order, including timestamp precision.
+Invalid limits or cursors return HTTP 400; limits above 200 are capped.
+Clients that do not follow the cursor receive only the newest 200 runs.
+
+
 ## Daemon and runtimes
 
 ```bash
@@ -237,9 +252,9 @@ The tables below cover every current top-level command, grouped the way the CLI 
 | `issue` | `list` | List issues | `--status`, `--priority`, `--assignee`, `--project`, `--metadata` (repeatable), `--property` (repeatable, `"Name=Value"`; `__none__` matches unset), `--limit`, `--offset`, `--sort` (incl. `property:<name-or-id>`), `--full-id`, `--resolve-properties` (JSON only; rows with property, option and member names beside the stored ids) |
 | | `get <id>` | Show a single issue | `--resolve-properties` (JSON only; rows with property, option and member names beside the stored ids) |
 | | `create` | Create an issue | `--title` (required), `--description` / `--description-stdin` / `--description-file`, `--status`, `--priority`, `--assignee`, `--parent`, `--stage`, `--project`, `--start-date`, `--due-date`, `--attachment` (repeatable) |
-| | `update <id>` | Update issue fields | Same fields as `create`, plus `--position`, `--no-start` |
+| | `update <id>` | Update issue fields | Same fields as `create`, plus `--position`, `--no-start`, `--duplicate-of` |
 | | `assign <id>` | Assign or unassign | `--to` (fuzzy name match against members, agents, and squads), `--to-id`, `--unassign`, `--no-start` |
-| | `status <id> <status>` | Change status | `--no-start` |
+| | `status <id> <status>` | Change status | `--no-start`, `--duplicate-of` |
 | | `reorder <id>` | Move within a column | |
 | | `search <query>` | Search issues | `--limit`, `--include-closed` |
 | | `children <id>` | List sub-issues grouped by stage | |

@@ -738,6 +738,22 @@ jobs:
         # the command interpreter can run.
         run: go test ./internal/daemon -v -run '^(TestCanonicalExecutablePath|TestTrimExtendedLengthPrefix|TestResolveAgentExecutablePathKeeps|TestResolveAgentExecutablePath_ProfileOverride|TestResolveAgentEntry(FollowsRetargetedInstallerJunction|CanonicalizesRediscoveredJunction|ForLaunchKeepsCmdShimLaunchable|ForLaunchRejectsUnverifiedInitialJunctionTarget|ForLaunchRejectsRediscoveredJunctionWhenFinalPathResolutionFails|DoesNotSharePreRetargetSingleflightResult|ForLaunchFailsWhenJunctionKeepsRetargeting)|TestHandleTaskReportsWindowsCodexProcessStartFailure)' -count=1 -timeout=5m
 
+      - name: Test Windows task workdirs under a junctioned workspaces root
+        working-directory: server
+        # #8946: a workspaces root moved to another drive and left behind as a
+        # directory junction puts a junction in the middle of every task path.
+        # filepath.EvalSymlinks fails with ENOTDIR there, so every repo checkout
+        # was refused as "not owned by the active task" and every follow-up
+        # silently lost its workdir. The strict resolver also has to walk
+        # extended-length (`\\?\`) spellings instead of comparing them as
+        # strings, and refuse volume-GUID paths it cannot walk. Only a real
+        # Windows filesystem has junctions; the ubuntu backend job covers the
+        # symlink shapes.
+        # -v so a skip or a pattern that stops matching is visible.
+        run: |
+          go test ./internal/util -v -run '^(TestResolveSymlinksFollowsJunctions|TestResolveSymlinksExtendedLengthPaths)$' -count=1 -timeout=5m
+          go test ./internal/daemon -v -run '^(TestAuthorizeRepoCheckoutWorkDirThroughJunctionedRoot|TestAuthorizeRepoCheckoutWorkDirFollowsJunctionsInsideTheWorkdir|TestAuthorizeRepoCheckoutWorkDirExtendedLengthSpelling|TestShouldReusePriorWorkdirThroughJunctionedRoot)$' -count=1 -timeout=5m
+
       - name: Build Windows CLI helper entrypoint
         working-directory: server
         run: go build ./cmd/multica
