@@ -78,8 +78,19 @@ go test ./internal/service ./internal/issueguard ./internal/handler \
   TestDispatchAutopilotSuppressesRecentDuplicateIssue   (原 60s 守卫) -> ok
   TestAutopilotLocalDayWindow / TestValidateIssueDedupPolicy -> ok
 pnpm typecheck                               -> 10/10 tasks successful
+pnpm lint                                    -> 7/7 tasks successful
+packages/views test                          -> 446 files / 5511 tests passed
 sqlc generate + sqlc vet                     -> clean
 ```
+
+`packages/core` test 有 10 个失败、`apps/desktop` 有 1 个失败，均**不是本次引入**：
+
+- `packages/core`：`TypeError: Cannot read properties of undefined (reading 'setItem')`。
+  在基线 commit `94749bb8d1`（未改动的独立 worktree）复跑，失败数同为 10，
+  用例集合一致 → pre-existing。
+- `apps/desktop`：`Electron failed to install correctly` → 本机环境问题，未执行到断言
+  （相同环境未安装 electron 二进制）。
+
 
 未做：真实 `autopilot run now` 冒烟。该 autopilot 会合并 PR 并部署三台机器，
 拿它做验证副作用过大；同日去重行为由上述 DB 集成测试覆盖。
