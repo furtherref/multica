@@ -458,6 +458,45 @@ WHERE i.workspace_id = $1
 ORDER BY i.created_at ASC
 LIMIT 1;
 
+-- name: FindSameDayAutopilotIssue :one
+-- Day-granularity sibling of FindRecentAutopilotDuplicateIssue, used by the
+-- 'per_day' issue_dedup_policy (RIC-2291).
+--
+-- Unlike the recent-duplicate guard this query does NOT exclude terminal
+-- statuses. A day whose issue already finished is a day whose work is done: a
+-- merge-and-deploy autopilot firing again that evening must not create a second
+-- issue, because the underlying operation is not safely concurrent.
+--
+-- The window is matched on the sibling RUN's occurrence (planned_at), not on
+-- the issue's created_at: a scheduler that fires its 08:00 slot at 09:30, or
+-- replays a missed slot after an outage, is still trying to do that DAY's
+-- work. Matching on created_at would let the same slot produce a second issue
+-- just because the first one happened to land on the previous calendar day.
+-- The caller passes the local calendar day [day_start, day_end) computed from
+-- this run's own occurrence, in the trigger's timezone rather than UTC.
+-- Manual and webhook runs carry no planned_at and fall back to the run's
+-- trigger instant.
+--
+-- The EXISTS clause keeps a renamed-away issue (title no longer matches, run
+-- link still present) counting as "this day already happened", which is the
+-- whole point of the day window.
+SELECT i.* FROM issue i
+WHERE i.workspace_id = $1
+  AND i.origin_type = 'autopilot'
+  AND i.origin_id = $2
+  AND i.project_id IS NOT DISTINCT FROM sqlc.arg('project_id')::uuid
+  AND EXISTS (
+    SELECT 1
+    FROM autopilot_run r
+    WHERE r.issue_id = i.id
+      AND r.autopilot_id = i.origin_id
+      AND r.status IN ('issue_created', 'running', 'completed')
+      AND coalesce(r.planned_at, r.triggered_at) >= sqlc.arg('day_start')::timestamptz
+      AND coalesce(r.planned_at, r.triggered_at) < sqlc.arg('day_end')::timestamptz
+  )
+ORDER BY i.created_at ASC
+LIMIT 1;
+
 -- name: DeleteIssue :exec
 -- Defense-in-depth: the workspace_id predicate makes the tenant invariant a
 -- SQL-layer guarantee rather than a handler-layer one. Handler loaders

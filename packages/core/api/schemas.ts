@@ -2360,6 +2360,8 @@ const AutopilotListItemSchema = z.object({
   status: z.string(),
   execution_mode: z.string(),
   issue_title_template: z.string().nullable().optional(),
+  // Absent on servers predating the column; "off" is their only behaviour.
+  issue_dedup_policy: z.string().optional(),
   created_by_type: z.string(),
   created_by_id: z.string(),
   last_run_at: z.string().nullable().optional(),

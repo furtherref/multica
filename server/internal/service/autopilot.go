@@ -707,7 +707,23 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 	}
 	projectID := currentAutopilot.ProjectID
 
-	if duplicate, found, err := issueguard.LockAndFindRecentAutopilotDuplicate(
+	if issueguard.IssueDedupPolicy(currentAutopilot.IssueDedupPolicy) == issueguard.IssueDedupPerDay {
+		// 'per_day' replaces the 60s title guard rather than stacking on it:
+		// the day window is strictly wider, and the two disagree about
+		// terminal issues — the recent guard ignores them, the day guard must
+		// treat "already done today" as "do not create another one".
+		dayStart, dayEnd := autopilotLocalDayWindow(*run, triggerTimezone)
+		if duplicate, found, err := issueguard.LockAndFindSameDayAutopilotIssue(
+			ctx, qtx, ap.WorkspaceID, ap.ID, projectID, dayStart, dayEnd,
+		); err != nil {
+			return fmt.Errorf("same-day duplicate guard: %w", err)
+		} else if found {
+			return &errDispatchSkipped{
+				reason: "autopilot already created its issue today: " + util.UUIDToString(duplicate.ID),
+				code:   dispatch.ReasonDuplicateSameDay,
+			}
+		}
+	} else if duplicate, found, err := issueguard.LockAndFindRecentAutopilotDuplicate(
 		ctx, qtx, ap.WorkspaceID, ap.ID, projectID, title, autopilotRecentDuplicateWindow,
 	); err != nil {
 		return fmt.Errorf("recent duplicate guard: %w", err)
@@ -1746,6 +1762,34 @@ func formatAutopilotRunDate(run db.AutopilotRun, timezone string) string {
 	return triggeredAt.In(loc).Format("2006-01-02")
 }
 
+// autopilotLocalDayWindow returns the trigger-local calendar day that contains
+// the run's firing instant, as a half-open [start, end) window in the same
+// timezone the title template renders {{date}} in. The 'per_day' dedup policy
+// keys on this window so "same day" means the operator's day, not UTC's: a
+// trigger at 20:00 Asia/Shanghai is still 2026-11-04 locally while UTC has
+// already rolled over.
+//
+// The anchor is the run's canonical occurrence (planned_at) when it has one,
+// not the wall clock at dispatch: a scheduler that fires an 08:00 slot late —
+// or replays a missed slot after an outage — must still be deduplicated
+// against the day that slot belongs to. Manual and webhook runs carry no
+// planned_at and fall back to the trigger instant.
+//
+// Both bounds are computed from the wall-clock date rather than by adding 24h,
+// so a DST transition day is covered exactly once instead of leaking or
+// double-counting an hour.
+func autopilotLocalDayWindow(run db.AutopilotRun, timezone string) (time.Time, time.Time) {
+	anchor := autopilotRunTriggeredAt(run)
+	if run.PlannedAt.Valid {
+		anchor = run.PlannedAt.Time
+	}
+	loc, _ := autopilotTriggerLocation(timezone)
+	local := anchor.In(loc)
+	year, month, day := local.Date()
+	start := time.Date(year, month, day, 0, 0, 0, 0, loc)
+	return start, start.AddDate(0, 0, 1)
+}
+
 func autopilotRunTriggeredAt(run db.AutopilotRun) time.Time {
 	if run.TriggeredAt.Valid {
 		return run.TriggeredAt.Time
@@ -1885,6 +1929,30 @@ func isSupportedIssueTitleVariable(name string) bool {
 		}
 	}
 	return false
+}
+
+// ValidateIssueDedupPolicy normalizes an optional issue_dedup_policy value.
+// Absent (nil) means the historic behaviour, 'off'; anything outside the
+// supported set is rejected rather than silently coerced, so a typo in an API
+// client surfaces at write time instead of quietly leaving duplicates on.
+func ValidateIssueDedupPolicy(raw *string) (issueguard.IssueDedupPolicy, bool) {
+	if raw == nil {
+		return issueguard.IssueDedupOff, true
+	}
+	switch policy := issueguard.IssueDedupPolicy(strings.TrimSpace(*raw)); policy {
+	case "", issueguard.IssueDedupOff:
+		return issueguard.IssueDedupOff, true
+	case issueguard.IssueDedupPerDay:
+		return issueguard.IssueDedupPerDay, true
+	}
+	return issueguard.IssueDedupOff, false
+}
+
+// IssueDedupPolicyError is the client-facing message for a rejected
+// issue_dedup_policy. Kept next to the validator so the accepted set is
+// documented in exactly one place.
+func IssueDedupPolicyError() string {
+	return "issue_dedup_policy must be one of: off, per_day"
 }
 
 func (s *AutopilotService) getIssuePrefix(workspaceID pgtype.UUID) string {

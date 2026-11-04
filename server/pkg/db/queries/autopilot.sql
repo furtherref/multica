@@ -56,11 +56,11 @@ FOR UPDATE;
 INSERT INTO autopilot (
     workspace_id, title, description, assignee_type, assignee_id,
     status, execution_mode, issue_title_template, project_id,
-    created_by_type, created_by_id
+    created_by_type, created_by_id, issue_dedup_policy
 ) VALUES (
     $1, $2, sqlc.narg('description'), $3, $4,
     $5, $6, sqlc.narg('issue_title_template'), sqlc.narg('project_id'),
-    $7, $8
+    $7, $8, coalesce(sqlc.narg('issue_dedup_policy')::text, 'off')
 ) RETURNING *;
 
 -- name: UpdateAutopilot :one
@@ -77,6 +77,7 @@ UPDATE autopilot SET
     execution_mode = COALESCE(sqlc.narg('execution_mode'), execution_mode),
     issue_title_template = sqlc.narg('issue_title_template'),
     project_id = sqlc.narg('project_id'),
+    issue_dedup_policy = COALESCE(sqlc.narg('issue_dedup_policy')::text, issue_dedup_policy),
     updated_at = now()
 WHERE id = $1
 RETURNING *;

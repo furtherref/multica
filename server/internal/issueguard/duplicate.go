@@ -18,6 +18,22 @@ func NormalizeTitle(title string) string {
 	return strings.ToLower(strings.Join(strings.Fields(title), " "))
 }
 
+// IssueDedupPolicy is how a create_issue autopilot decides that a firing has
+// already been covered by an existing issue. The zero value must stay 'off'
+// so an autopilot created before the column existed keeps the historical
+// 60-second title guard and nothing more (RIC-2291).
+type IssueDedupPolicy string
+
+const (
+	// IssueDedupOff is the historic behaviour: the 60s recent-duplicate guard
+	// only, which cannot span firings of a schedule whose template renders a
+	// coarser granularity than its cron.
+	IssueDedupOff IssueDedupPolicy = "off"
+	// IssueDedupPerDay collapses every firing in one trigger-local calendar
+	// day into the day's first issue.
+	IssueDedupPerDay IssueDedupPolicy = "per_day"
+)
+
 func DuplicateMessage(identifier, title, status string) string {
 	return "Active duplicate issue exists: " + identifier + " " + title + " (status: " + status + "). Set allow_duplicate=true or use --allow-duplicate to create another."
 }
@@ -135,6 +151,50 @@ func LockAndFindRecentAutopilotDuplicate(
 	return duplicate, true, nil
 }
 
+// LockAndFindSameDayAutopilotIssue is the day-granularity counterpart of
+// LockAndFindRecentAutopilotDuplicate, used by autopilots whose
+// issue_dedup_policy is 'per_day' (RIC-2291).
+//
+// It reports whether this autopilot already produced an issue in the caller's
+// local calendar day [dayStart, dayEnd). Terminal issues count: a day whose
+// work already finished is still a day that happened, and the operations such
+// autopilots perform (merge, deploy) are not safe to repeat concurrently. The
+// advisory lock is keyed on (workspace, autopilot, project) rather than the
+// title, because the dedup key here is the DAY — two firings computing the same
+// title in the same second must serialize on the same key, and a title that
+// embeds time granularity must still collapse within one day.
+func LockAndFindSameDayAutopilotIssue(
+	ctx context.Context,
+	q *db.Queries,
+	workspaceID pgtype.UUID,
+	autopilotID pgtype.UUID,
+	projectID pgtype.UUID,
+	dayStart time.Time,
+	dayEnd time.Time,
+) (db.Issue, bool, error) {
+	if !autopilotID.Valid || !dayStart.Before(dayEnd) {
+		return db.Issue{}, false, nil
+	}
+	if err := q.LockIssueDuplicateKey(ctx, sameDayAutopilotLockKey(workspaceID, autopilotID, projectID)); err != nil {
+		return db.Issue{}, false, err
+	}
+
+	duplicate, err := q.FindSameDayAutopilotIssue(ctx, db.FindSameDayAutopilotIssueParams{
+		WorkspaceID: workspaceID,
+		OriginID:    autopilotID,
+		ProjectID:   projectID,
+		DayStart:    pgtype.Timestamptz{Time: dayStart, Valid: true},
+		DayEnd:      pgtype.Timestamptz{Time: dayEnd, Valid: true},
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.Issue{}, false, nil
+		}
+		return db.Issue{}, false, err
+	}
+	return duplicate, true, nil
+}
+
 func lockKey(workspaceID, projectID, parentIssueID pgtype.UUID, normalizedTitle string) string {
 	return strings.Join([]string{
 		"issue-active-duplicate",
@@ -142,6 +202,15 @@ func lockKey(workspaceID, projectID, parentIssueID pgtype.UUID, normalizedTitle 
 		util.UUIDToString(projectID),
 		util.UUIDToString(parentIssueID),
 		normalizedTitle,
+	}, "|")
+}
+
+func sameDayAutopilotLockKey(workspaceID, autopilotID, projectID pgtype.UUID) string {
+	return strings.Join([]string{
+		"autopilot-same-day",
+		util.UUIDToString(workspaceID),
+		util.UUIDToString(autopilotID),
+		util.UUIDToString(projectID),
 	}, "|")
 }
 

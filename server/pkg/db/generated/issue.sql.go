@@ -786,6 +786,98 @@ func (q *Queries) FindRecentAutopilotDuplicateIssue(ctx context.Context, arg Fin
 	return i, err
 }
 
+const findSameDayAutopilotIssue = `-- name: FindSameDayAutopilotIssue :one
+SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id FROM issue i
+WHERE i.workspace_id = $1
+  AND i.origin_type = 'autopilot'
+  AND i.origin_id = $2
+  AND i.project_id IS NOT DISTINCT FROM $3::uuid
+  AND EXISTS (
+    SELECT 1
+    FROM autopilot_run r
+    WHERE r.issue_id = i.id
+      AND r.autopilot_id = i.origin_id
+      AND r.status IN ('issue_created', 'running', 'completed')
+      AND coalesce(r.planned_at, r.triggered_at) >= $4::timestamptz
+      AND coalesce(r.planned_at, r.triggered_at) < $5::timestamptz
+  )
+ORDER BY i.created_at ASC
+LIMIT 1
+`
+
+type FindSameDayAutopilotIssueParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	OriginID    pgtype.UUID        `json:"origin_id"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	DayStart    pgtype.Timestamptz `json:"day_start"`
+	DayEnd      pgtype.Timestamptz `json:"day_end"`
+}
+
+// Day-granularity sibling of FindRecentAutopilotDuplicateIssue, used by the
+// 'per_day' issue_dedup_policy (RIC-2291).
+//
+// Unlike the recent-duplicate guard this query does NOT exclude terminal
+// statuses. A day whose issue already finished is a day whose work is done: a
+// merge-and-deploy autopilot firing again that evening must not create a second
+// issue, because the underlying operation is not safely concurrent.
+//
+// The window is matched on the sibling RUN's occurrence (planned_at), not on
+// the issue's created_at: a scheduler that fires its 08:00 slot at 09:30, or
+// replays a missed slot after an outage, is still trying to do that DAY's
+// work. Matching on created_at would let the same slot produce a second issue
+// just because the first one happened to land on the previous calendar day.
+// The caller passes the local calendar day [day_start, day_end) computed from
+// this run's own occurrence, in the trigger's timezone rather than UTC.
+// Manual and webhook runs carry no planned_at and fall back to the run's
+// trigger instant.
+//
+// The EXISTS clause keeps a renamed-away issue (title no longer matches, run
+// link still present) counting as "this day already happened", which is the
+// whole point of the day window.
+func (q *Queries) FindSameDayAutopilotIssue(ctx context.Context, arg FindSameDayAutopilotIssueParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, findSameDayAutopilotIssue,
+		arg.WorkspaceID,
+		arg.OriginID,
+		arg.ProjectID,
+		arg.DayStart,
+		arg.DayEnd,
+	)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.Revision,
+		&i.LastActivityAt,
+		&i.TriageState,
+		&i.DuplicateOfIssueID,
+	)
+	return i, err
+}
+
 const getIssue = `-- name: GetIssue :one
 SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id FROM issue
 WHERE id = $1

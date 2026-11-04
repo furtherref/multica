@@ -2,6 +2,13 @@ export type AutopilotStatus = "active" | "paused" | "archived";
 
 export type AutopilotExecutionMode = "create_issue" | "run_only";
 
+// How a create_issue autopilot decides a firing is already covered. "off" keeps
+// the 60-second title-based window, which cannot span firings of a schedule
+// whose title template renders a coarser granularity than its cron. "per_day"
+// allows at most one issue per trigger-local calendar day, including days whose
+// issue already finished (RIC-2291).
+export type AutopilotIssueDedupPolicy = "off" | "per_day";
+
 // `assignee_type` selects which polymorphic actor backs the autopilot:
 // "agent" → assignee_id references agent(id); "squad" → assignee_id references
 // squad(id) and dispatch resolves to squad.leader_id at run time (MUL-2429,
@@ -37,6 +44,10 @@ export interface Autopilot {
   pause_reason?: string | null;
   execution_mode: AutopilotExecutionMode;
   issue_title_template: string | null;
+  // How create_issue mode collapses repeat firings into one issue. "off" is
+  // the historic 60s title window; "per_day" allows one issue per
+  // trigger-local calendar day. Absent on older servers — treat as "off".
+  issue_dedup_policy?: AutopilotIssueDedupPolicy;
   created_by_type: string;
   created_by_id: string;
   last_run_at: string | null;
@@ -163,6 +174,7 @@ export interface CreateAutopilotRequest {
   assignee_id: string;
   execution_mode: AutopilotExecutionMode;
   issue_title_template?: string;
+  issue_dedup_policy?: AutopilotIssueDedupPolicy;
   subscribers?: AutopilotSubscriberInput[];
 }
 
@@ -177,6 +189,7 @@ export interface UpdateAutopilotRequest {
   status?: AutopilotStatus;
   execution_mode?: AutopilotExecutionMode;
   issue_title_template?: string | null;
+  issue_dedup_policy?: AutopilotIssueDedupPolicy;
   // When present, fully replaces the autopilot's subscriber template;
   // omit to leave it untouched.
   subscribers?: AutopilotSubscriberInput[];

@@ -220,6 +220,7 @@ type Autopilot struct {
 	AssigneeType       string             `json:"assignee_type"`
 	ProjectID          pgtype.UUID        `json:"project_id"`
 	PauseReason        pgtype.Text        `json:"pause_reason"`
+	IssueDedupPolicy   string             `json:"issue_dedup_policy"`
 }
 
 type AutopilotCollaborator struct {
