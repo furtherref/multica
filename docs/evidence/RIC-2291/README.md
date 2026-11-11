@@ -61,6 +61,45 @@ multica autopilot trigger-update 9224cdf7-6b02-4131-950c-b3b63e74c0ac \
 迁移编号用 **907**：`548` 在现网 `schema_migrations` 里已被
 `548_task_supplement_comment_task_index` 占用，下游 `furtherref/main` 已到 906。
 
+## 线上效果实测（2026-11-11 复核）
+
+trigger 降频自 2026-11-05 00:00 UTC（= 08:00 Asia/Shanghai）起生效，`autopilot runs`
+按日统计：
+
+| 日期 | run 数 | 状态 |
+|---|---|---|
+| 2026-11-11 | 1 | completed |
+| 2026-11-10 | 1 | completed |
+| 2026-11-09 | 1 | completed |
+| 2026-11-08 | 1 | completed |
+| 2026-11-07 | 1 | completed |
+| 2026-11-06 | 1 | completed |
+| 2026-11-05 | 1 | completed |
+| 2026-11-04（改前） | 5 | 3 completed / 2 failed |
+| 2026-11-03（改前） | 6 | 6 completed |
+
+连续 7 天每天 1 个 run、1 条 issue，改前为每天 5~6 个。验收标准 1/2/3/4/6 由此
+实测满足。`next_run_at` 复核为 `2026-11-12T00:00:00Z`（= 次日 08:00 +08），
+与 `0 8 * * *` + `Asia/Shanghai` 一致。
+
+**验收 #5（真实 `autopilot run now` 冒烟）仍未做**，理由不变：该 autopilot 会合并
+PR 并部署三台机器，拿它做验证副作用过大。同日去重由 DB 集成测试覆盖。
+
+## 仍未闭环（2026-11-11 更新）
+
+现网已于 2026-11-10 升级到 **v0.8.2**（commit `b7f8efca`，在 `origin/main` 上）。
+复核该版本 `autopilot` 表仍**无** `issue_dedup_policy` 列，`FindRecentAutopilotDuplicateIssue`
+仍是 60 秒窗口 + 按 title + `NOT (status = ANY(terminal))`。也就是说：
+
+- 上游/下游都还没有同日去重，本单代码修复没有被别人做掉，仍然有效；
+- 它依然需要「提 PR → 发版」才生效，线上目前唯一在起作用的仍是 trigger 降频。
+
+把本分支合并到 `origin/main`（`d44d6866a9`）实测：只有 `server/internal/handler/admission.go`
+一处一行别名冲突（两边各加一个 `ReasonXxx = dispatch.ReasonXxx`），合并后
+`go build ./...` 与 `go test ./internal/issueguard ./internal/service` 全部通过。
+即修复可以直接前移到当前主干，不需要重写。
+
+
 ## 验证
 
 全部在隔离 Postgres（`ric2291-test-pg`，127.0.0.1:55432，pgvector/pgvector:pg17）
