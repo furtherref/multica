@@ -610,7 +610,7 @@ func TestReregisterAfterRuntimeGone_KeepsRuntimeWhoseProbeFailed(t *testing.T) {
 		return nil
 	})
 
-	if err := d.reregisterWorkspaceAfterRuntimeGone(context.Background(), "ws-1"); err != nil {
+	if err := d.reregisterWorkspaceAfterRuntimeGone(context.Background(), "ws-1", "", true); err != nil {
 		t.Fatalf("reregisterWorkspaceAfterRuntimeGone: %v", err)
 	}
 
@@ -1585,7 +1585,7 @@ func TestReregisterAfterRuntimeGone_LeavesBelowMinimumToTheDemotionPath(t *testi
 	fx.setProbeVersion("0.0.1")
 	deregsBefore := fx.deregisteredCount()
 
-	if err := d.reregisterWorkspaceAfterRuntimeGone(context.Background(), "ws-1"); err != nil {
+	if err := d.reregisterWorkspaceAfterRuntimeGone(context.Background(), "ws-1", "", true); err != nil {
 		t.Fatalf("reregisterWorkspaceAfterRuntimeGone: %v", err)
 	}
 

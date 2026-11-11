@@ -275,11 +275,32 @@ $ multica daemon status --output json | jq .skipped_agents
 备份：`~/.multica/config.json.bak-ric2321-20261106-170227`
 
 选择改 config.json 而不是改 plist：**它不需要重启 daemon 就能生效**（下次任何启动/重载都会读），
-而 plist 需 bootout/bootstrap，会杀掉在跑的 6 个 run —— 违反本轮「不要重启 daemon」的约束。
+而 plist 需 bootout/bootstrap，会杀掉在跑的 run —— 违反当时「不要重启 daemon」的约束。
 
 告警规则 `config/prometheus/rules/multica.rules.yml:57` `expr: multica_runs_active > 10`
 **不需要改**：它对齐的正是 plist 的 10，现在 config.json 也钉成 10，三者一致。
 漂移的根源是运行中进程用了 20，改的是 daemon 不是规则。
+
+### 5.1 代码修复：RecoverOrphans 只恢复被删的那个 runtime
+
+`server/internal/daemon/daemon.go`
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 函数签名 | `reregisterWorkspaceAfterRuntimeGone(ctx, workspaceID)` | `(ctx, workspaceID, goneRuntimeID string, recoverAll bool)` |
+| runtime_gone 路径传给 RecoverOrphans | `newIDs`（重注册返回的**全集**） | `[]string{runtimeID}`（服务端真正删掉的那个） |
+| workspace 无 runtime 的重试路径 | 同样是 `newIDs` | `recoverAll=true` → 仍用全集（该路径本地已无任何 runtime，任务确实全部失主） |
+| 日志 | 只记 `workspace_id` | 不变，但注释写明为何不能用 `newIDs` |
+
+新增回归测试（`server/internal/daemon/runtime_gone_test.go`）：
+
+- `TestHandleRuntimeGone_RecoversOnlyTheDeletedRuntime` —— 响应里 3 个 runtime，
+  断言 recover-orphans **只**对 `rt-old` 调 1 次，且幸存 runtime 仍被跟踪。
+- `TestReregisterWorkspaceAfterRuntimeGone_RecoverAllCoversWholeSet` —— 另一半契约，
+  本地无 runtime 时必须恢复全集，否则残留 in-flight 行永不收敛。
+
+两条测试在「改回旧行为」时确实失败（已实测：`recover-orphans called for [rt-claude rt-codex rt-openclaw], want exactly [rt-old]`），
+不是改完就一定绿的假测试。
 
 ---
 
@@ -310,14 +331,45 @@ $ multica daemon status --output json | jq .skipped_agents
 
 ---
 
-## 七、没做 / 待决策
+## 七、状态更新（2026-11-11 复核）
 
-1. **`com.multica.daemon` 仍是 bootout 状态**（自 11-05 12:19）。`RunAtLoad` + `enabled` 会在下次登录
-   自动加载**已修好的** plist。要现在恢复必须停掉 87090，会杀掉在跑的 run，需另行择机。
-2. **`RecoverOrphans` 的越界循环（§四）是代码缺陷，未改。**
-   本 worktree 基线是 `v0.5.3`，而这台机器跑的是 0.8.0（commit `9b1ab4f9…`，本仓库没有该对象），
-   在这个分支上改 `daemon.go` 无法用实际运行的二进制验证。建议单开一单在 0.8.x 上修：
-   `newIDs` → 只传被删的那个 runtime id。
-3. **`pgrep -f` 盲区**建议同步给所有看门狗作者：`pgrep -f 'multica daemon'` 恒空，
+原第七节的待办多数已闭合，此处改写为当前实况：
+
+1. **`com.multica.daemon` 已回到 launchd 管理**（原第 1 项已闭合）：
+
+   ```
+   $ launchctl list | grep -i 'com.multica.daemon'
+   23404	0	com.multica.daemon
+   $ ps -eo pid,ppid,args | grep 'multica daemon' | grep -v grep
+   23404  1  /usr/local/bin/multica daemon start --foreground --no-auto-update --no-auto-reload --max-concurrent-tasks 10
+   ```
+
+   `runs = 1`、`last exit code = (never exited)`，argv 已含 `--max-concurrent-tasks 10`
+   与 `--no-auto-reload` —— 本轮新增的 config.json 钉值 + 上一轮的 plist 修正都已生效。
+
+2. **`RecoverOrphans` 越界循环已修**（见 §5.1）。原先「基线 v0.5.3 无法验证 0.8.0」的顾虑已消除：
+   `v0.8.0` 与 `origin/main` 的该段代码与本分支一致（`git show v0.8.0:server/internal/daemon/daemon.go`），
+   所以在本分支上改的就是线上跑的那段逻辑。
+
+3. **`~/.local/bin/agy` 仍缺失**，antigravity 仍在 `skipped_agents`。这是触发 runtime 被回收的
+   源头条件，属环境问题（装回 agy，或把 antigravity 从 daemon 的 agent 列表摘掉），不在代码修复范围。
+
+4. **`pgrep -f` 盲区**建议同步给所有看门狗作者：`pgrep -f 'multica daemon'` 恒空，
    写成「为空就重启」会变成无限重启循环。当前 `multica_daemon_watchdog.py` 用的是
    `multica daemon status` + `launchctl print`，没有踩这个坑。
+
+---
+
+## 八、验证记录（2026-11-11）
+
+```
+$ cd server && go build ./...                      # OK
+$ gofmt -l internal/daemon/                        # 无输出
+$ go vet ./internal/daemon/                        # OK
+$ go test ./internal/daemon/... -count=1           # ok（4 个包全绿）
+```
+
+注：`go test ./cmd/multica/` 有 166 条失败，与本次改动无关 —— 在未改动的基线（stash 后）
+上同样 166 条，属既有环境性失败（`resolveToken()` 相关）。`internal/daemon/` 在默认 env 下
+也有 7 条失败（`MULTICA_TASK_CONFIG_ROOT` 等 daemon 注入变量污染，换上干净 env 后全绿），
+同样是 pre-existing，已用 stash 前后对照确认。
