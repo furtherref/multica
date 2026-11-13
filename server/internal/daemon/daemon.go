@@ -1322,7 +1322,9 @@ func (d *Daemon) handleRuntimeGone(runtimeID string) {
 		return
 	}
 
-	err := d.reregisterWorkspaceAfterRuntimeGone(d.recoveryContext(), workspaceID)
+	// Only this runtime's tasks are orphaned: it is the one the server deleted.
+	// Siblings in the same workspace are still heartbeating and still running.
+	err := d.reregisterWorkspaceAfterRuntimeGone(d.recoveryContext(), workspaceID, runtimeID, false)
 	d.recordRegisterCompletion(workspaceID, time.Now(), err)
 	if err != nil {
 		// Logged at Warn (not Error) because workspaceSyncLoop retries
@@ -1933,7 +1935,19 @@ func (d *Daemon) untrackedRuntimeIDs(ids []string) []string {
 	return out
 }
 
-func (d *Daemon) reregisterWorkspaceAfterRuntimeGone(ctx context.Context, workspaceID string) error {
+// reregisterWorkspaceAfterRuntimeGone re-registers a workspace's runtimes after
+// the server deleted one of them, then fails any tasks orphaned by the deletion.
+//
+// goneRuntimeID is the runtime the server actually deleted, and the only one
+// whose tasks are orphaned. RecoverOrphans hard-fails every dispatched/running
+// task on the runtime it is given, so naming a healthy sibling kills live work
+// that was never lost — which is what recovering the whole re-registered set did.
+//
+// recoverAll is the workspace-has-no-runtimes retry: the daemon tracks no
+// runtimes at all for this workspace, so every task the previous registration
+// owned is orphaned and the whole re-registered set must be recovered.
+// goneRuntimeID is ignored when it is set.
+func (d *Daemon) reregisterWorkspaceAfterRuntimeGone(ctx context.Context, workspaceID, goneRuntimeID string, recoverAll bool) error {
 	var newIDs []string
 	// Send, apply and clean up as one ordered step — see workspaceRegisterLock.
 	err := d.withWorkspaceRegisterLock(workspaceID, func() error {
@@ -1975,7 +1989,21 @@ func (d *Daemon) reregisterWorkspaceAfterRuntimeGone(ctx context.Context, worksp
 	// also feeds applyRegisterResponseInPlace) deliberately skips this step
 	// because its surviving runtime IDs may still be actively executing
 	// tasks for the user (MUL-3332).
-	for _, rid := range newIDs {
+	//
+	// recoverIDs is deliberately NOT newIDs: RecoverOrphans hard-fails every
+	// in-flight task on the runtime it is given, so looping over the whole
+	// re-registered set failed live work on healthy siblings whenever any one
+	// runtime was deleted. A single missing agent CLI was enough to kill every
+	// running task in the workspace. Only the recoverAll retry — where nothing
+	// is tracked locally, so every task really is orphaned — uses the full set.
+	recoverIDs := newIDs
+	if !recoverAll {
+		recoverIDs = nil
+		if goneRuntimeID != "" {
+			recoverIDs = []string{goneRuntimeID}
+		}
+	}
+	for _, rid := range recoverIDs {
 		if err := d.client.RecoverOrphans(ctx, rid); err != nil {
 			d.logger.Warn("recover-orphans after re-register failed",
 				"runtime_id", rid, "error", err)
@@ -4297,7 +4325,7 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context, reconcileProfiles bo
 				continue
 			}
 			d.logger.Info("workspace has no runtimes; retrying registration", "workspace_id", id, "name", name)
-			if err := d.reregisterWorkspaceAfterRuntimeGone(ctx, id); err != nil {
+			if err := d.reregisterWorkspaceAfterRuntimeGone(ctx, id, "", true); err != nil {
 				d.logger.Warn("retry register failed", "workspace_id", id, "error", err)
 				continue
 			}
