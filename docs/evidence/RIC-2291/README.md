@@ -134,6 +134,47 @@ sqlc generate + sqlc vet                     -> clean
 未做：真实 `autopilot run now` 冒烟。该 autopilot 会合并 PR 并部署三台机器，
 拿它做验证副作用过大；同日去重行为由上述 DB 集成测试覆盖。
 
+## 2026-11-14 复核后重验（合并 furtherref/main + 全量门禁）
+
+独立复核（RIC-2597 批次）判 FAILED：代码只存在于本机 worktree、无分支推送、无 PR。
+本轮把分支同步到当前下游并全量自测，随后推 fork 开 PR。
+
+**同步**：`git merge furtherref/main`（下游已 sync 到 v0.6.1 + 迁移 901–906，907 编号可用）。
+冲突仅 2 处，均为「两边各加一个 reason 别名」的一行冲突，按并集解决，本单文件语义零改动：
+
+- `server/internal/dispatch/reason.go`：保留 `ReasonDuplicateSameDay` + `ReasonBudgetExceeded`
+- `server/internal/handler/admission.go`：保留 `ReasonDuplicateSameDay` + `ReasonIssueArchived`
+
+**全量自测（合并后树，隔离 Postgres `ric2291-pg` 127.0.0.1:5433，未碰生产库）**：
+
+```
+migrate up                                   -> 907_autopilot_issue_dedup_policy OK（schema_migrations 599 行）
+go build ./...                               -> OK
+go test -count=1 ./...                       -> 全绿（0 FAIL）
+go test -count=1 -run PerDayDedup ./cmd/server -> ok
+pnpm typecheck                               -> 10/10 tasks successful
+pnpm lint                                    -> 7/7 tasks successful（23 个 warning 为既有，0 error）
+packages/views test                          -> 488 files / 6224 tests passed
+凭据扫描（PR diff 全量新增行 + 证据 JSON）    -> 无命中（仅 has_signing_secret:false 等 schema 布尔字段误报）
+```
+
+**pre-existing 复现（证明前端失败非本单引入）**：在干净的 `furtherref/main` 旁挂
+worktree（`/tmp/ric2291-pristine-main`，`git worktree add --detach furtherref/main`）复跑：
+
+- `packages/core`：同样 11 个失败（4 个文件，`localStorage.setItem` undefined，
+  `platform/storage.ts` 与 4 个测试文件本单 diff 均为 0 行）→ 下游既有，非合并引入。
+- `apps/desktop`：`Electron failed to install correctly`（`dist/path.txt` 缺失，
+  postinstall 未拉二进制）→ 干净下游同现，本机环境问题。
+
+**验收 #5（真实 `autopilot run now` 冒烟）处置**：豁免。该 autopilot 会真实合并 PR 并
+部署 3 台机器，拿它当冒烟环境副作用不可接受；同日去重行为由
+`TestDispatchAutopilotPerDayDedupCreatesOneIssuePerDay`（同日两次触发 → 1 个 issue +
+`skipped`/`duplicate_same_day`，次日 → 新 issue）覆盖，且该测试在本轮合并后树上新跑通过。
+
+**交付**：分支推至 `luyuehm/multica`，PR 开往 `furtherref/multica:main`（迁移 907 编号已排好）。
+发版合入后需把 `9224cdf7` 设为 `--issue-dedup-policy per_day` 才真正生效；此前线上仍由
+trigger 降频（`0 8 * * *`）兜底。
+
 ## 尚未闭环
 
 代码修复要生效必须把 backend 升级到含 907 迁移的构建。现网
