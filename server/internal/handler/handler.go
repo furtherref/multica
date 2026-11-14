@@ -69,6 +69,11 @@ type Config struct {
 	AllowSignup         bool
 	AllowedEmails       []string
 	AllowedEmailDomains []string
+	// AdminEmails is the system-admin allowlist (comma-separated ADMIN_EMAILS
+	// env var, trimmed and lowercased). Empty means no system admins — the
+	// /api/admin/* surface is inert by default. Membership is checked
+	// case-insensitively in isSystemAdmin.
+	AdminEmails []string
 	// DisableWorkspaceCreation, when true, makes POST /api/workspaces return
 	// 403 for every caller. There is no role/owner exception because the repo
 	// has no platform-admin concept; operators bootstrap the workspace with
@@ -121,6 +126,23 @@ type Config struct {
 	// frontend/CORS origin allowlist so split app/api self-hosted deployments
 	// can frame API-hosted PDFs without allowing arbitrary third-party frames.
 	AttachmentFrameAncestors []string
+
+	// OnlyOffice read-only document preview. When OnlyOfficeEnabled is false
+	// the office-config endpoint 404s and the frontend falls back to a plain
+	// download card.
+	OnlyOfficeEnabled                 bool
+	OnlyOfficeDocumentServerPublicURL string
+	// OnlyOfficeJWTSecret must equal the Document Server's JWT_SECRET; used to
+	// sign the browser editor config.
+	OnlyOfficeJWTSecret string
+	// OnlyOfficeFetchSecret signs the short-lived token the Document Server
+	// presents when fetching the file. Independent of OnlyOfficeJWTSecret.
+	OnlyOfficeFetchSecret string
+	// OnlyOfficeFetchBaseURL is the base of document.url that the Document
+	// Server fetches. MUST be a public, non-private-IP host: the DS blocks
+	// private/reserved addresses by default. Falls back to PublicURL.
+	OnlyOfficeFetchBaseURL string
+
 	// PluginSurfaceOrigin is the dedicated, cookie-free browser origin that
 	// routes /plugin-surfaces/* back to this server. It must not be the app/API
 	// origin: the route serves stored third-party JavaScript as HTML.
@@ -257,7 +279,6 @@ type Handler struct {
 	// nil Metrics as "PostHog only".
 	Metrics                      *obsmetrics.BusinessMetrics
 	PATCache                     *auth.PATCache
-	DaemonTokenCache             *auth.DaemonTokenCache
 	MembershipCache              *auth.MembershipCache
 	WebhookRateLimiter           WebhookRateLimiter
 	WebhookIPRateLimiter         WebhookRateLimiter
@@ -414,7 +435,27 @@ type Handler struct {
 	// so the feature degrades cleanly on deployments without a private key.
 	// Wired in cmd/server/router.go after New.
 	PRRefresh *ghsnapshot.Manager
-	cfg       Config
+	// AccountGuard backs the admin account-status endpoint's cache
+	// invalidation: after SetUserAccountStatus flips a row, the guard's
+	// cached verdict for that user must be cleared so revocation beats the
+	// cache TTL instead of taking effect "within 10 minutes". Shared with
+	// the Auth / DaemonAuth middlewares. Wired in cmd/server/router.go
+	// after New, once accountGuard is constructed. Nil-safe.
+	AccountGuard *auth.AccountGuard
+	// DisconnectUser force-closes every realtime connection belonging to a
+	// user. Injected as a func (rather than a *realtime.Hub field) so the
+	// account-status handler doesn't need a direct Hub dependency. Wired in
+	// cmd/server/router.go to hub.DisconnectUser; cmd/server/main.go wraps
+	// it with a relay publish so suspension also reaches connections held
+	// by OTHER nodes. Nil-safe.
+	DisconnectUser func(userID string) error
+	// DisconnectDaemonRuntimes force-closes live daemon WebSockets watching
+	// the given runtimes. Suspension deletes the daemon's mdt_ token, but a
+	// token only gates NEW connections — an established socket keeps its
+	// cached identity, so it must be severed explicitly. Wired in
+	// cmd/server/router.go to daemonHub.DisconnectRuntimes. Nil-safe.
+	DisconnectDaemonRuntimes func(runtimeIDs []string) error
+	cfg                      Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {
@@ -793,27 +834,32 @@ func (h *Handler) NotifyRuntimeRecovered(_ context.Context, workspaceID string) 
 
 // publishTask is publish() plus a TaskID hint so the realtime layer can route
 // the event to the per-task scope rather than the whole workspace.
-func (h *Handler) publishTask(eventType, workspaceID, actorType, actorID, taskID string, payload any) {
+func (h *Handler) publishTask(eventType, workspaceID, actorType, actorID string, task db.AgentTaskQueue, recipientUserID string, payload any) {
 	h.Bus.Publish(events.Event{
-		Type:        eventType,
-		WorkspaceID: workspaceID,
-		ActorType:   actorType,
-		ActorID:     actorID,
-		TaskID:      taskID,
-		Payload:     payload,
+		Type:            eventType,
+		WorkspaceID:     workspaceID,
+		ActorType:       actorType,
+		ActorID:         actorID,
+		TaskID:          uuidToString(task.ID),
+		AgentID:         uuidToString(task.AgentID),
+		ChatSessionID:   uuidToString(task.ChatSessionID),
+		RecipientUserID: recipientUserID,
+		Payload:         payload,
 	})
 }
 
 // publishChat is publish() plus a ChatSessionID hint so the realtime layer
 // can route the event to the per-chat-session scope.
-func (h *Handler) publishChat(eventType, workspaceID, actorType, actorID, chatSessionID string, payload any) {
+func (h *Handler) publishChat(eventType, workspaceID, actorType, actorID, recipientUserID, chatSessionID, agentID string, payload any) {
 	h.Bus.Publish(events.Event{
-		Type:          eventType,
-		WorkspaceID:   workspaceID,
-		ActorType:     actorType,
-		ActorID:       actorID,
-		ChatSessionID: chatSessionID,
-		Payload:       payload,
+		Type:            eventType,
+		WorkspaceID:     workspaceID,
+		ActorType:       actorType,
+		ActorID:         actorID,
+		ChatSessionID:   chatSessionID,
+		AgentID:         agentID,
+		RecipientUserID: recipientUserID,
+		Payload:         payload,
 	})
 }
 

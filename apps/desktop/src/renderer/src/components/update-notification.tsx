@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, X } from "lucide-react";
+import { Loader2, RefreshCw, X } from "lucide-react";
 
 // Downloads run silently in the background (main process has
 // autoDownload=true). The renderer only renders UI once the package is fully
@@ -9,21 +9,22 @@ type UpdateState =
   | { status: "ready"; version: string };
 
 function changelogUrl(version: string): string {
-  return `https://multica.ai/changelog#release-${version.replace(/\./g, "-")}`;
+  return `https://multica.furtherref.com/changelog#release-${version.replace(/\./g, "-")}`;
 }
 
 export function UpdateNotification() {
   const [state, setState] = useState<UpdateState>({ status: "idle" });
   const [dismissed, setDismissed] = useState(false);
+  const [installing, setInstalling] = useState(false);
 
   useEffect(() => {
     const cleanup = window.updater.onUpdateDownloaded((info) => {
       setState({ status: "ready", version: info.version });
       setDismissed(false);
+      setInstalling(false);
     });
     return cleanup;
   }, []);
-
   if (state.status === "idle") return null;
   if (dismissed) return null;
 
@@ -58,10 +59,19 @@ export function UpdateNotification() {
             </button>
             <button
               type="button"
-              onClick={() => window.updater.installUpdate()}
-              className="inline-flex items-center rounded-md bg-primary px-3 py-1.5 text-caption font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+              onClick={() => {
+                if (installing) return;
+                setInstalling(true);
+                void window.updater.installUpdate().catch(() => {
+                  setInstalling(false);
+                });
+              }}
+              disabled={installing}
+              aria-busy={installing}
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-caption font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60"
             >
-              Restart now
+              {installing && <Loader2 className="size-3 animate-spin" />}
+              {installing ? "Restarting..." : "Restart now"}
             </button>
           </div>
         </div>

@@ -9,7 +9,7 @@ import { CliInstallInstructions } from "./cli-install-instructions";
 const TEST_RESOURCES = { en: { common: enCommon, onboarding: enOnboarding } };
 
 const WINDOWS_CMD =
-  "irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex";
+  "irm https://raw.githubusercontent.com/furtherref/multica/main/scripts/install.ps1 | iex";
 
 describe("CliInstallInstructions", () => {
   // The switch itself is covered in common/cli-install-command.test.tsx; this

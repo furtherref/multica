@@ -42,6 +42,27 @@
     "hours_ago": "{{count}}時間前",
     "days_ago": "{{count}}日前"
   },
+  "status_pill": {
+    "stages": {
+      "offline": "オフライン",
+      "reconnecting": "再接続中",
+      "retrying": "再試行中",
+      "queued": "待機中",
+      "waiting_local_directory": "ローカルディレクトリを待機中",
+      "waiting_local_directory_reason": "{{reason}} を待機中",
+      "starting_up": "起動中",
+      "thinking": "考え中",
+      "typing": "入力中"
+    },
+    "tools": {
+      "running_command": "コマンドを実行中",
+      "reading_files": "ファイルを読み込み中",
+      "searching_code": "コードを検索中",
+      "making_edits": "編集中",
+      "searching_web": "ウェブを検索中",
+      "fallback": "作業中"
+    }
+  },
   "lark_bind": {
     "page_title": "Lark アカウントを連携",
     "redeeming": "バインディングトークンを使用しています…",

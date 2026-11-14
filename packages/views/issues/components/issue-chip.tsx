@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { issueListOptions, issueDetailOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
 import { StatusIcon } from "./status-icon";
 
 /**
@@ -97,7 +98,10 @@ export function IssueChip({
       <span className="font-medium text-muted-foreground shrink-0">
         {issue.identifier}
       </span>
-      <span className="min-w-0 truncate text-foreground">{issue.title}</span>
+      <Tooltip>
+        <TooltipTrigger render={<span className="min-w-0 truncate text-foreground">{issue.title}</span>} />
+        <TooltipContent>{issue.title}</TooltipContent>
+      </Tooltip>
     </span>
   );
 }

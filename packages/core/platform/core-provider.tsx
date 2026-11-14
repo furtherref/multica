@@ -15,6 +15,7 @@ import { WSProvider } from "../realtime";
 import { QueryProvider } from "../provider";
 import { createLogger } from "../logger";
 import { defaultStorage } from "./storage";
+import { SESSION_ENDED_REASON_KEY } from "../auth/utils";
 import { AuthInitializer } from "./auth-initializer";
 import {
   createSessionRenewal,
@@ -34,6 +35,18 @@ import {
 let initialized = false;
 let authStore: ReturnType<typeof createAuthStore>;
 let chatStore: ReturnType<typeof createChatStore>;
+
+/** Fully kill the local session on an ACCOUNT_SUSPENDED rejection — same
+ *  effect whether the signal arrives via an HTTP response (api client's
+ *  `onSessionRejected("account_suspended")`) or a WS `auth_error` frame
+ *  (ws-client's `onAuthRejected`): drop the token, record why so the next
+ *  boot's login screen can explain it, and tear down the auth store. */
+function handleAccountSuspended(storage: StorageAdapter) {
+  storage.removeItem("multica_token");
+  storage.setItem(SESSION_ENDED_REASON_KEY, "account_suspended");
+  authStore?.getState().logout();
+}
+
 // Token mode only. Cookie-mode browsers have their session re-issued by the
 // server on any authenticated request, so there is nothing for a client-side
 // renewer to do there (MUL-7436).
@@ -89,6 +102,18 @@ function initCore({
     // callback can only run from a request — never before boot finishes.
     onUnauthorized: () => {
       authStore.getState().sessionExpired();
+    },
+    onSessionRejected: (reason) => {
+      if (reason === "account_suspended") {
+        // authStore is assigned ~20 lines below (module-scope var,
+        // initialised synchronously later in this function) — this callback
+        // only fires on a subsequent request, after that assignment has run,
+        // so the closure read inside handleAccountSuspended is always safe.
+        handleAccountSuspended(storage);
+        return;
+      }
+      storage.removeItem("multica_token");
+      authStore?.getState().logout();
     },
     // Token mode only. Desktop runs one ApiClient per window over one shared
     // localStorage, so the credential has to be read through to storage rather
@@ -214,6 +239,7 @@ export function CoreProvider({
           storage={storage}
           cookieAuth={cookieAuth}
           identity={identity}
+          onAuthRejected={() => handleAccountSuspended(storage)}
         >
           {children}
         </WSProvider>

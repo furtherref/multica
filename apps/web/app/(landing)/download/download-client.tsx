@@ -7,7 +7,6 @@ import { LandingFooter } from "@/features/landing/components/landing-footer";
 import { DownloadHero } from "@/features/landing/components/download/hero";
 import { AllPlatforms } from "@/features/landing/components/download/all-platforms";
 import { CliSection } from "@/features/landing/components/download/cli-section";
-import { CloudSection } from "@/features/landing/components/download/cloud-section";
 import { useLocale } from "@/features/landing/i18n";
 import {
   detectOS,
@@ -16,7 +15,7 @@ import {
 import type { LatestRelease } from "@/features/landing/utils/github-release";
 
 const ALL_RELEASES_URL =
-  "https://github.com/multica-ai/multica/releases";
+  "https://github.com/furtherref/multica/releases";
 
 export function DownloadClient({ release }: { release: LatestRelease }) {
   const [detected, setDetected] = useState<DetectResult | null>(null);
@@ -57,7 +56,6 @@ export function DownloadClient({ release }: { release: LatestRelease }) {
         fallbackHref={ALL_RELEASES_URL}
       />
       <CliSection />
-      <CloudSection />
       <VersionInfoFooter
         version={release.version}
         releaseHtmlUrl={releaseHtmlUrl}

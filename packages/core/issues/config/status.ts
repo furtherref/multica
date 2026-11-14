@@ -4,6 +4,12 @@ import type { BuiltInIssueStatus, IssueStatusCategory } from "../../types";
 // any number of custom statuses, but every one belongs to exactly one of the
 // four lifecycle categories below. Concrete built-in status keys remain a
 // separate seven-value compatibility surface. (MUL-6243, MUL-7240)
+//
+// `archive` (fork status #39, migration 069) is a built-in KEY, never a catalog
+// entry or category: no issue_status row carries it, so no custom status can
+// inherit its retired-work guards. Its lifecycle is `closed`, like `cancelled`,
+// and like an archived catalog status it only becomes a column through an
+// explicit status filter (see statusColumnKeys).
 
 export const STATUS_ORDER: IssueStatusCategory[] = [
   "unstarted",
@@ -30,6 +36,7 @@ export const BUILT_IN_STATUS_ORDER: BuiltInIssueStatus[] = [
   "blocked",
   "done",
   "cancelled",
+  "archive",
 ];
 
 export const BUILT_IN_STATUS_CATEGORY: Record<BuiltInIssueStatus, IssueStatusCategory> = {
@@ -40,6 +47,7 @@ export const BUILT_IN_STATUS_CATEGORY: Record<BuiltInIssueStatus, IssueStatusCat
   blocked: "started",
   done: "done",
   cancelled: "closed",
+  archive: "closed",
 };
 
 export const BUILT_IN_STATUS_LABEL: Record<BuiltInIssueStatus, string> = {
@@ -50,6 +58,7 @@ export const BUILT_IN_STATUS_LABEL: Record<BuiltInIssueStatus, string> = {
   blocked: "Blocked",
   done: "Done",
   cancelled: "Cancelled",
+  archive: "Archive",
 };
 
 export const STATUS_CONFIG: Record<

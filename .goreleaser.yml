@@ -2,6 +2,12 @@ version: 2
 
 project_name: multica
 
+release:
+  # GitHub rejects duplicate asset names with 422. On a same-tag rerun,
+  # replace only the matching CLI artifact and retry the upload; unrelated
+  # release assets (for example manually published macOS builds) stay intact.
+  replace_existing_artifacts: true
+
 builds:
   - id: multica
     main: ./cmd/multica
@@ -64,22 +70,26 @@ changelog:
       - "^test:"
       - "^chore:"
 
-brews:
-  - name: multica
-    ids:
-      - versioned
-    repository:
-      owner: multica-ai
-      name: homebrew-tap
-      branch: main
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Formula
-    homepage: "https://github.com/multica-ai/multica"
-    description: "Multica CLI — local agent runtime and management tool for the Multica platform"
-    # No license stanza: Multica ships under the Multica License (Apache 2.0
-    # terms with additional conditions, see LICENSE), which has no SPDX
-    # identifier, so declaring "Apache-2.0" here would be a false claim.
-    install: |
-      bin.install "multica"
-    test: |
-      system "#{bin}/multica", "version"
+# Homebrew tap publishing is intentionally disabled for the FurtherRef fork.
+# Re-enable this block when a `furtherref/homebrew-tap` repository and a
+# `HOMEBREW_TAP_GITHUB_TOKEN` Actions secret are available.
+#
+# brews:
+#   - name: multica
+#     ids:
+#       - versioned
+#     repository:
+#       owner: furtherref
+#       name: homebrew-tap
+#       branch: main
+#       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+#     directory: Formula
+#     homepage: "https://github.com/furtherref/multica"
+#     description: "Multica CLI — local agent runtime and management tool for the Multica platform"
+#     # No license stanza: Multica ships under the Multica License (Apache 2.0
+#     # terms with additional conditions, see LICENSE), which has no SPDX
+#     # identifier, so declaring "Apache-2.0" here would be a false claim.
+#     install: |
+#       bin.install "multica"
+#     test: |
+#       system "#{bin}/multica", "version"

@@ -126,7 +126,13 @@ export function statusFilterColumns(
   return { state: "resolved", columns };
 }
 
-/** Active columns by default; explicit historical inspection can include archived keys. */
+/**
+ * Active columns by default; explicit historical inspection can include archived keys.
+ *
+ * The fork's `archive` issue status (#39) has no catalog row, so it arrives
+ * through the built-in fallback — and is gated like an archived entry: it is
+ * never an everyday column, only one an explicit status filter asks for.
+ */
 export function statusColumnKeys(
   catalog: Pick<IssueStatusCatalog, "statuses">,
   includeArchived = false,
@@ -136,7 +142,8 @@ export function statusColumnKeys(
   return ALL_STATUSES.flatMap((category) => [
     // Preserve cold-load/missing-entry fallbacks, but never pin loaded built-ins.
     ...BUILT_IN_STATUS_ORDER.filter((key) =>
-      BUILT_IN_STATUS_CATEGORY[key] === category && !knownKeys.has(key),
+      BUILT_IN_STATUS_CATEGORY[key] === category && !knownKeys.has(key) &&
+      (includeArchived || key !== "archive"),
     ),
     ...entries.filter((entry) =>
       normalizeIssueStatusCategory(entry.category) === category && (includeArchived || !entry.archived_at),

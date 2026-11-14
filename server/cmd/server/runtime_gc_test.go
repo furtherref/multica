@@ -297,6 +297,43 @@ func TestRuntimeGC_DeletesSystemAgentAndRuntime(t *testing.T) {
 	}
 }
 
+// runtime_cost_budget carries no foreign key, so an automatically collected
+// runtime leaves its budget scopes behind unless the sweeper deletes them in
+// the same transaction. Orphan rows are unreachable — every read is keyed by a
+// runtime_id that no longer exists — and only a workspace delete would ever
+// clear them.
+func TestRuntimeGC_DeletesRuntimeCostBudgets(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+	ctx := context.Background()
+	runtimeID := createRuntimeGCFixtureRuntime(t, ctx, "cost-budget")
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO runtime_cost_budget (id, workspace_id, runtime_id, user_id, daily_limit_usd_ticks)
+		VALUES (gen_random_uuid(), $1, $2, NULL, 100), (gen_random_uuid(), $1, $2, $3, 200)
+	`, testWorkspaceID, runtimeID, testUserID); err != nil {
+		t.Fatalf("insert budget fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM runtime_cost_budget WHERE runtime_id = $1`, runtimeID)
+	})
+
+	result, err := gcRuntime(ctx, testPool, db.New(testPool), parseUUID(runtimeID))
+	if err != nil {
+		t.Fatalf("gcRuntime: %v", err)
+	}
+	if !result.deleted || result.skipReason != "" {
+		t.Fatalf("gc result deleted=%v skip_reason=%q, want deleted", result.deleted, result.skipReason)
+	}
+	var budgetRows int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM runtime_cost_budget WHERE runtime_id = $1`, runtimeID).Scan(&budgetRows); err != nil {
+		t.Fatalf("count budgets: %v", err)
+	}
+	if budgetRows != 0 {
+		t.Fatalf("budget rows = %d, want 0", budgetRows)
+	}
+}
+
 func TestRuntimeGC_ProfileBackedInstanceKeepsProfile(t *testing.T) {
 	if testPool == nil {
 		t.Skip("no database connection")

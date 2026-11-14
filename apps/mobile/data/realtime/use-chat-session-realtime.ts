@@ -28,7 +28,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { chatKeys } from "@/data/queries/chat";
 import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 import {
-  appendTaskMessage,
   applyChatDoneToCache,
   applyChatQuickActionsToCache,
   invalidatePendingTask,
@@ -101,16 +100,6 @@ export function useChatSessionRealtime(
         ws.on("chat:session_deleted", (payload) => {
           if (!isMine(payload)) return;
           onSessionDeleted?.();
-        }),
-        // Live execution trace for any task firing under this chat session.
-        // Per-record gate: `chat_session_id` is optional on the payload
-        // (issue tasks also fire `task:message`), so non-chat traffic is
-        // filtered out here. The cache is keyed on `task_id` rather than
-        // `sessionId`, so completed tasks still render their trace under the
-        // assistant bubble after the live pill unmounts.
-        ws.on("task:message", (payload) => {
-          if (!isMine(payload)) return;
-          appendTaskMessage(qc, payload);
         }),
         ws.onReconnect(invalidateMine),
       ];

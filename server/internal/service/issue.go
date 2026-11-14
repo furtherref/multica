@@ -90,7 +90,7 @@ type IssueCreateParams struct {
 	Properties     map[pgtype.UUID]json.RawMessage
 	AllowDuplicate bool
 	// Stage groups this issue into an ordered barrier group under its parent
-	// (NULL = unstaged). See issue_child_done.go for the staged-barrier wake.
+	// (NULL = unstaged). See issue_wakeup_system.go for the staged-barrier wake.
 	Stage pgtype.Int4
 	// SourceContext is set only by the comment-scoped manual create endpoint.
 	// Its immutable snapshot and cloned attachment rows commit in the same
@@ -280,8 +280,10 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	// clean 400 but too early to be safe: an archive can commit in between.
 	// Re-checking under the lock is what makes the status provably active at
 	// the moment the row is written. Built-in statuses skip both — they can
-	// never be archived, so the common path is unchanged. (MUL-6243)
-	if !issuestatus.IsBuiltIn(p.Status) {
+	// never be archived, so the common path is unchanged. (MUL-6243) Archive
+	// (fork status #39) also skips both: it sits outside the MUL-6243 catalog
+	// entirely, so there is no catalog row to race against.
+	if p.Status != "archive" && !issuestatus.IsBuiltIn(p.Status) {
 		if err := qtx.LockIssueStatusCatalogShared(ctx, p.WorkspaceID); err != nil {
 			return IssueCreateResult{}, err
 		}
@@ -831,6 +833,10 @@ func (s *IssueService) maybeEnqueueOnAssign(ctx context.Context, issue db.Issue,
 	if !issue.AssigneeType.Valid || !issue.AssigneeID.Valid {
 		return pgtype.UUID{}
 	}
+	// Archive (fork status #39) is retired work: nothing runs from it.
+	if issue.Status == "archive" {
+		return pgtype.UUID{}
+	}
 	// Backlog is the parking lot: nothing runs from it, so nothing here needs
 	// explaining either. Custom unstarted statuses do not inherit parking.
 	//
@@ -870,6 +876,16 @@ func (s *IssueService) maybeEnqueueOnAssign(ctx context.Context, issue db.Issue,
 	return pgtype.UUID{}
 }
 
+// shouldEnqueueAgentTask returns true when an issue create or assignment
+// should trigger the assigned agent. Backlog issues are skipped — backlog
+// acts as a parking lot for pre-assigning without immediate execution.
+// Archive (fork status #39) is retired work: assigning into it must never
+// start a run either. Mirrors handler.shouldEnqueueAgentTask; kept here to
+// make the service self-contained, since both code paths must move together.
+func (s *IssueService) shouldEnqueueAgentTask(ctx context.Context, issue db.Issue) bool {
+	return s.shouldEnqueueAgentTaskWithQueries(ctx, s.Queries, issue)
+}
+
 // shouldEnqueueAgentTaskWithQueries returns true when an issue create should
 // trigger the assigned agent. Backlog issues are skipped — backlog acts as a
 // parking lot for pre-assigning without immediate execution. The assignment
@@ -880,6 +896,9 @@ func (s *IssueService) maybeEnqueueOnAssign(ctx context.Context, issue db.Issue,
 // Mirrors handler.shouldEnqueueAgentTask; kept here to make the service
 // self-contained, since both code paths must move together.
 func (s *IssueService) shouldEnqueueAgentTaskWithQueries(ctx context.Context, q *db.Queries, issue db.Issue) bool {
+	if issue.Status == "archive" {
+		return false
+	}
 	// Resolved through q, not s.Queries: this runs inside the create
 	// transaction and must see the same snapshot as the rest of it. (MUL-6243)
 	// That snapshot is also the only place a just-created Triage issue is
@@ -917,6 +936,9 @@ func agentAssigneeVerdict(ctx context.Context, lookup RuntimeLookup, issue db.Is
 }
 
 func (s *IssueService) shouldEnqueueSquadLeaderOnAssign(ctx context.Context, issue db.Issue) bool {
+	if issue.Status == "archive" {
+		return false
+	}
 	if issue.TriageState.Valid || issuestatus.Effective(ctx, s.Queries, issue.WorkspaceID, issue.Status) == "backlog" {
 		return false
 	}

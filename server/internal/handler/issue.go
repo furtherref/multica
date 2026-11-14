@@ -75,8 +75,8 @@ type IssueResponse struct {
 	ProjectID   *string           `json:"project_id"`
 	Position    float64           `json:"position"`
 	// Stage groups sub-issues under the same parent into ordered barrier
-	// groups (null = unstaged). See issue_child_done.go for how a closed
-	// stage gates the child-done -> parent wake.
+	// groups (null = unstaged). See service/issue_wakeup_system.go for how a
+	// closed stage wakes the parent's assignee.
 	Stage     *int32  `json:"stage"`
 	StartDate *string `json:"start_date"`
 	DueDate   *string `json:"due_date"`
@@ -134,7 +134,12 @@ var validIssuePriorities = []string{"urgent", "high", "medium", "low", "none"}
 // table's group descriptors and compound cell keys need to become catalog
 // driven); it is scoped out here so this change cannot alter the table view for
 // workspaces that have no custom statuses.
-var validIssueStatuses = issuestatus.Canonical()
+//
+// "archive" (fork status #39, migration 069_issue_archive_status) is appended
+// unconditionally: it is a fixed fork-only terminal status outside the
+// MUL-6243 catalog, not a category, so issuestatus.Canonical never includes
+// it — but the table view has always been able to group/filter by it.
+var validIssueStatuses = append(issuestatus.Canonical(), "archive")
 var validIssueStatusCategories = issuestatus.Categories()
 
 // Status sort ranks by the CONCRETE status key, in the catalog's own display
@@ -191,6 +196,13 @@ func (h *Handler) resolveIssueStatusKey(w http.ResponseWriter, r *http.Request, 
 // a CUSTOM status. Callers use that to decide whether the write needs the
 // shared catalog lock — see runWithIssueStatusGuard.
 func (h *Handler) resolveIssueStatusKeyKind(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, status string) (string, bool, bool) {
+	// Archive (fork status #39) sits outside the MUL-6243 catalog: a fixed
+	// terminal status available in every workspace, not a category, so
+	// issuestatus.Resolve has never heard of it. Short-circuit like a
+	// built-in — no catalog lookup, always accepted, never "custom".
+	if key := strings.ToLower(strings.TrimSpace(status)); key == "archive" {
+		return key, false, true
+	}
 	entry, err := issuestatus.Resolve(r.Context(), h.Queries, workspaceID, status)
 	if err != nil {
 		if errors.Is(err, issuestatus.ErrUnknownStatus) {
@@ -201,6 +213,7 @@ func (h *Handler) resolveIssueStatusKeyKind(w http.ResponseWriter, r *http.Reque
 			if listErr != nil || len(allowed) == 0 {
 				allowed = issuestatus.Canonical()
 			}
+			allowed = append(allowed, "archive")
 			writeError(w, http.StatusBadRequest, fmt.Sprintf(
 				"invalid status %q; valid values: %s", status, strings.Join(allowed, ", ")))
 			return "", false, false
@@ -238,7 +251,7 @@ var errIssueStatusArchivedRace = errors.New("issue status was archived while the
 // issue_status_system_not_archivable), so the common path takes no lock and
 // pays nothing. (MUL-6243)
 func assertIssueStatusStillActive(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, statusKey string) error {
-	if statusKey == "" || issuestatus.IsBuiltIn(statusKey) {
+	if statusKey == "" || statusKey == "archive" || issuestatus.IsBuiltIn(statusKey) {
 		return nil
 	}
 	// Catalog lock before any row lock, everywhere, so the two write paths
@@ -261,7 +274,7 @@ func assertIssueStatusStillActive(ctx context.Context, qtx *db.Queries, workspac
 // wakeup actor identity in transaction-local settings, including built-in targets.
 func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, fn func(q *db.Queries) error) error {
 	_, hasActor := ctx.Value(wakeupActorKey{}).(wakeupActor)
-	if !hasActor && (statusKey == "" || issuestatus.IsBuiltIn(statusKey)) {
+	if !hasActor && (statusKey == "" || statusKey == "archive" || issuestatus.IsBuiltIn(statusKey)) {
 		return fn(h.Queries)
 	}
 	tx, err := h.beginWakeupWrite(ctx)
@@ -1053,7 +1066,8 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		WHEN 'backlog' THEN 4
 		WHEN 'done' THEN 5
 		WHEN 'cancelled' THEN 6
-		ELSE 7
+		WHEN 'archive' THEN 7
+		ELSE 8
 	END`
 
 	matchSourceParts := []string{"WHEN im.title_phrase THEN 'title'"}
@@ -2915,6 +2929,11 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 
 	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, priority, dueDate, projectUUID, parentIssueUUID, attachmentIDs)
 	if err != nil {
+		var budget *service.RuntimeBudgetExceededError
+		if errors.As(err, &budget) {
+			h.writeDispatchBlocked(w, http.StatusConflict, ReasonBudgetExceeded)
+			return
+		}
 		if writeIssueLimitReached(w, err) {
 			return
 		}
@@ -3962,6 +3981,54 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The next two blocks are mutually exclusive pre-write status-transition
+	// guards compared against `prevIssue.Status`: restoring sweeps stragglers
+	// when LEAVING archive, while archiving performs its early cancellation
+	// gate when ENTERING archive. Both can abort before the issue write below;
+	// archiving also has a post-write convergence sweep below.
+
+	// Restoring from archive (fork status #39) sweeps stragglers BEFORE the
+	// status write commits, detected from the REQUEST's own intent (not a
+	// post-write diff): the caller is setting a non-archive status on an
+	// issue that is currently archived. Tasks that raced past the
+	// archive-time cancel were kept inert by the claim/reclaim guards, and
+	// must not wake up now that the issue is going active again. Restore
+	// itself never starts new runs (see the design addendum). Sweeping here
+	// — before both the write and WillEnqueueRun — means a sweep failure
+	// aborts the whole restore (the issue stays archived) instead of
+	// leaving an ACTIVE issue with live stragglers while dispatch proceeds
+	// underneath them; a same-request assign-triggered run still survives
+	// the sweep because it hasn't been dispatched yet. If the write itself
+	// fails AFTER a successful sweep, that's harmless: the stragglers were
+	// already due to die at archive time, so cancelling them a beat early
+	// costs nothing.
+	if req.Status != nil && *req.Status != "archive" && prevIssue.Status == "archive" {
+		if err := h.TaskService.CancelTasksForIssue(r.Context(), prevIssue.ID); err != nil {
+			slog.Error("restore: cancel straggler tasks failed",
+				"issue_id", uuidToString(prevIssue.ID), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to cancel archived issue's tasks; restore aborted")
+			return
+		}
+	}
+
+	// Archiving (fork status #39) first cancels in-flight tasks BEFORE the
+	// status write. This deliberately survives MUL-4465, which removed only
+	// the cancelled/done coupling — upstream has no archive status. The early
+	// gate lets an initial cancellation failure leave the issue active and
+	// narrows the /start race; the post-write sweep below catches tasks that
+	// become active after this scan while the archive write is pending.
+	if req.Status != nil && *req.Status == "archive" && prevIssue.Status != "archive" {
+		if err := h.TaskService.CancelTasksForIssue(r.Context(), prevIssue.ID); err != nil {
+			slog.Error("archive: cancel tasks failed",
+				"issue_id", uuidToString(prevIssue.ID), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to cancel the issue's tasks; archive aborted")
+			return
+		}
+		// If the cancel succeeds but the status write then fails, the issue
+		// stays active with its tasks already cancelled — acceptable: the
+		// user was archiving, and a retry completes the transition.
+	}
+
 	var issue db.Issue
 	attachmentsChanged := false
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
@@ -3997,6 +4064,25 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update issue: "+err.Error())
 		return
 	}
+
+	// The pre-write archive cancellation is an early failure gate, not a
+	// complete concurrency barrier: a task can become active after that scan
+	// while the issue status write is waiting to commit. Sweep again after the
+	// archive is visible so every such late task converges to cancelled before
+	// we publish success. Run this for any explicit archive request, including a
+	// retry after a previous post-write sweep failure.
+	var archiveConvergenceErr error
+	if req.Status != nil && *req.Status == "archive" {
+		archiveConvergenceErr = h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
+		if archiveConvergenceErr != nil {
+			slog.Error("archive committed but post-write task sweep failed",
+				"issue_id", uuidToString(issue.ID), "error", archiveConvergenceErr)
+		}
+	}
+
+	// Attachment linking is no longer a separate post-write call: it happens
+	// inside updateIssueAtomically, in the same transaction as the write, so it
+	// is already durable by the time the archive sweep above runs.
 
 	// Determine actor identity: agent (via X-Agent-ID header) or member.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
@@ -4074,8 +4160,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// was already in flight. No status change — not even → cancelled — cancels
 	// active tasks: a user clicking "cancel" on an issue has no expectation that
 	// it stops in-flight agent runs, so that implicit coupling is gone
-	// (MUL-4465). Deleting an issue still cancels its tasks (see DeleteIssue),
-	// because the tasks' owning issue ceases to exist.
+	// (MUL-4465). The fork-original `archive` status (#39) has two status-driven
+	// exceptions: archiving uses a pre-write failure gate plus a post-write
+	// convergence sweep (see above), while restoring from archive sweeps
+	// straggler tasks before the write so a sweep failure aborts the restore
+	// instead of leaving an ACTIVE issue with live stragglers while dispatch
+	// proceeds underneath them. Deleting an issue still cancels its tasks (see
+	// DeleteIssue), because the tasks' owning issue ceases to exist.
+
 	if trigger, ok := h.IssueService.WillEnqueueRun(r.Context(),
 		service.IssueTriggerInput{
 			Issue:           issue,
@@ -4088,13 +4180,19 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.HandoffNote)
 	}
 
-	// Platform-driven parent notification: when this issue transitions into
-	// `done` and has a parent, post a top-level system comment on the parent
-	// (MUL-2538 — replaces the agent-prompt rule that caused self-mention
-	// loops in PR #2918). The helper guards on transition + parent state and
-	// fails best-effort.
-	if statusChanged {
-		h.notifyParentOfChildDone(r.Context(), prevIssue, issue)
+	// Sub-issue rules on the parent (the child_done system rule and sub-issue
+	// conditions): the write recorded the change; process it now. A failure
+	// is retried by the scheduler sweep.
+	if statusChanged || prevIssue.ParentIssueID != issue.ParentIssueID || prevIssue.Stage != issue.Stage {
+		h.processChildEvents(r.Context(), issue.ParentIssueID, prevIssue.ParentIssueID)
+	}
+	if archiveConvergenceErr != nil {
+		// The issue mutation, attachment links, and issue:updated event have
+		// already completed. Surface the remaining task-convergence failure
+		// explicitly so the caller can retry status=archive without mistaking
+		// the committed issue state for a rolled-back write.
+		writeError(w, http.StatusInternalServerError, "issue is archived but task cancellation did not converge; retry the archive request")
+		return
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -4193,9 +4291,12 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 // shouldEnqueueAgentTask returns true when an issue creation or assignment
 // should trigger the assigned agent. Backlog issues are skipped — backlog
 // acts as a parking lot where issues can be pre-assigned without immediately
-// triggering execution. Moving out of backlog is handled separately in
-// UpdateIssue.
+// triggering execution; moving out of backlog is handled separately in
+// UpdateIssue. Archive (fork status #39) is retired work and never enqueues.
 func (h *Handler) shouldEnqueueAgentTask(ctx context.Context, issue db.Issue) bool {
+	if issue.Status == "archive" {
+		return false
+	}
 	// Only the fixed backlog key parks work; custom unstarted statuses do not.
 	// An issue in Triage is not parked but refused: it produces no run from any
 	// entry point until it is accepted (MUL-7189 §2.3).
@@ -4596,13 +4697,14 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated := 0
+	var archiveConvergenceFailedIDs []string
 	// One Resolver for the whole batch — a per-issue filler would query the
 	// catalog once per custom-status row. (MUL-6243)
 	fillBatch := h.newStatusCategoryFiller(r.Context(), wsUUID)
-	// Children that transitioned into a terminal status this batch, collected so
-	// the parent/stage notification is evaluated once against the final state
-	// after the loop (MUL-4155) rather than per-child mid-batch.
-	var childDoneCompleted []db.Issue
+	// Parents whose sub-issues changed this batch. Their rules are evaluated
+	// once after the loop against the final state (MUL-4155), not per child
+	// against a mid-batch snapshot.
+	var changedParents []pgtype.UUID
 	for _, issueID := range req.IssueIDs {
 		issueUUID, err := util.ParseUUID(issueID)
 		if err != nil {
@@ -4755,6 +4857,41 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Restoring from archive (fork status #39) sweeps stragglers BEFORE
+		// this iteration's status write commits, detected from the REQUEST's
+		// own intent (mirrors UpdateIssue; see that handler for the full
+		// rationale). On sweep failure this issue is skipped entirely —
+		// logged and `continue`d WITHOUT applying the update, same as the
+		// per-issue update-error handling right below — so it stays archived
+		// and is not counted in `updated`, instead of going active with live
+		// stragglers underneath it.
+		if req.Updates.Status != nil && *req.Updates.Status != "archive" && prevIssue.Status == "archive" {
+			if err := h.TaskService.CancelTasksForIssue(r.Context(), prevIssue.ID); err != nil {
+				slog.Error("batch restore: cancel straggler tasks failed",
+					"issue_id", issueID, "error", err)
+				continue
+			}
+		}
+
+		// Archiving (fork status #39) first cancels in-flight tasks BEFORE this
+		// iteration's status write, mirroring UpdateIssue's early failure gate;
+		// the post-write convergence sweep below closes the late-start window.
+		// On cancel failure this issue is skipped
+		// entirely — logged and `continue`d WITHOUT applying the update, same
+		// as the restore sweep's batch branch immediately above — so it is
+		// not counted in `updated` instead of archiving over live in-flight
+		// work.
+		if req.Updates.Status != nil && *req.Updates.Status == "archive" && prevIssue.Status != "archive" {
+			if err := h.TaskService.CancelTasksForIssue(r.Context(), prevIssue.ID); err != nil {
+				slog.Error("batch archive: cancel tasks failed",
+					"issue_id", issueID, "error", err)
+				continue
+			}
+			// If the cancel succeeds but the status write then fails, the issue
+			// stays active with its tasks already cancelled — acceptable: the
+			// user was archiving, and a retry completes the transition.
+		}
+
 		var issue db.Issue
 		if req.Updates.Description != nil {
 			// One batch-level base cannot describe multiple issue documents.
@@ -4781,6 +4918,18 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Mirror UpdateIssue's post-write convergence sweep. An explicit
+		// archive retry also runs this block, allowing a caller to recover from
+		// a previous sweep failure after the status was already committed.
+		var archiveConvergenceErr error
+		if req.Updates.Status != nil && *req.Updates.Status == "archive" {
+			archiveConvergenceErr = h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
+			if archiveConvergenceErr != nil {
+				slog.Error("batch archive committed but post-write task sweep failed",
+					"issue_id", issueID, "error", archiveConvergenceErr)
+			}
+		}
+
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 		resp := issueToResponse(issue, prefix)
 		actorType, actorID := h.resolveActor(r, userID, workspaceID)
@@ -4803,8 +4952,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		})
 
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
-		// mirrors UpdateIssue. See that handler for the rationale.
-		//
+		// mirrors UpdateIssue. See that handler for the rationale. The
+		// fork-original `archive` status (#39) has two status-driven
+		// exceptions: archiving uses the pre-write failure gate plus post-write
+		// convergence sweep above, and restoring from archive sweeps straggler
+		// tasks before its status write.
+
 		// Same single predicate as UpdateIssue — batch must not grow its own
 		// copy of the enqueue rule (the historical source of four-entry-point
 		// drift, MUL-3375). suppress_run applies batch-wide.
@@ -4820,42 +4973,31 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
 		}
 
-		// No status change — not even → cancelled — cancels active tasks here,
-		// mirroring UpdateIssue (MUL-4465). See that handler for the rationale.
-
-		// Platform-driven parent notification, mirrored from UpdateIssue
-		// (MUL-2538) but DEFERRED to after the loop. Evaluating the stage
-		// barrier here, per-child, would read a mid-batch sibling snapshot and
-		// fire a stale "advance Stage N+1" wake when one batch closes several
-		// stages at once (MUL-4155). Collect the terminal transitions and let
-		// notifyParentsOfBatchChildDone below evaluate each parent once against
-		// the batch's final committed state. Same transition guard as
-		// notifyParentOfChildDone: a non-terminal -> terminal move on a child.
-		// Resolve both sides to the canonical status they inherit before the
-		// terminal test, so a batch that moves the last child onto a CUSTOM
-		// done/cancelled status still enters the stage barrier below. A literal
-		// comparison here left childDoneCompleted empty and silently skipped
-		// notifyParentsOfBatchChildDone entirely. (MUL-6243)
-		if statusChanged && issue.ParentIssueID.Valid {
-			prevTerminal := isTerminalChildStatus(
-				issuestatus.Effective(r.Context(), h.Queries, prevIssue.WorkspaceID, prevIssue.Status))
-			nowTerminal := isTerminalChildStatus(
-				issuestatus.Effective(r.Context(), h.Queries, issue.WorkspaceID, issue.Status))
-			if !prevTerminal && nowTerminal {
-				childDoneCompleted = append(childDoneCompleted, issue)
-			}
+		if statusChanged || prevIssue.ParentIssueID != issue.ParentIssueID || prevIssue.Stage != issue.Stage {
+			changedParents = append(changedParents, issue.ParentIssueID, prevIssue.ParentIssueID)
 		}
 
 		updated++
+		if archiveConvergenceErr != nil {
+			archiveConvergenceFailedIDs = append(archiveConvergenceFailedIDs, issueID)
+		}
 	}
 
-	// Aggregate parent/stage notification over the whole batch's final state so
-	// each affected parent gets at most one accurate comment + wake, independent
-	// of issue_ids order (MUL-4155). Best-effort; failure does not abort the
-	// batch. Single-issue UpdateIssue is unchanged and still notifies inline.
-	h.notifyParentsOfBatchChildDone(r.Context(), childDoneCompleted)
+	// Each write recorded its sub-issue change; processing claims them per
+	// parent, so each parent is evaluated once against the batch's final
+	// state, independent of issue_ids order (MUL-4155). A failure is retried
+	// by the sweep.
+	h.processChildEvents(r.Context(), changedParents...)
 
 	slog.Info("batch update issues", append(logger.RequestAttrs(r), "count", updated)...)
+	if len(archiveConvergenceFailedIDs) > 0 {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":                        "issues were archived but task cancellation did not converge; retry status=archive for the listed issues",
+			"updated":                      updated,
+			"convergence_failed_issue_ids": archiveConvergenceFailedIDs,
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
 }
 

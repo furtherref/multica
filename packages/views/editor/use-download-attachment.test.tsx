@@ -356,16 +356,20 @@ describe("useDownloadAttachment (web)", () => {
 });
 
 describe("useDownloadAttachment (desktop)", () => {
-  it("skips the placeholder tab and hands the signed URL to the desktop download bridge", async () => {
+  it("hands the forced-attachment url to the bridge, not the access-controlled download_url", async () => {
     const downloadURL = vi.fn();
     (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
       downloadURL,
     };
     getAttachmentMock.mockResolvedValueOnce({
       id: "att-1",
-      url: "https://static.example.test/file.md",
-      download_url: SIGNED_URL,
-      filename: "file.md",
+      url: "https://oss.example.test/workspaces/ws-1/att-1.png",
+      // download_url needs auth/workspace headers a main-process downloadURL
+      // request can't send — the bridge must use the credential-free
+      // attachment_download_url.
+      download_url: "/api/attachments/att-1/download?workspace_id=ws-1",
+      attachment_download_url: "https://oss.example.test/workspaces/ws-1/att-1.png?response-content-disposition=attachment",
+      filename: "image.png",
     });
     const openSpy = vi.spyOn(window, "open");
 
@@ -378,7 +382,58 @@ describe("useDownloadAttachment (desktop)", () => {
     // No placeholder — Electron's setWindowOpenHandler would reject
     // about:blank, so we go straight to the platform's IPC bridge.
     expect(openSpy).not.toHaveBeenCalled();
-    expect(downloadURL).toHaveBeenCalledWith(SIGNED_URL);
+    expect(downloadURL).toHaveBeenCalledWith(
+      "https://oss.example.test/workspaces/ws-1/att-1.png?response-content-disposition=attachment",
+    );
+  });
+
+  it("passes an already-absolute forced-attachment url through unchanged even with a configured API base", async () => {
+    const downloadURL = vi.fn();
+    (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
+      downloadURL,
+    };
+    getBaseUrlMock.mockReturnValue("https://api.example.test");
+    getAttachmentMock.mockResolvedValueOnce({
+      id: "att-1",
+      url: "https://oss.example.test/workspaces/ws-1/att-1.png",
+      download_url: SIGNED_URL,
+      attachment_download_url: "https://oss.example.test/workspaces/ws-1/att-1.png?response-content-disposition=attachment",
+      filename: "image.png",
+    });
+
+    const { result } = renderHook(() => useDownloadAttachment());
+
+    await act(async () => {
+      await result.current("att-1");
+    });
+
+    expect(downloadURL).toHaveBeenCalledWith(
+      "https://oss.example.test/workspaces/ws-1/att-1.png?response-content-disposition=attachment",
+    );
+  });
+
+  it("falls back to download_url (resolved against the API base) when the storage url is missing", async () => {
+    const downloadURL = vi.fn();
+    (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
+      downloadURL,
+    };
+    getBaseUrlMock.mockReturnValue("https://api.example.test");
+    getAttachmentMock.mockResolvedValueOnce({
+      id: "att-1",
+      url: "",
+      download_url: "/api/attachments/att-1/download",
+      filename: "image.png",
+    });
+
+    const { result } = renderHook(() => useDownloadAttachment());
+
+    await act(async () => {
+      await result.current("att-1");
+    });
+
+    expect(downloadURL).toHaveBeenCalledWith(
+      "https://api.example.test/api/attachments/att-1/download",
+    );
   });
 
   it("shows a toast when the API rejects on desktop", async () => {
@@ -398,40 +453,12 @@ describe("useDownloadAttachment (desktop)", () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
   });
 
-  // MUL-2976: when the backend has no CloudFront signer, `getAttachment`
-  // returns a server-relative `download_url` like `/api/attachments/.../download`.
-  // The Electron main-process `downloadURLSafely` requires a parsable
-  // http(s) URL or it drops the request — so the renderer must resolve
-  // the path against the configured API base before crossing the bridge.
-  it("resolves a server-relative download_url against the API base before handing it to the desktop bridge", async () => {
-    const downloadURL = vi.fn();
-    (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
-      downloadURL,
-    };
-    getBaseUrlMock.mockReturnValue("https://api.example.test");
-    getAttachmentMock.mockResolvedValueOnce({
-      id: "att-1",
-      url: "https://static.example.test/file.md",
-      download_url: "/api/attachments/att-1/download",
-      filename: "file.md",
-    });
-
-    const { result } = renderHook(() => useDownloadAttachment());
-
-    await act(async () => {
-      await result.current("att-1");
-    });
-
-    expect(downloadURL).toHaveBeenCalledWith(
-      "https://api.example.test/api/attachments/att-1/download",
-    );
-  });
-
-  // MUL-5292: in proxy mode the backend now answers with a capability URL —
+  // MUL-5292: in proxy mode the backend answers with a scoped capability URL —
   // still server-relative, but carrying `?exp=&sig=`. The query is what makes
   // the request authenticate itself, so it must survive the resolve step and
-  // reach the native downloader intact.
-  it("preserves the capability query when resolving a relative proxy-mode download_url", async () => {
+  // reach the native downloader intact. `attachment_download_url` is absent on
+  // a server that predates it, so this pins the `download_url` fallback path.
+  it("preserves the capability query when falling back to a relative proxy-mode download_url", async () => {
     const downloadURL = vi.fn();
     (window as unknown as { desktopAPI: { downloadURL: typeof downloadURL } }).desktopAPI = {
       downloadURL,
@@ -439,7 +466,7 @@ describe("useDownloadAttachment (desktop)", () => {
     getBaseUrlMock.mockReturnValue("https://api.example.test");
     getAttachmentMock.mockResolvedValueOnce({
       id: "att-1",
-      url: "https://static.example.test/file.md",
+      url: "",
       download_url: "/api/attachments/att-1/signed-download?exp=1800000060&sig=deadbeef",
       filename: "file.md",
     });
@@ -463,7 +490,7 @@ describe("useDownloadAttachment (desktop)", () => {
     getBaseUrlMock.mockReturnValue("https://api.example.test/");
     getAttachmentMock.mockResolvedValueOnce({
       id: "att-1",
-      url: "/api/attachments/att-1/content",
+      url: "",
       download_url: "/api/attachments/att-1/download",
       filename: "file.md",
     });

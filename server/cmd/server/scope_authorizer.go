@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -18,6 +20,10 @@ type scopeAuthQuerier interface {
 	GetAgentTask(ctx context.Context, id pgtype.UUID) (db.AgentTaskQueue, error)
 	GetIssue(ctx context.Context, id pgtype.UUID) (db.Issue, error)
 	GetChatSession(ctx context.Context, id pgtype.UUID) (db.ChatSession, error)
+	GetAgent(ctx context.Context, id pgtype.UUID) (db.Agent, error)
+	GetMemberByUserAndWorkspace(ctx context.Context, arg db.GetMemberByUserAndWorkspaceParams) (db.Member, error)
+	ListAgentInvocationTargets(ctx context.Context, agentID pgtype.UUID) ([]db.AgentInvocationTarget, error)
+	ListSystemChatAgentIDsByCreator(ctx context.Context, arg db.ListSystemChatAgentIDsByCreatorParams) ([]pgtype.UUID, error)
 }
 
 // dbScopeAuthorizer implements realtime.ScopeAuthorizer for the per-task and
@@ -62,13 +68,17 @@ func (a *dbScopeAuthorizer) AuthorizeScope(ctx context.Context, userID, workspac
 		if err != nil {
 			return scopeLookupErr(err)
 		}
-		// Issue tasks: visible to any workspace member.
+		// Every task transcript inherits the linked Agent's REST visibility gate.
+		// These lookups happen before Hub membership and never under the Hub lock.
 		if task.IssueID.Valid {
 			issue, err := a.q.GetIssue(ctx, task.IssueID)
 			if err != nil {
 				return scopeLookupErr(err)
 			}
-			return issue.WorkspaceID == wsUUID, nil
+			if issue.WorkspaceID != wsUUID {
+				return false, nil
+			}
+			return a.canViewTaskAgent(ctx, userID, wsUUID, task.AgentID)
 		}
 		// Chat tasks: only the chat session's creator may subscribe, mirroring
 		// the HTTP layer's creator-only access on chat resources.
@@ -80,11 +90,14 @@ func (a *dbScopeAuthorizer) AuthorizeScope(ctx context.Context, userID, workspac
 			if sess.WorkspaceID != wsUUID {
 				return false, nil
 			}
+			if sess.AgentID != task.AgentID {
+				return false, nil
+			}
 			uidUUID, err := util.ParseUUID(userID)
 			if err != nil || sess.CreatorID != uidUUID {
 				return false, nil
 			}
-			return true, nil
+			return a.canViewChatTaskAgent(ctx, userID, wsUUID, task.AgentID)
 		}
 		return false, nil
 	case realtime.ScopeChat:
@@ -109,4 +122,105 @@ func (a *dbScopeAuthorizer) AuthorizeScope(ctx context.Context, userID, workspac
 	default:
 		return false, nil
 	}
+}
+
+// VisibleAgentScopes returns the public REST-visible Agent population for
+// workspace rooms, plus creator-owned system Chat carriers for private user
+// rooms. Resolution happens once at connection setup, outside the Hub lock.
+func (a *dbScopeAuthorizer) VisibleAgentScopes(ctx context.Context, userID, workspaceID string) (realtime.AgentScopeVisibility, error) {
+	q, ok := a.q.(handler.AgentVisibilityQuerier)
+	if !ok {
+		return realtime.AgentScopeVisibility{}, errors.New("visible Agent query support is not configured")
+	}
+	wsUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return realtime.AgentScopeVisibility{}, err
+	}
+	userUUID, err := util.ParseUUID(userID)
+	if err != nil {
+		return realtime.AgentScopeVisibility{}, err
+	}
+	member, err := a.q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+		UserID: userUUID, WorkspaceID: wsUUID,
+	})
+	if err != nil {
+		return realtime.AgentScopeVisibility{}, err
+	}
+	allowed, err := handler.ResolveMemberVisibleAgentIDs(ctx, q, wsUUID, userID, member.Role)
+	if err != nil {
+		return realtime.AgentScopeVisibility{}, err
+	}
+	workspaceVisible := make([]string, 0, len(allowed))
+	for id := range allowed {
+		workspaceVisible = append(workspaceVisible, id)
+	}
+	sort.Strings(workspaceVisible)
+
+	userVisibleSet := make(map[string]struct{}, len(allowed))
+	for id := range allowed {
+		userVisibleSet[id] = struct{}{}
+	}
+	systemChatAgents, err := a.q.ListSystemChatAgentIDsByCreator(ctx, db.ListSystemChatAgentIDsByCreatorParams{
+		WorkspaceID: wsUUID,
+		CreatorID:   userUUID,
+	})
+	if err != nil {
+		return realtime.AgentScopeVisibility{}, err
+	}
+	for _, id := range systemChatAgents {
+		if id.Valid {
+			userVisibleSet[util.UUIDToString(id)] = struct{}{}
+		}
+	}
+	userVisible := make([]string, 0, len(userVisibleSet))
+	for id := range userVisibleSet {
+		userVisible = append(userVisible, id)
+	}
+	sort.Strings(userVisible)
+	return realtime.AgentScopeVisibility{
+		WorkspaceAgentIDs: workspaceVisible,
+		UserAgentIDs:      userVisible,
+	}, nil
+}
+
+func (a *dbScopeAuthorizer) canViewChatTaskAgent(ctx context.Context, userID string, workspaceID, agentID pgtype.UUID) (bool, error) {
+	agent, err := a.q.GetAgent(ctx, agentID)
+	if err != nil {
+		return scopeLookupErr(err)
+	}
+	if agent.WorkspaceID != workspaceID {
+		return false, nil
+	}
+	if agent.Kind == "system" {
+		return true, nil
+	}
+	return a.canViewTaskAgent(ctx, userID, workspaceID, agentID)
+}
+
+func (a *dbScopeAuthorizer) canViewTaskAgent(ctx context.Context, userID string, workspaceID, agentID pgtype.UUID) (bool, error) {
+	if !agentID.Valid {
+		return false, nil
+	}
+	userUUID, err := util.ParseUUID(userID)
+	if err != nil {
+		return false, nil
+	}
+	agent, err := a.q.GetAgent(ctx, agentID)
+	if err != nil {
+		return scopeLookupErr(err)
+	}
+	if agent.WorkspaceID != workspaceID {
+		return false, nil
+	}
+	member, err := a.q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+		UserID: userUUID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return scopeLookupErr(err)
+	}
+	targets, err := a.q.ListAgentInvocationTargets(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	return handler.MemberAllowedToViewAgent(agent, targets, userID, member.Role), nil
 }

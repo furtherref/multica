@@ -1,6 +1,7 @@
-import type { IssueWakeup, IssueWakeupSummaryRow } from "../types/issue-wakeup";
+import type { ZodType } from "zod";
+import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters } from "../types/issue-wakeup";
-import { WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema } from "./schemas";
+import { WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema } from "./schemas";
 import type { InboxFilters } from "../inbox/filter-store";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
 import { configStore } from "../config";
@@ -15,6 +16,9 @@ import type {
   ListIssuesResponse,
   SearchIssuesResponse,
   SearchProjectsResponse,
+  SearchIndexManifest,
+  SearchIndexSnapshotPage,
+  SearchIndexChanges,
   UpdateMeRequest,
   CreateMemberRequest,
   UpdateMemberRequest,
@@ -65,15 +69,22 @@ import type {
   CreateSkillRequest,
   UpdateSkillRequest,
   SetAgentSkillsRequest,
+  IssueTemplate,
+  IssueTemplateSummary,
+  CreateIssueTemplateRequest,
+  UpdateIssueTemplateRequest,
   SetAgentRuntimeSkillEnabledRequest,
   PersonalAccessToken,
   CreatePersonalAccessTokenRequest,
   CreatePersonalAccessTokenResponse,
   RuntimeUsage,
+  RuntimeUsageCoverage,
   IssueUsageSummary,
   RuntimeHourlyActivity,
   RuntimeUsageByAgent,
   RuntimeUsageByHour,
+  RuntimeCostBudget,
+  RuntimeCostBudgetInput,
   DashboardUsageDaily,
   DashboardUsageByAgent,
   DashboardAgentRunTime,
@@ -212,6 +223,7 @@ import type {
   CreateBillingCheckoutSessionResponse,
   BillingCheckoutSessionStatus,
   CreateBillingPortalSessionResponse,
+  OfficeConfig,
   WorkspaceSubscriptionSummary,
   IssueLimitUsage,
   WorkspaceSubscriptionPrices,
@@ -243,10 +255,19 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
+import { ACCOUNT_SUSPENDED_CODE } from "../auth/utils";
+import {
+  adminUserListSchema,
+  adminUserSchema,
+  EMPTY_ADMIN_USER,
+  type AdminAccountStatusFilter,
+  type AdminUser,
+} from "../admin/schema";
 import {
   RuntimeProfileSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
+  AgentTaskPageSchema,
   AgentActivityBucketListSchema,
   AttachmentResponseSchema,
   CancelTaskResponseSchema,
@@ -329,8 +350,14 @@ import {
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
+  RuntimeUsageCoverageListSchema,
+  RuntimeCostBudgetSchema,
+  EMPTY_RUNTIME_COST_BUDGET,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
+  SearchIndexManifestSchema,
+  SearchIndexSnapshotPageSchema,
+  SearchIndexChangesSchema,
   SquadSchema,
   SquadListSchema,
   SquadMemberStatusListResponseSchema,
@@ -347,6 +374,7 @@ import {
   CreateBillingCheckoutSessionResponseSchema,
   BillingCheckoutSessionStatusSchema,
   CreateBillingPortalSessionResponseSchema,
+  OfficeConfigResponseSchema,
   WorkspaceSubscriptionSummarySchema,
   IssueLimitUsageSchema,
   WorkspaceSubscriptionPricesSchema,
@@ -384,6 +412,7 @@ import {
   EMPTY_BILLING_CHECKOUT_SESSION_STATUS,
   EMPTY_CREATE_BILLING_PORTAL_SESSION_RESPONSE,
   EMPTY_CANCEL_TASK_RESPONSE,
+  EMPTY_OFFICE_CONFIG,
   EMPTY_CHAT_DRAFT_RESTORES,
   CreateFeedbackResponseSchema,
   EMPTY_CREATE_FEEDBACK_RESPONSE,
@@ -468,6 +497,12 @@ import {
   type IssueViewPreference,
   type CreateIssueViewRequest,
 } from "./schemas";
+import {
+  EMPTY_ISSUE_TEMPLATE_DETAIL,
+  EMPTY_ISSUE_TEMPLATE_SUMMARY_LIST,
+  IssueTemplateDetailSchema,
+  IssueTemplateSummaryListSchema,
+} from "../issue-templates/schemas";
 
 /** Identifies the calling client to the server.
  *  Sent on every HTTP request as X-Client-Platform / X-Client-Version /
@@ -485,6 +520,15 @@ export interface ApiClientIdentity {
 export interface ApiClientOptions {
   logger?: Logger;
   onUnauthorized?: () => void;
+  /**
+   * Fires whenever the server rejects the caller's session outright:
+   * `"unauthorized"` on a 401 (alongside the existing `onUnauthorized`,
+   * kept for back-compat) and `"account_suspended"` on a 403 whose body
+   * carries `code === ACCOUNT_SUSPENDED_CODE`. A plain 403 (permission
+   * denied on an otherwise-valid session) does NOT fire this — only a
+   * rejection of the session itself does.
+   */
+  onSessionRejected?: (reason: "unauthorized" | "account_suspended") => void;
   /** Identifies the client to the server. Sent as X-Client-* headers. */
   identity?: ApiClientIdentity;
   /**
@@ -517,6 +561,12 @@ export interface ClientUsageRequest {
 export interface LoginResponse {
   token: string;
   user: User;
+}
+
+function parseSearchIndexResponse<T>(raw: unknown, schema: ZodType, endpoint: string): T {
+  const parsed = parseWithFallback<T | null>(raw, schema, null, { endpoint });
+  if (parsed === null) throw new Error(`Malformed response from ${endpoint}`);
+  return parsed;
 }
 
 export class ApiError extends Error {
@@ -846,16 +896,23 @@ export class ApiClient {
     // to /login which leaves the workspace route, and the next workspace
     // entry will overwrite the id. No clear needed here.
     this.options.onUnauthorized?.();
+    this.options.onSessionRejected?.("unauthorized");
   }
 
-  private async parseErrorMessage(res: Response, fallback: string): Promise<string> {
-    try {
-      const data = await res.json() as { error?: string };
-      if (typeof data.error === "string" && data.error) return data.error;
-    } catch {
-      // Ignore non-JSON error bodies.
+  // Distinct from handleUnauthorized: a suspended account gets a 403 (the
+  // session is valid, but the server refuses to act on its behalf), not a
+  // 401. Clears the token the same way so the next request doesn't retry
+  // with dead credentials.
+  private handleAccountSuspended(credentialUsed: string | null) {
+    // Same stale-response guard as handleUnauthorized: a refusal of a
+    // credential this client has since replaced says nothing about the
+    // current one.
+    if (credentialUsed !== null && this.getToken() !== credentialUsed) {
+      this.logger.info("ignoring account-suspended 403 for a credential that has since been replaced");
+      return;
     }
-    return fallback;
+    this.token = null;
+    this.options.onSessionRejected?.("account_suspended");
   }
 
   // Reads the response body once for both human-readable error message and
@@ -932,8 +989,20 @@ export class ApiClient {
     }
 
     if (!res.ok) {
-      if (res.status === 401) this.handleUnauthorized(credentialUsed);
+      // Parse the body FIRST — the 403 branch needs `body.code` to tell an
+      // account-suspension rejection apart from an ordinary permission
+      // denial, and the body stream can only be read once.
       const { message, body } = await this.parseErrorBody(res, `API error: ${res.status} ${res.statusText}`);
+      if (res.status === 401) {
+        this.handleUnauthorized(credentialUsed);
+      } else if (
+        res.status === 403 &&
+        body &&
+        typeof body === "object" &&
+        (body as { code?: unknown }).code === ACCOUNT_SUSPENDED_CODE
+      ) {
+        this.handleAccountSuspended(credentialUsed);
+      }
       const logLevel = res.status === 404 ? "warn" : "error";
       this.logger[logLevel](`← ${res.status} ${path}`, { rid, duration: `${Date.now() - start}ms`, error: message });
       throw new ApiError(message, res.status, res.statusText, body);
@@ -1010,6 +1079,30 @@ export class ApiClient {
     const raw = await this.fetch<unknown>("/api/me");
     return parseWithFallback(raw, UserSchema, EMPTY_USER, {
       endpoint: "GET /api/me",
+    });
+  }
+
+  // System-admin user management (GET /api/admin/users, PATCH
+  // /api/admin/users/{id}/status). Reachable only when `getMe().is_system_admin
+  // === true`; the server 403s (ordinary permission denial, not
+  // ACCOUNT_SUSPENDED) for everyone else.
+  async getAdminUsers(status: AdminAccountStatusFilter): Promise<AdminUser[]> {
+    const raw = await this.fetch<unknown>(`/api/admin/users?status=${status}`);
+    return parseWithFallback(raw, adminUserListSchema, { users: [] }, {
+      endpoint: "GET /api/admin/users",
+    }).users ?? [];
+  }
+
+  async setUserAccountStatus(
+    userId: string,
+    status: "active" | "suspended",
+  ): Promise<AdminUser> {
+    const raw = await this.fetch<unknown>(`/api/admin/users/${userId}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+    return parseWithFallback(raw, adminUserSchema, EMPTY_ADMIN_USER, {
+      endpoint: "PATCH /api/admin/users/:id/status",
     });
   }
 
@@ -1235,6 +1328,48 @@ export class ApiClient {
     });
   }
 
+  // Local search index sync (MUL-7754). Each call names its workspace so a
+  // request issued for one workspace cannot be answered for whichever one the
+  // tab has switched to since. A body that fails its schema rejects rather
+  // than degrading: an empty page would be applied to the local copy as truth.
+  async getSearchIndexManifest(params: { workspaceSlug: string; signal?: AbortSignal }): Promise<SearchIndexManifest> {
+    const raw = await this.fetch<unknown>("/api/search-index/manifest", {
+      headers: { "X-Workspace-Slug": params.workspaceSlug },
+      signal: params.signal,
+    });
+    return parseSearchIndexResponse<SearchIndexManifest>(raw, SearchIndexManifestSchema, "GET /api/search-index/manifest");
+  }
+
+  async getSearchIndexSnapshot(params: {
+    workspaceSlug: string;
+    afterNumber: number;
+    limit?: number;
+    signal?: AbortSignal;
+  }): Promise<SearchIndexSnapshotPage> {
+    const search = new URLSearchParams({ after_number: String(params.afterNumber) });
+    if (params.limit !== undefined) search.set("limit", String(params.limit));
+    const raw = await this.fetch<unknown>(`/api/search-index/snapshot?${search}`, {
+      headers: { "X-Workspace-Slug": params.workspaceSlug },
+      signal: params.signal,
+    });
+    return parseSearchIndexResponse<SearchIndexSnapshotPage>(raw, SearchIndexSnapshotPageSchema, "GET /api/search-index/snapshot");
+  }
+
+  async getSearchIndexChanges(params: {
+    workspaceSlug: string;
+    cursor: string;
+    limit?: number;
+    signal?: AbortSignal;
+  }): Promise<SearchIndexChanges> {
+    const raw = await this.fetch<unknown>("/api/search-index/changes", {
+      method: "POST",
+      headers: { "X-Workspace-Slug": params.workspaceSlug },
+      body: JSON.stringify({ cursor: params.cursor, limit: params.limit }),
+      signal: params.signal,
+    });
+    return parseSearchIndexResponse<SearchIndexChanges>(raw, SearchIndexChangesSchema, "POST /api/search-index/changes");
+  }
+
   /**
    * Fetch one issue by UUID **or** by bare identifier ("MUL-123"): the server
    * resolves `PREFIX-NUMBER` against the workspace's own prefix through the
@@ -1280,6 +1415,52 @@ export class ApiClient {
 
   async editIssueWakeupInstruction(issueId: string, wakeupId: string, input: { instruction: string; expected_instruction: string; revision: number }): Promise<void> {
     await this.fetch(`/api/issues/${encodeURIComponent(issueId)}/wakeups/${encodeURIComponent(wakeupId)}/instruction`, { method: "PATCH", body: JSON.stringify(input) });
+  }
+
+  async createIssueWakeup(issueId: string, input: IssueWakeupInput): Promise<void> {
+    await this.fetch(`/api/issues/${encodeURIComponent(issueId)}/wakeups`, { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async listIssueSystemWakeups(issueId: string): Promise<SystemWakeup[]> {
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/system-wakeups`);
+    const parsed = parseWithFallback<SystemWakeup[] | null>(raw, SystemWakeupSchema.array(), null, { endpoint: "GET /api/issues/:id/system-wakeups" });
+    if (!parsed) throw new Error("Could not load system wakeups");
+    return parsed;
+  }
+
+  async listIssueWakeupRuns(issueId: string, wakeupId: string): Promise<WakeupRun[]> {
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/wakeups/${encodeURIComponent(wakeupId)}/runs`);
+    const parsed = parseWithFallback<WakeupRun[] | null>(raw, WakeupRunSchema.array(), null, { endpoint: "GET /api/issues/:id/wakeups/:wakeupId/runs" });
+    if (!parsed) throw new Error("Could not load wakeup runs");
+    return parsed;
+  }
+
+  async listPausedWakeups(): Promise<PausedWakeup[]> {
+    const raw = await this.fetch<unknown>("/api/issue-wakeup-paused");
+    return parseWithFallback<PausedWakeup[]>(raw, PausedWakeupSchema.array(), [], { endpoint: "GET /api/issue-wakeup-paused" });
+  }
+
+  async triggerIssueWakeup(issueId: string, wakeupId: string): Promise<void> {
+    await this.fetch(`/api/issues/${encodeURIComponent(issueId)}/wakeups/${encodeURIComponent(wakeupId)}/trigger`, { method: "POST" });
+  }
+
+  async deleteIssueWakeup(issueId: string, wakeupId: string): Promise<void> {
+    await this.fetch(`/api/issues/${encodeURIComponent(issueId)}/wakeups/${encodeURIComponent(wakeupId)}`, { method: "DELETE" });
+  }
+
+  async updateIssueSystemWakeup(issueId: string, rule: SystemWakeup["rule"], input: { enabled?: boolean; instruction?: string }): Promise<void> {
+    await this.fetch(`/api/issues/${encodeURIComponent(issueId)}/system-wakeups/${encodeURIComponent(rule)}`, { method: "PUT", body: JSON.stringify(input) });
+  }
+
+  async listWorkspaceSystemWakeups(): Promise<WorkspaceSystemWakeup[]> {
+    const raw = await this.fetch<unknown>("/api/system-wakeups");
+    const parsed = parseWithFallback<WorkspaceSystemWakeup[] | null>(raw, WorkspaceSystemWakeupSchema.array(), null, { endpoint: "GET /api/system-wakeups" });
+    if (!parsed) throw new Error("Could not load system wakeups");
+    return parsed;
+  }
+
+  async updateWorkspaceSystemWakeup(rule: WorkspaceSystemWakeup["rule"], input: { enabled?: boolean; instruction?: string }): Promise<void> {
+    await this.fetch(`/api/system-wakeups/${encodeURIComponent(rule)}`, { method: "PUT", body: JSON.stringify(input) });
   }
 
   async disableIssueWakeup(issueId: string, wakeupId: string): Promise<void> {
@@ -1541,6 +1722,7 @@ export class ApiClient {
     parentId?: string,
     attachmentIds?: string[],
     suppressAgentIds?: string[],
+    steerTaskIds?: string[],
   ): Promise<Comment> {
     return this.fetch(`/api/issues/${issueId}/comments`, {
       method: "POST",
@@ -1550,6 +1732,7 @@ export class ApiClient {
         ...(parentId ? { parent_id: parentId } : {}),
         ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
         ...(suppressAgentIds?.length ? { suppress_agent_ids: suppressAgentIds } : {}),
+        ...(steerTaskIds?.length ? { steer_task_ids: steerTaskIds } : {}),
       }),
     });
   }
@@ -2361,6 +2544,24 @@ export class ApiClient {
     });
   }
 
+  async getRuntimeUsageCoverage(
+    runtimeId: string,
+    params?: { days?: number; tz?: string },
+  ): Promise<RuntimeUsageCoverage[]> {
+    const search = new URLSearchParams();
+    if (params?.days) search.set("days", String(params.days));
+    if (params?.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/usage/coverage?${search}`,
+    );
+    return parseWithFallback<RuntimeUsageCoverage[]>(
+      raw,
+      RuntimeUsageCoverageListSchema,
+      [],
+      { endpoint: "GET /api/runtimes/:id/usage/coverage" },
+    );
+  }
+
   async getRuntimeTaskActivity(
     runtimeId: string,
     params?: { tz?: string },
@@ -2414,6 +2615,36 @@ export class ApiClient {
       [],
       { endpoint: "GET /api/runtimes/:id/usage/by-hour" },
     );
+  }
+
+  async getRuntimeCostBudget(runtimeId: string): Promise<RuntimeCostBudget> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/budget`);
+    return parseWithFallback<RuntimeCostBudget>(raw, RuntimeCostBudgetSchema, EMPTY_RUNTIME_COST_BUDGET, {
+      endpoint: "GET /api/runtimes/:id/budget",
+    });
+  }
+
+  // Full replace: scopes missing from `input` are removed server-side.
+  //
+  // The write is workspace governance, but the echoed body is runtime data: an
+  // admin writing a budget on another member's PRIVATE runtime may not read its
+  // spend, so the server saves the budget and answers 204 with no body rather
+  // than handing back figures GET would refuse. `this.fetch` maps 204 to
+  // undefined (same as `deleteRuntime`), so answer the empty budget — the
+  // mutation invalidates the budget query and the refetch renders whatever this
+  // caller is actually allowed to see.
+  async updateRuntimeCostBudget(
+    runtimeId: string,
+    input: RuntimeCostBudgetInput,
+  ): Promise<RuntimeCostBudget> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/budget`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    });
+    if (raw === undefined || raw === null) return EMPTY_RUNTIME_COST_BUDGET;
+    return parseWithFallback<RuntimeCostBudget>(raw, RuntimeCostBudgetSchema, EMPTY_RUNTIME_COST_BUDGET, {
+      endpoint: "PUT /api/runtimes/:id/budget",
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -2617,11 +2848,22 @@ export class ApiClient {
     return this.fetch(`/api/runtimes/${runtimeId}/local-skills/import/${requestId}`);
   }
 
-  async listAgentTasks(agentId: string): Promise<AgentTask[]> {
-    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/tasks`);
-    return parseWithFallback<AgentTask[]>(raw, AgentTaskListSchema, [], {
-      endpoint: "GET /api/agents/:id/tasks",
+  async listAgentTasksPage(
+    agentId: string,
+    options: { limit?: number; before?: string; signal?: AbortSignal } = {},
+  ): Promise<{ tasks: AgentTask[]; nextCursor: string | null }> {
+    const search = new URLSearchParams({ limit: String(options.limit ?? 200) });
+    if (options.before) search.set("before", options.before);
+    const response = await this.fetchRaw(`/api/agents/${agentId}/tasks?${search}`, {
+      signal: options.signal,
     });
+    const tasks: unknown = await response.json();
+    return parseWithFallback(
+      { tasks, nextCursor: response.headers.get("X-Agent-Tasks-Next-Cursor") },
+      AgentTaskPageSchema,
+      { tasks: [], nextCursor: null },
+      { endpoint: "GET /api/agents/:id/tasks" },
+    );
   }
 
   // Workspace-scoped agent task snapshot: every active task
@@ -2690,18 +2932,6 @@ export class ApiClient {
     return parseWithFallback<AgentTask[]>(raw, AgentTaskListSchema, [], {
       endpoint: "GET /api/issues/:id/task-runs",
     });
-  }
-
-  async createTaskSupplement(issueId: string, taskId: string, content: string, clientRequestId: string): Promise<Comment> {
-    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/tasks/${taskId}/supplements`, {
-      method: "POST",
-      body: JSON.stringify({ content, client_request_id: clientRequestId }),
-    });
-    const comment = parseWithFallback<Comment>(raw, CommentSchema, EMPTY_COMMENT, {
-      endpoint: "POST /api/issues/:id/tasks/:taskId/supplements",
-    });
-    if (!comment.id) throw new Error("Invalid additional-message response");
-    return comment;
   }
 
   async retryTaskSupplement(issueId: string, taskId: string, commentId: string): Promise<void> {
@@ -3057,8 +3287,21 @@ export class ApiClient {
       credentials: "include",
     });
     if (!res.ok) {
-      if (res.status === 401) this.handleUnauthorized(credentialUsed);
-      throw new Error(await this.parseErrorMessage(res, `Publishing failed: ${res.status}`));
+      // Same shape as uploadFile: this path bypasses `this.fetch`, so it has to
+      // run the session guards itself — including the fork's suspended-account
+      // 403, which is a valid session the server refuses to act for.
+      const { message, body } = await this.parseErrorBody(res, `Publishing failed: ${res.status}`);
+      if (res.status === 401) {
+        this.handleUnauthorized(credentialUsed);
+      } else if (
+        res.status === 403 &&
+        body &&
+        typeof body === "object" &&
+        (body as { code?: unknown }).code === ACCOUNT_SUSPENDED_CODE
+      ) {
+        this.handleAccountSuspended(credentialUsed);
+      }
+      throw new Error(message);
     }
     const raw = (await res.json()) as unknown;
     return parseWithFallback(raw, PluginPackageSchema, EMPTY_PLUGIN_PACKAGE, {
@@ -3452,6 +3695,45 @@ export class ApiClient {
     });
   }
 
+  // Issue templates
+  async listIssueTemplates(): Promise<IssueTemplateSummary[]> {
+    const raw = await this.fetch("/api/issue-templates");
+    return parseWithFallback(raw, IssueTemplateSummaryListSchema, EMPTY_ISSUE_TEMPLATE_SUMMARY_LIST, {
+      endpoint: "listIssueTemplates",
+    });
+  }
+
+  async getIssueTemplate(id: string): Promise<IssueTemplate> {
+    const raw = await this.fetch(`/api/issue-templates/${id}`);
+    return parseWithFallback(raw, IssueTemplateDetailSchema, EMPTY_ISSUE_TEMPLATE_DETAIL, {
+      endpoint: "getIssueTemplate",
+    });
+  }
+
+  async createIssueTemplate(data: CreateIssueTemplateRequest): Promise<IssueTemplate> {
+    const raw = await this.fetch("/api/issue-templates", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, IssueTemplateDetailSchema, EMPTY_ISSUE_TEMPLATE_DETAIL, {
+      endpoint: "createIssueTemplate",
+    });
+  }
+
+  async updateIssueTemplate(id: string, data: UpdateIssueTemplateRequest): Promise<IssueTemplate> {
+    const raw = await this.fetch(`/api/issue-templates/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, IssueTemplateDetailSchema, EMPTY_ISSUE_TEMPLATE_DETAIL, {
+      endpoint: "updateIssueTemplate",
+    });
+  }
+
+  async deleteIssueTemplate(id: string): Promise<void> {
+    await this.fetch(`/api/issue-templates/${id}`, { method: "DELETE" });
+  }
+
   // Incremental attach: POST /skills/add only inserts the given ids (the
   // server upserts with ON CONFLICT DO NOTHING), so callers don't need to
   // read the agent's current skill set first.
@@ -3531,8 +3813,17 @@ export class ApiClient {
     });
 
     if (!res.ok) {
-      if (res.status === 401) this.handleUnauthorized(credentialUsed);
-      const message = await this.parseErrorMessage(res, `Upload failed: ${res.status}`);
+      const { message, body } = await this.parseErrorBody(res, `Upload failed: ${res.status}`);
+      if (res.status === 401) {
+        this.handleUnauthorized(credentialUsed);
+      } else if (
+        res.status === 403 &&
+        body &&
+        typeof body === "object" &&
+        (body as { code?: unknown }).code === ACCOUNT_SUSPENDED_CODE
+      ) {
+        this.handleAccountSuspended(credentialUsed);
+      }
       this.logger.error(`← ${res.status} /api/upload-file`, { rid, duration: `${Date.now() - start}ms`, error: message });
       throw new Error(message);
     }
@@ -3878,6 +4169,13 @@ export class ApiClient {
       text: await res.text(),
       originalContentType: res.headers.get("X-Original-Content-Type") ?? "",
     };
+  }
+
+  async getOfficeConfig(id: string): Promise<OfficeConfig> {
+    const raw = await this.fetch<unknown>(`/api/attachments/${id}/office-config`);
+    return parseWithFallback(raw, OfficeConfigResponseSchema, EMPTY_OFFICE_CONFIG, {
+      endpoint: "GET /api/attachments/{id}/office-config",
+    });
   }
 
   // Fetches the raw bytes of an attachment through the unified download

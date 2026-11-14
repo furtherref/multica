@@ -59,6 +59,7 @@ export function IssuesPage() {
   const { t } = useT("issues");
   const scope = useIssuesScope("issues");
 
+
   return (
     <div className="flex flex-1 min-h-0 flex-col">
       <IssueSurface

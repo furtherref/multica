@@ -22,7 +22,12 @@ const PENDING: Decision = deny("unknown", "");
  * workspace-aware hooks.
  *
  * Resource = `null` collapses every Decision to a denied "unknown" — keeps
- * callers branch-free during loading.
+ * callers branch-free during loading. The same collapse happens while the
+ * member list is still on its *initial* fetch (`isLoading` from React Query
+ * is `isPending && isFetching`, so background refetches never flip it):
+ * without it, a not-yet-loaded role reads as `null` and an admin who isn't
+ * the resource owner gets a hard deny flashed at them during load. Callers
+ * that need to distinguish "denied" from "still resolving" read `isLoading`.
  *
  * `canArchive` / `canRestore` / `canManage` are deliberately not exposed:
  * the backend gates them identically to `canEdit`, so callers can use
@@ -58,14 +63,16 @@ export function useSkillPermissions(
 ): {
   canEdit: Decision;
   canDelete: Decision;
+  isLoading: boolean;
 } {
-  const { userId, role } = useCurrentMember(wsId);
+  const { userId, role, isLoading } = useCurrentMember(wsId);
   const ctx = { userId, role };
-  if (skill === null) {
-    return { canEdit: PENDING, canDelete: PENDING };
+  if (skill === null || isLoading) {
+    return { canEdit: PENDING, canDelete: PENDING, isLoading };
   }
   return {
     canEdit: canEditSkill(skill, ctx),
     canDelete: canDeleteSkill(skill, ctx),
+    isLoading,
   };
 }

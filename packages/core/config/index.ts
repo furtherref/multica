@@ -15,6 +15,10 @@ interface ConfigState {
   // must be hidden. Defaults to false so unknown / older servers behave like
   // the managed-cloud case.
   workspaceCreationDisabled: boolean;
+  // True only when the server has a fully configured OnlyOffice Document
+  // Server. Defaults to false so unknown / older servers — and forks deployed
+  // without OnlyOffice — hide the office-attachment preview Eye.
+  officePreviewEnabled: boolean;
   // Self-host-only gate for the Git provider integration (Forgejo / Gitea /
   // GitLab). When false the whole Settings → Integrations "Git providers"
   // section is hidden. Defaults to false so unknown / older servers and the
@@ -48,6 +52,7 @@ interface ConfigState {
     allowSignup: boolean;
     googleClientId?: string;
     workspaceCreationDisabled?: boolean;
+    officePreviewEnabled?: boolean;
     vcsIntegrationAvailable?: boolean;
   }) => void;
   setDaemonConfig: (config: {
@@ -70,6 +75,7 @@ export const configStore = createStore<ConfigState>((set) => ({
   daemonServerUrl: "",
   daemonAppUrl: "",
   workspaceCreationDisabled: false,
+  officePreviewEnabled: false,
   vcsIntegrationAvailable: false,
   featureFlags: {},
   serverVersion: "",
@@ -82,8 +88,16 @@ export const configStore = createStore<ConfigState>((set) => ({
     allowSignup,
     googleClientId = "",
     workspaceCreationDisabled = false,
+    officePreviewEnabled = false,
     vcsIntegrationAvailable = false,
-  }) => set({ allowSignup, googleClientId, workspaceCreationDisabled, vcsIntegrationAvailable }),
+  }) =>
+    set({
+      allowSignup,
+      googleClientId,
+      workspaceCreationDisabled,
+      officePreviewEnabled,
+      vcsIntegrationAvailable,
+    }),
   setDaemonConfig: ({ daemonServerUrl = "", daemonAppUrl = "" }) =>
     set({ daemonServerUrl, daemonAppUrl }),
   setFeatureFlags: (flags = {}) => set({ featureFlags: { ...flags } }),

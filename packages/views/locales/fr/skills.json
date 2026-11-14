@@ -62,7 +62,8 @@
     "source_runtime_unknown": "Depuis un runtime",
     "source_clawhub": "Depuis ClawHub",
     "source_skills_sh": "Depuis Skills.sh",
-    "source_github": "Depuis GitHub"
+    "source_github": "Depuis GitHub",
+    "source_upload": "Téléversé"
   },
   "actions": {
     "row_menu": "Actions",
@@ -120,11 +121,17 @@
     "sort_by": "Trier par",
     "direction_asc": "Croissant",
     "direction_desc": "Décroissant",
-    "section_columns": "Colonnes"
+    "section_columns": "Colonnes",
+    "manage_labels": "Gérer les étiquettes...",
+    "manage_labels_title": "Étiquettes des skills"
   },
   "detail": {
     "all_skills": "Tous les skills",
     "read_only": "Lecture seule",
+    "download_aria": "Télécharger le skill au format zip",
+    "download_tooltip": "Télécharger en .zip",
+    "download_tooltip_dirty": "Enregistrez les modifications avant de télécharger",
+    "download_collision_error": "Téléchargement bloqué : certains fichiers annexes ont des chemins en conflit. Corrigez les chemins des fichiers avant d'exporter.",
     "delete_aria": "Supprimer le skill",
     "delete_tooltip": "Supprimer le skill",
     "supporting_data_warning": "Certaines données de l'espace de travail n'ont pas pu être chargées. L'attribution des créateurs, les noms de runtimes ou les droits de modification peuvent apparaître incomplets jusqu'à la prochaine actualisation.",
@@ -270,6 +277,10 @@
       "runtime": {
         "title": "Copier depuis un runtime",
         "desc": "Partagez un skill installé sur votre runtime local."
+      },
+      "upload": {
+        "title": "Téléverser un fichier",
+        "desc": "Importez un skill depuis un dossier local ou une archive zip contenant SKILL.md."
       }
     },
     "manual": {
@@ -315,6 +326,42 @@
       "fallback_error": "Échec de l'importation",
       "cancel": "Annuler",
       "toast_imported": "Skill importé"
+    },
+    "upload": {
+      "drop_zone": "Déposez un fichier .zip ici",
+      "drop_zone_active": "Déposez ici",
+      "or": "ou",
+      "browse_zip": "Choisir un fichier .zip",
+      "browse_folder": "Choisir un dossier",
+      "parsing": "Analyse…",
+      "parsed_name": "Nom",
+      "parsed_description": "Description",
+      "parsed_files": "{{count}} fichiers annexes",
+      "no_description": "Aucune description",
+      "change_file": "Changer de fichier",
+      "error_skill_md_not_found_zip": "SKILL.md introuvable dans l'archive.",
+      "error_skill_md_not_found_folder": "SKILL.md introuvable dans le dossier sélectionné.",
+      "error_skill_md_too_large": "SKILL.md dépasse la limite de taille de 1 Mio.",
+      "error_skill_md_ambiguous_folder": "Plusieurs fichiers SKILL.md trouvés au même niveau. Sélectionnez un dossier ne contenant qu'un seul skill.",
+      "error_drop_zip_only": "Déposez un fichier .zip, ou utilisez le sélecteur de dossier ci-dessous.",
+      "truncated_warning": "Certains fichiers ont été ignorés car ils dépassent les limites de taille ou de nombre. L'import est désactivé pour les paquets incomplets.",
+      "binary_skipped_warning": "{{count}} fichier(s) binaire(s) ignoré(s) (images, PDF, etc.). Seuls les fichiers texte sont importés.",
+      "error_name_conflict": "Un skill portant ce nom existe déjà. Essayez un autre nom et soumettez à nouveau.",
+      "fallback_error": "Échec de la création du skill.",
+      "cancel": "Annuler",
+      "submit": "Créer le skill",
+      "submitting": "Création…",
+      "toast_created": "Skill téléversé",
+      "select_all": "Tout sélectionner ({{count}})",
+      "bulk_import_button": "Importer {{count}} skills",
+      "bulk_progress": "Import {{completed}} / {{total}}…",
+      "bulk_cancel": "Annuler",
+      "bulk_complete_hint": "Import terminé.",
+      "bulk_cancelled_hint": "Import annulé.",
+      "bulk_done": "Terminé",
+      "bulk_summary_imported": "Importés",
+      "bulk_summary_skipped": "Ignorés",
+      "bulk_summary_failed": "Échecs"
     }
   },
   "runtime_import": {

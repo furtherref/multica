@@ -40,13 +40,8 @@ const (
 	// brief names the merged `multica-platform` skill instead of the
 	// per-domain built-ins it replaced (MUL-6986).
 	//
-	// The brief is assembled by the daemon, so a backend upgrade does not
-	// rewrite it: a daemon released before that merge still tells the agent to
-	// "read the `multica-working-on-issues` skill", a name this server no
-	// longer ships. Without this gate the pointer dangles and the agent is left
-	// hunting for a skill that is not installed. When it is absent the server
-	// ships a redirect stub under the old name; when it is present it ships
-	// nothing extra, so the stub retires itself as daemons update.
+	// Retained as an advertised capability after the legacy redirect stub was
+	// retired (MUL-7052); the server no longer gates built-in skills on it.
 	DaemonCapabilityPlatformSkillV1 = "platform-skill-v1"
 
 	// DaemonCapabilityCheckoutKeepsWorkV1 advertises that the daemon's
@@ -61,6 +56,11 @@ const (
 	// work, so such a daemon keeps getting a fresh directory and the parent's
 	// stays untouched on disk.
 	DaemonCapabilityCheckoutKeepsWorkV1 = "checkout-keeps-work-v1"
+	// DaemonCapabilityJoinedWakeupsV1 advertises that the daemon renders the
+	// claim's wakeup_joined field into the prompt. Only such a claim takes
+	// along the inputs of wakeup rules that waited for this run; for any other
+	// daemon those rules keep their inputs and start a run of their own.
+	DaemonCapabilityJoinedWakeupsV1 = "joined-wakeups-v1"
 	// DaemonCapabilityTaskSupplementV1 advertises that this provider run can accept
 	// an additional text instruction without cancelling or starting a task.
 	// It is persisted when this exact task enters running; absence always means
@@ -175,6 +175,17 @@ type PendingWorkPayload struct {
 	Kind      string `json:"kind,omitempty"`
 }
 
+// RuntimesRevokedPayload carries the runtime IDs whose daemon connections
+// must be severed after an account suspension. Server-internal (relay only);
+// never delivered to daemons.
+type RuntimesRevokedPayload struct {
+	RuntimeIDs []string `json:"runtime_ids"`
+	// IssuedAt (RFC3339) anchors the consumer-side replay gate: frames
+	// issued before a node's daemon hub started are relay replays and are
+	// dropped there.
+	IssuedAt string `json:"issued_at"`
+}
+
 // TaskProgressPayload is sent from daemon to server during task execution.
 type TaskProgressPayload struct {
 	TaskID  string `json:"task_id"`
@@ -226,6 +237,22 @@ type TaskMessagePayload struct {
 	// present as unknown rather than as complete.
 	OutputTruncated *bool  `json:"output_truncated,omitempty"`
 	CreatedAt       string `json:"created_at,omitempty"`
+}
+
+// TaskActivityPayload is a transient hint about what a running task is doing
+// right now (e.g. reconnecting to the model upstream). Unlike
+// TaskMessagePayload it is never written to the task transcript — it updates
+// an in-place indicator and is superseded by the next real task message.
+type TaskActivityPayload struct {
+	TaskID   string `json:"task_id"`
+	IssueID  string `json:"issue_id,omitempty"`
+	Activity string `json:"activity"` // e.g. "reconnecting"
+	// AfterSeq is the task's message-sequence frontier when this hint was
+	// emitted. The frontend ignores the hint if it has already seen a message
+	// past this seq — the activity POST is async and can be reordered behind a
+	// later (batched) task:message, which would otherwise wrongly re-show
+	// "Reconnecting" after a real message already superseded it.
+	AfterSeq int `json:"after_seq"`
 }
 
 // DaemonRegisterPayload is sent from daemon to server on connection.

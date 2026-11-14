@@ -61,7 +61,9 @@ function entry(overrides: Partial<IssueStatusEntry>): IssueStatusEntry {
 }
 
 /** What the server seeds every workspace with: seven concrete built-ins. */
-const BUILT_INS = BUILT_IN_STATUS_ORDER.map((key) =>
+// The server seeds catalog rows for the seven built-ins only; the fork's
+// `archive` key never has one.
+const BUILT_INS = BUILT_IN_STATUS_ORDER.filter((key) => key !== "archive").map((key) =>
   entry({ key, name: key, category: BUILT_IN_STATUS_CATEGORY[key], is_system: true }),
 );
 
@@ -140,10 +142,14 @@ describe("IssueFilterMenu status section", () => {
       "Human Review",
       "Done",
       "Cancelled",
+      // `archive` (fork status #39) is appended by useStatusOptions: it is not
+      // a catalog category, and this menu is the only way to reach archived
+      // work.
+      "Archive",
     ]);
   });
 
-  it("lists the 7 built-ins for a workspace with no custom statuses", async () => {
+  it("lists the 7 built-ins plus archive for a workspace with no custom statuses", async () => {
     renderFilterMenu(BUILT_INS);
 
     await openStatusSubmenu();

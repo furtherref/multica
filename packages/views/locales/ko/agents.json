@@ -370,8 +370,6 @@
       "workspace_notes_placeholder": "이 에이전트가 항상 알아야 할 내용을 적으세요.\n\n# 예시\n메인 저장소는 github.com/acme/platform입니다.\n채팅은 한국어로 해도 태스크는 영어로 작성하세요.\n금요일에는 배포하지 않습니다."
     },
     "env": {
-      "intro_readonly": "에이전트 프로세스가 시작될 때 주입됩니다. 워크스페이스 소유자와 관리자만 값을 읽거나 수정할 수 있으며, 모든 공개와 수정은 워크스페이스 감사 로그에 기록됩니다.",
-      "empty_readonly": "설정된 환경 변수가 없습니다.",
       "intro_prefix": "에이전트 프로세스가 시작될 때 주입됩니다(예: ",
       "intro_separator": ", ",
       "intro_suffix": ").",
@@ -394,6 +392,7 @@
       "not_revealed_title_other": "변수 {{count}}개 설정됨",
       "not_revealed_empty": "설정된 환경 변수가 없습니다.",
       "not_revealed_hint": "값은 공개하기 전까지 마스킹됩니다. 모든 공개와 수정은 워크스페이스 감사 로그에 기록됩니다.",
+      "no_permission_hint": "에이전트 소유자 또는 워크스페이스 소유자/관리자만 이 값을 공개하고 수정할 수 있습니다.",
       "reveal_action": "공개하고 수정",
       "revealing": "공개하는 중...",
       "reveal_failed_toast": "환경 변수 값을 불러오지 못했습니다",
@@ -725,6 +724,11 @@
     "copy_all": "전체 복사",
     "copy_filtered": "필터 결과 복사",
     "copied": "복사했습니다",
+    "load_pending": "전체 기록을 불러오는 중입니다. 현재 내용은 불완전할 수 있습니다.",
+    "load_incomplete": "전체 기록을 불러오지 못했습니다. 현재 내용은 불완전할 수 있습니다.",
+    "retry": "다시 시도",
+    "diff_unified": "통합",
+    "diff_split": "분할",
     "waiting_events": "이벤트를 기다리는 중...",
     "no_data": "기록된 실행 데이터가 없습니다.",
     "sort_chronological": "오래된 순",
@@ -741,6 +745,7 @@
     "status_cancelled": "취소됨",
     "status_waiting": "대기 중",
     "trigger_initial": "최초 실행",
+    "trigger_text": "트리거",
     "trigger_comment": "댓글에서",
     "trigger_autopilot": "오토파일럿",
     "trigger_retry": "재시도",
@@ -797,7 +802,8 @@
     "tool_kind_command": "명령",
     "tool_kind_write": "편집",
     "tool_kind_read": "읽기",
-    "tool_kind_misc": "기타"
+    "tool_kind_misc": "기타",
+    "trigger_wakeup": "깨우기"
   },
   "task_failure": {
     "cancelled_by_system": "시스템에서 취소함",
@@ -816,6 +822,7 @@
       "environment_prepare_failed": "실행 환경을 준비하지 못함",
       "runtime_access_denied": "이 에이전트는 비공개 런타임에서 실행할 수 없어 답변할 수 없습니다. 런타임을 공개로 변경하거나, 소유자가 사용할 수 있는 런타임으로 에이전트를 다시 연결/복사하세요.",
       "invalid_task_identity": "실행 ID 정보가 일치하지 않음",
+      "budget_exceeded": "런타임 비용 예산 한도 도달",
       "agent_error_provider_auth_or_access": "공급자 인증 실패",
       "agent_error_provider_quota_limit": "공급자 할당량 소진",
       "agent_error_provider_capacity_or_rate_limit": "공급자 요청 한도에 도달함",

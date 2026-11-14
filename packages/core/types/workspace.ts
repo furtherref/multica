@@ -36,6 +36,11 @@ export interface WorkspaceMcpServer {
   name: string;
   transport: string;
   enabled?: boolean;
+  /**
+   * Live agents the entry is assigned to. Only the workspace library listing
+   * carries it, and servers older than this field omit it.
+   */
+  agent_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -82,6 +87,12 @@ export interface User {
   timezone: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * True when this account has platform-wide system-admin access (the
+   * `/api/admin/*` endpoints). Optional/undefined on older backends and for
+   * every non-admin account — UI must not treat "missing" as "admin".
+   */
+  is_system_admin?: boolean;
 }
 
 export interface MemberWithUser {

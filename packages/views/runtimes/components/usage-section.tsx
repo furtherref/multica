@@ -11,11 +11,12 @@ import {
   CurrencyNumberFlow,
 } from "@multica/ui/components/ui/number-flow";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { agentListOptions } from "@multica/core/workspace/queries";
+import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
 import type { RuntimeUsage, AgentRuntime } from "@multica/core/types";
 import {
   runtimeUsageOptions,
   runtimeUsageByAgentOptions,
+  runtimeUsageCoverageOptions,
 } from "@multica/core/runtimes/queries";
 import { useCustomPricingStore } from "@multica/core/runtimes/custom-pricing-store";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
@@ -29,13 +30,19 @@ import {
   aggregateByWeek,
   aggregateCostByAgent,
   aggregateCostByModel,
+  aggregateCostByOwner,
+  aggregateCostByOwnerModel,
   collectUnmappedModels,
+  collectActiveCustomPricingModels,
+  aggregateUsageCoverage,
   pctChange,
   sliceWindow,
+  NO_OWNER_KEY,
   type CostByKey,
 } from "../utils";
 import { KpiCard } from "./shared";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { ActorAvatar as ActorAvatarBase } from "@multica/ui/components/common/actor-avatar";
 import {
   DailyCostChart,
   DailyTokensChart,
@@ -50,10 +57,16 @@ import { useT } from "../../i18n";
 // Cost-by tabs, and the CSV export all read from the same `days` value so
 // the labels ("· 30D") and the data slice never disagree.
 //
-// `dims` declares which dimensions each range is allowed in. 7 days at the
-// weekly grain is one bar, so 7d is daily-only; 180d is weekly-only because
-// 180 daily bars are visually unreadable.
+// `dims` declares which dimensions each range is allowed in. 1d / 7d at the
+// weekly grain collapse to one bar, so they are daily-only; 180d is
+// weekly-only because 180 daily bars are visually unreadable.
+//
+// Every range is exactly `days` calendar days ending today, so 1d means
+// "today" (from 00:00 in the viewer's timezone), not "the last 24 hours".
+// `sliceWindow` enforces this client-side; the by-agent endpoint closes its
+// window at the same boundary server-side. Mirrors the workspace dashboard.
 const TIME_RANGES = [
+  { label: "1d", days: 1, dims: ["daily"] as const },
   { label: "7d", days: 7, dims: ["daily"] as const },
   { label: "30d", days: 30, dims: ["daily", "weekly"] as const },
   { label: "90d", days: 90, dims: ["daily", "weekly"] as const },
@@ -124,7 +137,7 @@ function Segmented<T extends string | number>({
 // and threads everything into the four visual blocks below.
 //
 // 180 days (vs the older 90) is sized for the Heatmap tab — it shows 26
-// weeks (~6 months) so the long view actually looks long. The 7d/30d/90d
+// weeks (~6 months) so the long view actually looks long. The 1d..180d
 // period selector slices client-side; the prior-window delta on the Cost
 // KPI also benefits from having extra history available.
 // ---------------------------------------------------------------------------
@@ -139,6 +152,11 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
   const { data: usage = [], isLoading: loading } = useQuery(
     runtimeUsageOptions(runtimeId, 180, tz),
   );
+  const {
+    data: coverage = [],
+    isLoading: coverageLoading,
+    isError: coverageUnavailable,
+  } = useQuery(runtimeUsageCoverageOptions(runtimeId, 180, tz));
   const [dim, setDim] = useState<Exclude<WhenTab, "heatmap">>("daily");
   const [days, setDays] = useState<TimeRange>(30);
   // Subscribe so the KPI cards (which call estimateCost at render-time, not
@@ -147,8 +165,7 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
   // subscribe on their own and pass pricings as a memo dep there.
   useCustomPricingStore((s) => s.pricings);
 
-  if (loading) return <UsageSkeleton />;
-  if (usage.length === 0) return <UsageEmpty />;
+  if (loading || coverageLoading) return <UsageSkeleton />;
 
   // Slice the cached 180-day window into the user's selected sub-window AND
   // the immediately prior window of equal length. The KPI delta ("+18% vs
@@ -156,6 +173,17 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
   // all of history". Tz-aware so the cutoff lands on the same calendar
   // boundary the backend used when bucketing rows.
   const { filtered, prevFiltered } = sliceWindow(usage, days, tz);
+  const coverageTotals = aggregateUsageCoverage(
+    sliceWindow(coverage, days, tz).filtered,
+  );
+  const incompleteRuns =
+    coverageTotals.outputOnlyRuns + coverageTotals.missingRuns;
+  const coverageIncomplete = incompleteRuns > 0;
+
+  // A runtime with no usage at all stays on the empty page unless the
+  // selected window has runs whose telemetry is missing: those must surface
+  // as a warning, not as a dashboard that reads "$0.00".
+  if (usage.length === 0 && !coverageIncomplete) return <UsageEmpty />;
 
   const allowedRanges = rangesForDim(dim);
   const handleDimChange = (next: Exclude<WhenTab, "heatmap">) => {
@@ -225,6 +253,26 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
           the chart would render normally and the unmapped tokens would silently
           contribute $0 to totals. Stays reachable once every model is priced
           if the user has saved overrides, so those rates remain editable. */}
+      {coverageUnavailable && (
+        <p className="rounded-lg border bg-muted/20 px-3 py-2 text-caption text-muted-foreground">
+          {t(($) => $.usage.coverage_unavailable)}
+        </p>
+      )}
+      {coverageIncomplete && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-caption"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+          <p className="text-foreground">
+            {t(($) => $.usage.coverage_warning, {
+              completed: coverageTotals.completedRuns,
+              outputOnly: coverageTotals.outputOnlyRuns,
+              missing: coverageTotals.missingRuns,
+            })}
+          </p>
+        </div>
+      )}
       <CustomPricingBar usage={filtered} />
 
       {/* Stacks below `sm`, matching the Analytics tabs' KPI rows. Three
@@ -236,16 +284,31 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
           orientation so the row still reads as one grouped card. */}
       <div className="grid grid-cols-1 divide-y rounded-lg border bg-card sm:grid-cols-3 sm:divide-x sm:divide-y-0">
         <KpiCard
-          label={t(($) => $.usage.kpi_cost_label, { days })}
+          label={t(
+            ($) =>
+              coverageIncomplete
+                ? $.usage.kpi_cost_lower_bound_label
+                : $.usage.kpi_cost_label,
+            { days },
+          )}
           value={
-            <CurrencyNumberFlow
-              value={totals.cost}
-              locales={locales}
-              aria-label={formatUsd(totals.cost)}
-            />
+            <div className="flex items-baseline gap-1">
+              {coverageIncomplete && <span aria-hidden="true">≥</span>}
+              <CurrencyNumberFlow
+                value={totals.cost}
+                locales={locales}
+                aria-label={
+                  coverageIncomplete
+                    ? t(($) => $.usage.kpi_cost_lower_bound_aria, {
+                        cost: formatUsd(totals.cost),
+                      })
+                    : formatUsd(totals.cost)
+                }
+              />
+            </div>
           }
           hint={
-            costDelta == null ? undefined : (
+            coverageIncomplete || costDelta == null ? undefined : (
               <span
                 className={
                   costDelta > 0
@@ -295,10 +358,14 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
           }
           hint={
             <span>
-              {t(($) => $.usage.kpi_tokens_hint, {
-                input: formatTokens(totals.input),
-                output: formatTokens(totals.output),
-              })}
+              {coverageIncomplete
+                ? t(($) => $.usage.kpi_tokens_incomplete_hint, {
+                    output: formatTokens(totals.output),
+                  })
+                : t(($) => $.usage.kpi_tokens_hint, {
+                    input: formatTokens(totals.input),
+                    output: formatTokens(totals.output),
+                  })}
             </span>
           }
         />
@@ -575,6 +642,7 @@ function CustomPricingBar({ usage }: { usage: RuntimeUsage[] }) {
     (s) => Object.keys(s.pricings).length > 0,
   );
   const unmapped = collectUnmappedModels(usage);
+  const activeOverrides = collectActiveCustomPricingModels(usage);
   if (unmapped.length === 0 && !hasOverrides) return null;
 
   const hasGap = unmapped.length > 0;
@@ -600,7 +668,9 @@ function CustomPricingBar({ usage }: { usage: RuntimeUsage[] }) {
         </>
       ) : (
         <p className="min-w-0 flex-1 text-muted-foreground">
-          {t(($) => $.usage.custom_pricing.active_notice)}
+          {activeOverrides.length > 0
+            ? t(($) => $.usage.custom_pricing.active_notice)
+            : t(($) => $.usage.custom_pricing.inactive_notice)}
         </p>
       )}
       <Button
@@ -671,21 +741,33 @@ function CostByBlock({
   tz: string;
 }) {
   const { t } = useT("runtimes");
-  const [tab, setTab] = useState<"agent" | "model">("agent");
-  // Memo dep — same reason as WhenChart: aggregateCostBy{Agent,Model} call
-  // estimateCost, which now reads the override store.
+  const [tab, setTab] = useState<"owner" | "agent" | "model">("owner");
+  // Memo dep — same reason as WhenChart: aggregateCostBy{Owner,Agent,Model}
+  // call estimateCost, which now reads the override store.
   const pricings = useCustomPricingStore((s) => s.pricings);
 
-  // by-agent is server-side aggregation (fetched lazily on tab activation).
+  // by-agent is server-side aggregation feeding both the By-owner and
+  // By-agent tabs (owner is a client-side fold of the same per-agent rows).
   // by-model derives from the daily cache the parent already has — free.
   const { data: byAgentRows = [] } = useQuery({
     ...runtimeUsageByAgentOptions(runtimeId, days, tz),
-    enabled: tab === "agent",
+    enabled: tab === "owner" || tab === "agent",
   });
 
   const wsId = useWorkspaceId();
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  // Owner name/avatar resolution; same cache entry useActorName reads inside
+  // each ActorAvatar, so this adds no extra request.
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
 
+  const byOwner = useMemo(
+    () => aggregateCostByOwner(byAgentRows, agents),
+    [byAgentRows, agents, pricings],
+  );
+  const byOwnerModel = useMemo(
+    () => aggregateCostByOwnerModel(byAgentRows, agents),
+    [byAgentRows, agents, pricings],
+  );
   const byAgent = useMemo(
     () => aggregateCostByAgent(byAgentRows),
     [byAgentRows, pricings],
@@ -696,24 +778,29 @@ function CostByBlock({
   );
 
   const caption =
-    tab === "agent"
-      ? t(($) => $.usage.cost_by_caption_agent, { count: byAgent.length })
-      : t(($) => $.usage.cost_by_caption_model, { count: byModel.length });
+    tab === "owner"
+      ? t(($) => $.usage.cost_by_caption_owner, { count: byOwner.length })
+      : tab === "agent"
+        ? t(($) => $.usage.cost_by_caption_agent, { count: byAgent.length })
+        : t(($) => $.usage.cost_by_caption_model, { count: byModel.length });
 
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
         <div className="flex items-center gap-3">
           <h4 className="text-body font-semibold">
-            {tab === "agent"
-              ? t(($) => $.usage.cost_by_title_agent)
-              : t(($) => $.usage.cost_by_title_model)}
+            {tab === "owner"
+              ? t(($) => $.usage.cost_by_title_owner)
+              : tab === "agent"
+                ? t(($) => $.usage.cost_by_title_agent)
+                : t(($) => $.usage.cost_by_title_model)}
           </h4>
           <Segmented
             value={tab}
             onChange={setTab}
             options={
               [
+                { label: t(($) => $.usage.cost_by_tab_owner), value: "owner" },
                 { label: t(($) => $.usage.cost_by_tab_agent), value: "agent" },
                 { label: t(($) => $.usage.cost_by_tab_model), value: "model" },
               ] as const
@@ -723,6 +810,39 @@ function CostByBlock({
         <span className="text-caption text-muted-foreground">{caption}</span>
       </div>
       <div className="pt-4">
+        {tab === "owner" && (
+          <CostByList
+            rows={byOwner}
+            detailRows={(key) => byOwnerModel.get(key) ?? []}
+            renderKey={(key) => {
+              if (key === NO_OWNER_KEY) {
+                // Ownerless agents + usage from since-deleted agents. No
+                // member behind the row, so no hover card / profile link.
+                return (
+                  <div className="flex min-w-0 items-center gap-2">
+                    <ActorAvatarBase
+                      name={t(($) => $.usage.cost_by_owner_none)}
+                      initials="—"
+                      size="md"
+                    />
+                    <span className="truncate text-body font-medium text-muted-foreground">
+                      {t(($) => $.usage.cost_by_owner_none)}
+                    </span>
+                  </div>
+                );
+              }
+              const member = members.find((m) => m.user_id === key);
+              return (
+                <div className="flex min-w-0 items-center gap-2">
+                  <ActorAvatar actorType="member" actorId={key} size="md" enableHoverCard />
+                  <span className="cursor-pointer truncate text-body font-medium">
+                    {member?.name ?? t(($) => $.usage.cost_by_owner_former)}
+                  </span>
+                </div>
+              );
+            }}
+          />
+        )}
         {tab === "agent" && (
           <CostByList
             rows={byAgent}
@@ -754,19 +874,27 @@ function CostByBlock({
   );
 }
 
-// Generic horizontal-bar list shared by both Cost-by tabs. Each row scales
+// Generic horizontal-bar list shared by the Cost-by tabs. Each row scales
 // its bar relative to the heaviest row in the set, so the visual ranking
 // is always 0..max and the biggest spender visually fills the column.
+//
+// `detailRows` opts a tab into per-row expansion: when given, every row
+// grows a chevron that toggles a nested list of the row's constituent
+// parts (By owner → that owner's models). Expansion state is local and
+// resets with the tab, so switching tabs or periods starts collapsed.
 function CostByList({
   rows,
   renderKey,
+  detailRows,
   emptyHint,
 }: {
   rows: CostByKey[];
   renderKey: (key: string) => React.ReactNode;
+  detailRows?: (key: string) => CostByKey[];
   emptyHint?: string;
 }) {
   const { t } = useT("runtimes");
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   if (rows.length === 0) {
     return (
       <p className="py-4 text-center text-caption text-muted-foreground">
@@ -774,27 +902,98 @@ function CostByList({
       </p>
     );
   }
+  const toggle = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   const maxCost = rows.reduce((m, r) => Math.max(m, r.cost), 0);
   return (
     <div className="space-y-2">
       {rows.map((row) => {
         const pct = maxCost > 0 ? (row.cost / maxCost) * 100 : 0;
+        const isOpen = detailRows !== undefined && expanded.has(row.key);
+        return (
+          <div key={row.key}>
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_5rem_5rem] items-center gap-3 py-1">
+              <div className="flex min-w-0 items-center gap-1">
+                {detailRows && (
+                  <button
+                    type="button"
+                    aria-label={t(($) => $.usage.cost_by_model_breakdown_aria)}
+                    aria-expanded={isOpen}
+                    onClick={() => toggle(row.key)}
+                    className="-ml-1 shrink-0 rounded-xs p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <ChevronRight
+                      className={cn("h-3.5 w-3.5 transition-transform", isOpen && "rotate-90")}
+                    />
+                  </button>
+                )}
+                <div className="min-w-0 flex-1">{renderKey(row.key)}</div>
+              </div>
+              <div className="relative h-2 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-chart-1"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <div className="text-right text-caption tabular-nums text-muted-foreground">
+                {formatTokens(row.tokens)}
+              </div>
+              <div className="text-right text-body font-medium tabular-nums">
+                ${row.cost.toFixed(2)}
+              </div>
+            </div>
+            {isOpen && <CostByDetailList rows={detailRows(row.key)} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Nested breakdown under an expanded CostByList row. Same four-column grid
+// as the parent so the token/cost columns line up; the bar is scaled to
+// the heaviest entry *within this row* so the sub-ranking is readable on
+// its own rather than dwarfed by the parent's max.
+function CostByDetailList({ rows }: { rows: CostByKey[] }) {
+  const { t } = useT("runtimes");
+  if (rows.length === 0) {
+    return (
+      <p className="py-2 pl-6 text-caption text-muted-foreground">
+        {t(($) => $.usage.empty_no_usage)}
+      </p>
+    );
+  }
+  const maxCost = rows.reduce((m, r) => Math.max(m, r.cost), 0);
+  return (
+    <div className="mb-1 space-y-0.5">
+      {rows.map((row) => {
+        const pct = maxCost > 0 ? (row.cost / maxCost) * 100 : 0;
         return (
           <div
             key={row.key}
-            className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_5rem_5rem] items-center gap-3 py-1"
+            data-model-row
+            className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_5rem_5rem] items-center gap-3 py-0.5"
           >
-            <div className="min-w-0">{renderKey(row.key)}</div>
-            <div className="relative h-2 overflow-hidden rounded-full bg-muted">
+            <div className="min-w-0 pl-6">
+              <span className="block truncate font-mono text-caption text-muted-foreground">
+                {row.key}
+              </span>
+            </div>
+            <div className="relative h-1.5 overflow-hidden rounded-full bg-muted">
               <div
-                className="h-full rounded-full bg-chart-1"
+                className="h-full rounded-full bg-chart-1/60"
                 style={{ width: `${pct}%` }}
               />
             </div>
             <div className="text-right text-caption tabular-nums text-muted-foreground">
               {formatTokens(row.tokens)}
             </div>
-            <div className="text-right text-body font-medium tabular-nums">
+            <div className="text-right text-caption tabular-nums text-muted-foreground">
               ${row.cost.toFixed(2)}
             </div>
           </div>
@@ -844,20 +1043,21 @@ function DailyBreakdownTable({ usage }: { usage: RuntimeUsage[] }) {
   }
   return (
     <div className="rounded-lg border">
-      <div className="grid grid-cols-[100px_1fr_80px_80px_80px_80px] gap-2 border-b px-3 py-2 text-caption font-medium text-muted-foreground">
+      <div className="grid grid-cols-[100px_1fr_80px_80px_80px_80px_80px] gap-2 border-b px-3 py-2 text-caption font-medium text-muted-foreground">
         <div>{t(($) => $.usage.table_date)}</div>
         <div>{t(($) => $.usage.table_model)}</div>
         <div className="text-right">{t(($) => $.usage.table_input)}</div>
         <div className="text-right">{t(($) => $.usage.table_output)}</div>
         <div className="text-right">{t(($) => $.usage.table_cache_r)}</div>
         <div className="text-right">{t(($) => $.usage.table_cache_w)}</div>
+        <div className="text-right">{t(($) => $.usage.table_cost)}</div>
       </div>
       <div className="max-h-64 overflow-y-auto divide-y">
         {[...byDate.entries()].map(([date, rows]) =>
           rows.map((row, i) => (
             <div
               key={`${date}-${row.model}-${i}`}
-              className="grid grid-cols-[100px_1fr_80px_80px_80px_80px] gap-2 px-3 py-1.5 text-caption"
+              className="grid grid-cols-[100px_1fr_80px_80px_80px_80px_80px] gap-2 px-3 py-1.5 text-caption"
             >
               <div className="text-muted-foreground">{date}</div>
               <div className="truncate font-mono">{row.model}</div>
@@ -872,6 +1072,9 @@ function DailyBreakdownTable({ usage }: { usage: RuntimeUsage[] }) {
               </div>
               <div className="text-right tabular-nums">
                 {formatTokens(row.cache_write_tokens)}
+              </div>
+              <div className="text-right font-medium tabular-nums">
+                {formatUsd(estimateCost(row))}
               </div>
             </div>
           )),

@@ -1,0 +1,85 @@
+{
+  "fields": {
+    "name": "Template name",
+    "issue_title": "Issue title",
+    "issue_content": "Issue content"
+  },
+  "page": {
+    "title": "Issue Templates",
+    "tagline": "Manage reusable issue title and content templates.",
+    "new_template": "New Issue Template",
+    "search_placeholder": "Search template name, title, or content...",
+    "empty": {
+      "title": "No issue templates yet",
+      "description": "Create a template to reuse title and content when creating issues."
+    },
+    "no_matches": {
+      "title": "No matches",
+      "with_query": "No templates match \"{{query}}\"."
+    },
+    "list_error": {
+      "title": "Could not load issue templates",
+      "fallback": "Something went wrong while loading issue templates.",
+      "retry": "Retry"
+    }
+  },
+  "table": {
+    "name": "Name",
+    "source": "Source · Creator",
+    "updated": "Updated",
+    "no_content": "No content",
+    "source_manual": "Manually created",
+    "by_creator": "Created by {{name}}"
+  },
+  "create": {
+    "title": "New Issue Template",
+    "description": "Templates only apply issue title and content.",
+    "close": "Close",
+    "name_placeholder": "Example: Bug report",
+    "issue_title_placeholder": "Example: Fix issue in {{module}}",
+    "issue_content_placeholder": "## Context\n\n## Steps\n\n## Expected result\n",
+    "cancel": "Cancel",
+    "submit": "Create template",
+    "submitting": "Creating...",
+    "toast_created": "Issue template created",
+    "fallback_error": "Failed to create issue template"
+  },
+  "detail": {
+    "all_templates": "All Issue Templates",
+    "delete_aria": "Delete Issue Template",
+    "toast_saved": "Issue template saved",
+    "toast_save_failed": "Failed to save issue template",
+    "toast_deleted": "Issue template deleted",
+    "toast_delete_failed": "Failed to delete issue template",
+    "save_bar": {
+      "unsaved": "Unsaved changes",
+      "discard": "Discard",
+      "save": "Save changes",
+      "saving": "Saving..."
+    },
+    "sidebar": {
+      "metadata": "Metadata",
+      "source": "Source",
+      "created": "Created",
+      "updated": "Updated",
+      "created_by": "Creator",
+      "id": "ID"
+    },
+    "content_edit": "Edit",
+    "content_preview": "Preview",
+    "no_content": "No content yet. Click the edit button to add issue content.",
+    "not_found": {
+      "title": "Issue template not found",
+      "fallback": "This template may have been deleted, or you may not have access.",
+      "back": "Back to Issue Templates"
+    },
+    "delete_dialog": {
+      "title": "Delete this issue template?",
+      "description": "This will permanently delete \"{{name}}\". Existing issues are not affected.",
+      "warning": "This action cannot be undone.",
+      "cancel": "Cancel",
+      "confirm": "Delete permanently",
+      "deleting": "Deleting..."
+    }
+  }
+}

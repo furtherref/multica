@@ -128,7 +128,15 @@ interface AgentOverviewPaneProps {
   members: MemberWithUser[];
   onUpdate: (id: string, data: Record<string, unknown>) => Promise<void>;
   currentUserId?: string | null;
-  canEdit: boolean;
+  /**
+   * `canEditAgent` decision from the detail page (agent owner or workspace
+   * owner/admin), or `null` while the member list is still loading and the
+   * permission is unknown. The Environment tab consumes the tri-state to
+   * hide the audited Reveal flow from members who would get a 403 — and to
+   * show neutral copy (no Reveal button, no denial hint) while resolving.
+   * Other consumers treat `null` as read-only via `canEdit === true`.
+   */
+  canEdit: boolean | null;
   navIntent?: DetailTab | null;
   onNavIntentHandled?: () => void;
 }
@@ -460,7 +468,7 @@ export function AgentOverviewPane({
                       agent={agent}
                       runtime={runtime}
                       currentUserId={currentUserId}
-                      canEdit={canEdit}
+                      canEdit={canEdit === true}
                     />
                   )}
                   {effectiveView === "mcp_config" && (
@@ -468,7 +476,7 @@ export function AgentOverviewPane({
                       agent={agent}
                       runtime={runtime}
                       currentUserId={currentUserId}
-                      canEdit={canEdit}
+                      canEdit={canEdit === true}
                       onSave={(updates) => onUpdate(agent.id, updates)}
                       onDirtyChange={setActiveDirty}
                     />
@@ -486,7 +494,7 @@ export function AgentOverviewPane({
                       runtimes={runtimes}
                       members={members}
                       currentUserId={currentUserId ?? null}
-                      canEdit={canEdit}
+                      canEdit={canEdit === true}
                       onUpdate={onUpdate}
                     />
                   )}
@@ -500,7 +508,11 @@ export function AgentOverviewPane({
                     />
                   )}
                   {effectiveView === "env" && (
-                    <EnvTab agent={agent} onDirtyChange={setActiveDirty} />
+                    <EnvTab
+                      agent={agent}
+                      canEdit={canEdit}
+                      onDirtyChange={setActiveDirty}
+                    />
                   )}
                   {effectiveView === "custom_args" && (
                     <CustomArgsTab

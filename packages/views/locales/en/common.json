@@ -42,6 +42,27 @@
     "hours_ago": "{{count}}h ago",
     "days_ago": "{{count}}d ago"
   },
+  "status_pill": {
+    "stages": {
+      "offline": "Offline",
+      "reconnecting": "Reconnecting",
+      "retrying": "Retrying",
+      "queued": "Queued",
+      "waiting_local_directory": "Waiting for local directory",
+      "waiting_local_directory_reason": "Waiting for {{reason}}",
+      "starting_up": "Starting up",
+      "thinking": "Thinking",
+      "typing": "Typing"
+    },
+    "tools": {
+      "running_command": "Running a command",
+      "reading_files": "Reading files",
+      "searching_code": "Searching the code",
+      "making_edits": "Making edits",
+      "searching_web": "Searching the web",
+      "fallback": "Working"
+    }
+  },
   "lark_bind": {
     "page_title": "Bind your Lark account",
     "redeeming": "Redeeming binding token…",

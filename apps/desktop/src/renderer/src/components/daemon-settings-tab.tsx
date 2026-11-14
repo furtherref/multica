@@ -2,6 +2,16 @@ import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { AlertCircle, Info, LogIn } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { Switch } from "@multica/ui/components/ui/switch";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@multica/ui/components/ui/alert-dialog";
 import { cn } from "@multica/ui/lib/utils";
 import { toast } from "sonner";
 import {
@@ -52,6 +62,7 @@ export function DaemonSettingsTab() {
   const [cliInstalled, setCliInstalled] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<DaemonStatus>({ state: "stopped" });
+  const [confirmNewRoot, setConfirmNewRoot] = useState<string | null>(null);
   const [reauthLoading, setReauthLoading] = useState(false);
 
   useEffect(() => {
@@ -88,6 +99,28 @@ export function DaemonSettingsTab() {
     },
     [t],
   );
+
+  const handlePickDirectory = useCallback(async () => {
+    const result = await window.daemonAPI.pickDirectory();
+    if (result.canceled || !result.path) return;
+    setConfirmNewRoot(result.path);
+  }, []);
+
+  const handleConfirmRootChange = useCallback(async () => {
+    if (!confirmNewRoot) return;
+    setSaving(true);
+    const updated = await window.daemonAPI.setPrefs({ workspacesRoot: confirmNewRoot });
+    setPrefs(updated);
+    setConfirmNewRoot(null);
+    setSaving(false);
+    // Restart the daemon so the new workspaces_root takes effect
+    if (status.state === "running") {
+      await window.daemonAPI.restart();
+    }
+  }, [confirmNewRoot, status.state]);
+
+  // The effective workspaces root: from daemon status if running, else from prefs
+  const effectiveRoot = status.workspacesRoot ?? prefs.workspacesRoot;
 
   // The daemon runs somewhere the app can't drive (e.g. inside WSL2 behind a
   // Windows desktop): /health is reachable but the lifecycle CLI can't reach
@@ -159,6 +192,24 @@ export function DaemonSettingsTab() {
         </SettingsRow>
 
         <SettingsRow
+          label="Repos Storage Location"
+          description={
+            effectiveRoot
+              ? `Directory where workspace repositories and task environments are stored: ${effectiveRoot}`
+              : "Directory where workspace repositories and task environments are stored."
+          }
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handlePickDirectory}
+            disabled={saving}
+          >
+            Change
+          </Button>
+        </SettingsRow>
+
+        <SettingsRow
           label={t(($) => $.desktop.daemon.cli_status)}
           description={
             cliInstalled === null
@@ -174,7 +225,7 @@ export function DaemonSettingsTab() {
               size="sm"
               onClick={() =>
                 window.desktopAPI.openExternal(
-                  "https://github.com/multica-ai/multica#cli-installation",
+                  "https://github.com/furtherref/multica#cli-installation",
                 )
               }
             >
@@ -184,6 +235,28 @@ export function DaemonSettingsTab() {
           {cliInstalled !== false && <span />}
         </SettingsRow>
       </SettingsCard>
+
+      <AlertDialog open={confirmNewRoot !== null} onOpenChange={(open) => !open && setConfirmNewRoot(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Change repos storage location?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The daemon will store repos and task environments in:{' '}
+              <span className="font-mono text-caption bg-muted/50 px-1.5 py-0.5 rounded-xs break-all">
+                {confirmNewRoot}
+              </span>
+              . The daemon will be restarted to apply this change. Existing repos at the current
+              location will not be moved automatically — copy them manually if needed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmRootChange} disabled={saving}>
+              Change &amp; Restart
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Diagnostics — moved out of the logs panel so the panel can focus
           on logs. These fields matter for support tickets and bug reports,

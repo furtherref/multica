@@ -25,7 +25,9 @@ import (
 )
 
 // extContentTypes overrides http.DetectContentType for extensions it gets wrong.
-// Go's sniffer returns text/xml for SVG, text/plain for CSS/JS, etc.
+// Go's sniffer returns text/xml for SVG, text/plain for CSS/JS, and — because
+// every OOXML/ODF office file is a ZIP container — application/zip for
+// .docx/.xlsx/.pptx/.odt/etc, so those need extension-based overrides too.
 var extContentTypes = map[string]string{
 	".svg":  "image/svg+xml",
 	".css":  "text/css",
@@ -33,6 +35,18 @@ var extContentTypes = map[string]string{
 	".mjs":  "application/javascript",
 	".json": "application/json",
 	".wasm": "application/wasm",
+	// Office documents — sniffer returns application/zip (OOXML/ODF) or
+	// application/octet-stream (legacy binary), neither of which matches the file.
+	".doc":  "application/msword",
+	".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	".odt":  "application/vnd.oasis.opendocument.text",
+	".rtf":  "application/rtf",
+	".xls":  "application/vnd.ms-excel",
+	".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	".ods":  "application/vnd.oasis.opendocument.spreadsheet",
+	".ppt":  "application/vnd.ms-powerpoint",
+	".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	".odp":  "application/vnd.oasis.opendocument.presentation",
 }
 
 const maxUploadSize = 100 << 20 // 100 MB
@@ -162,9 +176,10 @@ func attachmentURLModeFromRequest(r *http.Request) attachmentURLMode {
 
 func (h *Handler) attachmentToResponse(a db.Attachment, mode attachmentURLMode) AttachmentResponse {
 	id := uuidToString(a.ID)
+	workspaceID := uuidToString(a.WorkspaceID)
 	resp := AttachmentResponse{
 		ID:           id,
-		WorkspaceID:  uuidToString(a.WorkspaceID),
+		WorkspaceID:  workspaceID,
 		UploaderType: a.UploaderType,
 		UploaderID:   uuidToString(a.UploaderID),
 		Filename:     a.Filename,
@@ -1368,6 +1383,7 @@ func isTextPreviewable(contentType, filename string) bool {
 	}
 	switch ct {
 	case "application/json",
+		"application/x-ndjson",
 		"application/javascript",
 		"application/xml",
 		"application/x-yaml",
@@ -1384,7 +1400,7 @@ func isTextPreviewable(contentType, filename string) bool {
 		".txt", ".log",
 		".csv", ".tsv",
 		".html", ".htm",
-		".json", ".xml",
+		".json", ".jsonl", ".ndjson", ".xml",
 		".yml", ".yaml", ".toml", ".ini", ".conf",
 		".sh", ".bash", ".zsh",
 		".py", ".rb", ".go", ".rs",

@@ -16,6 +16,7 @@ import (
 type InboxItemResponse struct {
 	ID            string          `json:"id"`
 	WorkspaceID   string          `json:"workspace_id"`
+	WorkspaceSlug string          `json:"workspace_slug"`
 	RecipientType string          `json:"recipient_type"`
 	RecipientID   string          `json:"recipient_id"`
 	Type          string          `json:"type"`
@@ -113,6 +114,7 @@ func inboxRowToResponse(r db.ListInboxItemsRow) InboxItemResponse {
 	return InboxItemResponse{
 		ID:            uuidToString(r.ID),
 		WorkspaceID:   uuidToString(r.WorkspaceID),
+		WorkspaceSlug: r.WorkspaceSlug,
 		RecipientType: r.RecipientType,
 		RecipientID:   uuidToString(r.RecipientID),
 		Type:          r.Type,
@@ -140,6 +142,9 @@ func archivedInboxRowToResponse(r db.ListArchivedInboxItemsRow) InboxItemRespons
 }
 
 func (h *Handler) enrichInboxResponse(ctx context.Context, resp InboxItemResponse, issueID pgtype.UUID) InboxItemResponse {
+	if ws, err := h.Queries.GetWorkspace(ctx, parseUUID(resp.WorkspaceID)); err == nil {
+		resp.WorkspaceSlug = ws.Slug
+	}
 	if !issueID.Valid {
 		return resp
 	}

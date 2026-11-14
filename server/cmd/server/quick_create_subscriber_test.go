@@ -12,6 +12,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // Subscribing the quick-create requester moved OFF the completion path in
@@ -34,6 +35,7 @@ func TestQuickCreateFailure_DoesNotSubscribeRequester(t *testing.T) {
 	ctx := context.Background()
 	queries := db.New(testPool)
 	bus := events.New()
+	inboxItems := captureQuickCreateInboxItems(bus)
 	taskSvc := service.NewTaskService(queries, testPool, nil, bus)
 
 	var agentID string
@@ -91,6 +93,33 @@ func TestQuickCreateFailure_DoesNotSubscribeRequester(t *testing.T) {
 	}
 	if leaked != 0 {
 		t.Fatalf("expected no subscriber rows for failed quick-create, got %d", leaked)
+	}
+	assertQuickCreateInboxWorkspaceSlug(t, inboxItems, integrationTestWorkspaceSlug)
+}
+
+func captureQuickCreateInboxItems(bus *events.Bus) *[]map[string]any {
+	items := []map[string]any{}
+	bus.Subscribe(protocol.EventInboxNew, func(e events.Event) {
+		payload, ok := e.Payload.(map[string]any)
+		if !ok {
+			return
+		}
+		item, ok := payload["item"].(map[string]any)
+		if !ok {
+			return
+		}
+		items = append(items, item)
+	})
+	return &items
+}
+
+func assertQuickCreateInboxWorkspaceSlug(t *testing.T, items *[]map[string]any, want string) {
+	t.Helper()
+	if len(*items) != 1 {
+		t.Fatalf("expected 1 quick-create inbox event, got %d", len(*items))
+	}
+	if got := (*items)[0]["workspace_slug"]; got != want {
+		t.Fatalf("expected quick-create inbox workspace_slug %q, got %v", want, got)
 	}
 }
 

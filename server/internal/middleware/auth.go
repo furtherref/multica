@@ -17,17 +17,22 @@ import (
 
 func uuidToString(u pgtype.UUID) string { return util.UUIDToString(u) }
 
-func rejectTemporarilyDisabledUser(w http.ResponseWriter, r *http.Request, userID, email, authPath string) bool {
-	if !auth.IsTemporarilyDisabledUser(userID, email) {
+// rejectSuspendedUser enforces account_status on every authenticated path,
+// including cache-hit branches — a suspended user's next request fails even
+// while the PAT cache is warm. Shared by Auth and DaemonAuth.
+func rejectSuspendedUser(w http.ResponseWriter, r *http.Request, guard *auth.AccountGuard, userID, authPath string) bool {
+	err := guard.Check(r.Context(), userID)
+	if err == nil {
 		return false
 	}
-	slog.Warn(
-		"auth: temporarily disabled user rejected",
-		"path", r.URL.Path,
-		"user_id", userID,
-		"auth_path", authPath,
-	)
-	writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+	if errors.Is(err, auth.ErrAccountSuspended) {
+		slog.Warn("auth: suspended user rejected",
+			"path", r.URL.Path, "user_id", userID, "auth_path", authPath)
+		writeErrorWithCode(w, http.StatusForbidden, auth.AccountSuspendedMessage, auth.AccountSuspendedCode)
+		return true
+	}
+	slog.Error("auth: account status lookup failed", "path", r.URL.Path, "error", err)
+	writeError(w, http.StatusServiceUnavailable, "account status unavailable")
 	return true
 }
 
@@ -56,7 +61,11 @@ func rejectTemporarilyDisabledUser(w http.ResponseWriter, r *http.Request, userI
 // local DB. When nil (Fleet URL unset) mcn_ tokens are rejected at the
 // prefix branch — we don't fall through to the mul_ / JWT paths, since
 // an mcn_ string is by construction not a valid mul_ PAT or JWT.
-func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier, cfSigner *auth.CloudFrontSigner) func(http.Handler) http.Handler {
+//
+// guard is the fork's account-suspension gate (#91): every branch, including
+// the PAT cache-hit path, rejects a suspended account before stamping
+// X-User-ID.
+func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier, cfSigner *auth.CloudFrontSigner, guard *auth.AccountGuard) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// X-Actor-Source is server-set only — any value supplied by
@@ -120,7 +129,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					return
 				}
 				userID := uuidToString(tt.UserID)
-				if rejectTemporarilyDisabledUser(w, r, userID, "", "task_token") {
+				if rejectSuspendedUser(w, r, guard, userID, "task_token") {
 					return
 				}
 				r.Header.Set("X-User-ID", userID)
@@ -177,7 +186,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					http.Error(w, `{"error":"cloud pat verifier unavailable"}`, http.StatusServiceUnavailable)
 					return
 				}
-				if rejectTemporarilyDisabledUser(w, r, identity.OwnerID, "", "cloud_pat") {
+				if rejectSuspendedUser(w, r, guard, identity.OwnerID, "cloud_pat") {
 					return
 				}
 				r.Header.Set("X-User-ID", identity.OwnerID)
@@ -206,7 +215,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				// entry since. Skip the DB SELECT and the last_used_at
 				// UPDATE — last_used_at is bumped once per TTL window.
 				if userID, ok := patCache.Get(r.Context(), hash); ok {
-					if rejectTemporarilyDisabledUser(w, r, userID, "", "pat_cache") {
+					if rejectSuspendedUser(w, r, guard, userID, "pat_cache") {
 						return
 					}
 					r.Header.Set("X-User-ID", userID)
@@ -226,7 +235,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				}
 
 				userID := uuidToString(pat.UserID)
-				if rejectTemporarilyDisabledUser(w, r, userID, "", "pat") {
+				if rejectSuspendedUser(w, r, guard, userID, "pat") {
 					return
 				}
 				r.Header.Set("X-User-ID", userID)
@@ -276,7 +285,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				return
 			}
 			email, _ := claims["email"].(string)
-			if rejectTemporarilyDisabledUser(w, r, sub, email, "jwt") {
+			if rejectSuspendedUser(w, r, guard, sub, "jwt") {
 				return
 			}
 			r.Header.Set("X-User-ID", sub)

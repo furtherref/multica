@@ -493,7 +493,7 @@ func (q *Queries) GetAgentRuntimeForWorkspace(ctx context.Context, arg GetAgentR
 }
 
 const getAgentRuntimeHeartbeatLeases = `-- name: GetAgentRuntimeHeartbeatLeases :many
-SELECT id, workspace_id, daemon_id, status, last_seen_at
+SELECT id, workspace_id, owner_id, daemon_id, status, last_seen_at
 FROM agent_runtime
 WHERE id = ANY($1::uuid[])
 `
@@ -501,6 +501,7 @@ WHERE id = ANY($1::uuid[])
 type GetAgentRuntimeHeartbeatLeasesRow struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	OwnerID     pgtype.UUID        `json:"owner_id"`
 	DaemonID    pgtype.Text        `json:"daemon_id"`
 	Status      string             `json:"status"`
 	LastSeenAt  pgtype.Timestamptz `json:"last_seen_at"`
@@ -522,6 +523,7 @@ func (q *Queries) GetAgentRuntimeHeartbeatLeases(ctx context.Context, ids []pgty
 		if err := rows.Scan(
 			&i.ID,
 			&i.WorkspaceID,
+			&i.OwnerID,
 			&i.DaemonID,
 			&i.Status,
 			&i.LastSeenAt,
@@ -699,6 +701,51 @@ type ListAgentRuntimesByOwnerParams struct {
 
 func (q *Queries) ListAgentRuntimesByOwner(ctx context.Context, arg ListAgentRuntimesByOwnerParams) ([]AgentRuntime, error) {
 	rows, err := q.db.Query(ctx, listAgentRuntimesByOwner, arg.WorkspaceID, arg.OwnerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentRuntime{}
+	for rows.Next() {
+		var i AgentRuntime
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.DaemonID,
+			&i.Name,
+			&i.RuntimeMode,
+			&i.Provider,
+			&i.Status,
+			&i.DeviceInfo,
+			&i.Metadata,
+			&i.LastSeenAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.OwnerID,
+			&i.LegacyDaemonID,
+			&i.Visibility,
+			&i.ProfileID,
+			&i.CustomName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentRuntimesByOwnerAllWorkspaces = `-- name: ListAgentRuntimesByOwnerAllWorkspaces :many
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name FROM agent_runtime
+WHERE owner_id = $1
+`
+
+// All runtimes a user owns across every workspace. Used by account
+// suspension to cancel in-flight tasks and force runtimes offline.
+func (q *Queries) ListAgentRuntimesByOwnerAllWorkspaces(ctx context.Context, ownerID pgtype.UUID) ([]AgentRuntime, error) {
+	rows, err := q.db.Query(ctx, listAgentRuntimesByOwnerAllWorkspaces, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -988,13 +1035,25 @@ func (q *Queries) LockWorkspaceForRuntimeMerge(ctx context.Context, runtimeIds [
 const markAgentRuntimeOnline = `-- name: MarkAgentRuntimeOnline :one
 UPDATE agent_runtime
 SET status = 'online', last_seen_at = now(), updated_at = now()
-WHERE id = $1
+WHERE agent_runtime.id = $1
+  AND (agent_runtime.owner_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM "user" u
+      WHERE u.id = agent_runtime.owner_id AND u.account_status = 'suspended'
+  ))
 RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name
 `
 
 // Used on the offline→online transition (and on first heartbeat after
 // registration). Writes status, last_seen_at, and updated_at because the
 // status flip is a real state change and we want updated_at to reflect it.
+//
+// The suspended-owner predicate closes the suspension TOCTOU at the write
+// itself: an in-flight heartbeat whose app-level owner check read 'active'
+// BEFORE the suspension transaction committed would otherwise resurrect the
+// force-offlined row here. Inside one database, this predicate and the
+// suspension's status flip serialize — no application-level check can offer
+// that. Zero rows (pgx.ErrNoRows) means "owner suspended, flip refused";
+// callers treat it as a benign skip.
 func (q *Queries) MarkAgentRuntimeOnline(ctx context.Context, id pgtype.UUID) (AgentRuntime, error) {
 	row := q.db.QueryRow(ctx, markAgentRuntimeOnline, id)
 	var i AgentRuntime
@@ -1023,13 +1082,24 @@ func (q *Queries) MarkAgentRuntimeOnline(ctx context.Context, id pgtype.UUID) (A
 const markAgentRuntimeOnlineIfOffline = `-- name: MarkAgentRuntimeOnlineIfOffline :execrows
 UPDATE agent_runtime
 SET status = 'online', last_seen_at = now(), updated_at = now()
-WHERE id = $1 AND status <> 'online'
+WHERE agent_runtime.id = $1
+  AND agent_runtime.status <> 'online'
+  AND (agent_runtime.owner_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM "user" u
+      WHERE u.id = agent_runtime.owner_id AND u.account_status = 'suspended'
+  ))
 `
 
 // Reports whether this heartbeat performed an offline -> online transition.
 // The conditional update prevents concurrent stale heartbeat snapshots from
 // publishing duplicate lifecycle refresh events after another beat already
 // recovered the runtime.
+//
+// Carries the same suspended-owner predicate as MarkAgentRuntimeOnline: this
+// is the first write the recovery path tries, so without it a heartbeat
+// would resurrect a force-offlined runtime here and never reach the guarded
+// query below. Zero rows for a suspended owner then falls through to
+// MarkAgentRuntimeOnline, which refuses the flip with pgx.ErrNoRows.
 func (q *Queries) MarkAgentRuntimeOnlineIfOffline(ctx context.Context, id pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, markAgentRuntimeOnlineIfOffline, id)
 	if err != nil {
@@ -1584,7 +1654,21 @@ ON CONFLICT (workspace_id, daemon_id, provider) WHERE profile_id IS NULL
 DO UPDATE SET
     name = EXCLUDED.name,
     runtime_mode = EXCLUDED.runtime_mode,
-    status = EXCLUDED.status,
+    -- A registration must not resurrect a runtime whose (preserved) owner is
+    -- suspended: a stale mdt_ cache entry can still authenticate for up to
+    -- AuthCacheTTL after suspension deleted the daemon token, and this write
+    -- would otherwise flip the force-offlined row back online. Same
+    -- write-side closure as MarkAgentRuntimeOnline.
+    status = CASE
+        WHEN COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id) IS NOT NULL
+             AND EXISTS (
+                 SELECT 1 FROM "user" u
+                 WHERE u.id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id)
+                   AND u.account_status = 'suspended'
+             )
+        THEN 'offline'
+        ELSE EXCLUDED.status
+    END,
     device_info = EXCLUDED.device_info,
     metadata = EXCLUDED.metadata,
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),
@@ -1688,7 +1772,17 @@ DO UPDATE SET
     name = EXCLUDED.name,
     runtime_mode = EXCLUDED.runtime_mode,
     provider = EXCLUDED.provider,
-    status = EXCLUDED.status,
+    -- Same suspended-owner write guard as UpsertAgentRuntime above.
+    status = CASE
+        WHEN COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id) IS NOT NULL
+             AND EXISTS (
+                 SELECT 1 FROM "user" u
+                 WHERE u.id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id)
+                   AND u.account_status = 'suspended'
+             )
+        THEN 'offline'
+        ELSE EXCLUDED.status
+    END,
     device_info = EXCLUDED.device_info,
     metadata = EXCLUDED.metadata,
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),

@@ -549,22 +549,23 @@ func TestUpdateAgent_RuntimeSwitch_ClearsKnownIncompatibleModel(t *testing.T) {
 // old shared sentence sent users looking for a spelling that cannot exist
 // (MUL-5770).
 //
-// Copilot is the standing example: it discovers over ACP but executes through
-// its own CLI, so no live ACP session exists to carry an effort. Hermes used
-// to play this role and no longer can — jcode runs under that provider and
-// applies an advertised effort, so the provider-level gate is open for it.
+// Cursor is the standing example: it has no reasoning-effort surface at all —
+// unlike Copilot and Kimi, which the fork gives daemon-local thinking
+// catalogs (see thinking.go), and unlike Hermes, which used to play this role
+// and no longer can — jcode runs under that provider and applies an
+// advertised effort, so the provider-level gate is open for it.
 func TestThinkingLevelRejectionCopy(t *testing.T) {
 	t.Parallel()
 
 	t.Run("runtime without reasoning control names the capability gap", func(t *testing.T) {
-		msg := thinkingLevelRejection("copilot", "high")
+		msg := thinkingLevelRejection("cursor", "high")
 		if !strings.Contains(msg, "does not support a per-agent reasoning effort") {
 			t.Errorf("expected a capability explanation, got %q", msg)
 		}
 		if strings.Contains(msg, "not a recognised value") {
 			t.Errorf("capability gap must not read as a bad token, got %q", msg)
 		}
-		if !strings.Contains(msg, `"copilot"`) {
+		if !strings.Contains(msg, `"cursor"`) {
 			t.Errorf("expected the runtime named in %q", msg)
 		}
 	})
@@ -580,13 +581,13 @@ func TestThinkingLevelRejectionCopy(t *testing.T) {
 	})
 
 	t.Run("carry-over path always offers the clear escape hatch", func(t *testing.T) {
-		for _, provider := range []string{"copilot", "claude"} {
+		for _, provider := range []string{"cursor", "claude"} {
 			msg := existingThinkingLevelRejection(provider, "xhigh")
 			if !strings.Contains(msg, `thinking_level=""`) {
 				t.Errorf("provider %q: expected the clear instruction, got %q", provider, msg)
 			}
 		}
-		if msg := existingThinkingLevelRejection("copilot", "xhigh"); !strings.Contains(msg, "does not support a per-agent reasoning effort") {
+		if msg := existingThinkingLevelRejection("cursor", "xhigh"); !strings.Contains(msg, "does not support a per-agent reasoning effort") {
 			t.Errorf("expected the capability explanation on the carry-over path, got %q", msg)
 		}
 	})
@@ -603,7 +604,7 @@ func TestCreateAgent_NoReasoningControlRejectsThinkingLevel(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	gapRuntimeID := createProviderRuntime(t, "copilot")
+	gapRuntimeID := createProviderRuntime(t, "cursor")
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(),
 			`DELETE FROM agent WHERE workspace_id = $1 AND name LIKE '%-thinking-%'`,
@@ -613,7 +614,7 @@ func TestCreateAgent_NoReasoningControlRejectsThinkingLevel(t *testing.T) {
 
 	t.Run("effort value rejected with a capability message", func(t *testing.T) {
 		body := map[string]any{
-			"name":                 "copilot-thinking-high",
+			"name":                 "cursor-thinking-high",
 			"runtime_id":           gapRuntimeID,
 			"visibility":           "private",
 			"max_concurrent_tasks": 1,
@@ -622,7 +623,7 @@ func TestCreateAgent_NoReasoningControlRejectsThinkingLevel(t *testing.T) {
 		w := httptest.NewRecorder()
 		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
 		if w.Code != http.StatusBadRequest {
-			t.Fatalf("copilot thinking_level=high: expected 400, got %d: %s", w.Code, w.Body.String())
+			t.Fatalf("cursor thinking_level=high: expected 400, got %d: %s", w.Code, w.Body.String())
 		}
 		if !strings.Contains(w.Body.String(), "does not support a per-agent reasoning effort") {
 			t.Errorf("expected a capability explanation in the 400 body, got %s", w.Body.String())
@@ -631,7 +632,7 @@ func TestCreateAgent_NoReasoningControlRejectsThinkingLevel(t *testing.T) {
 
 	t.Run("empty value still creates", func(t *testing.T) {
 		body := map[string]any{
-			"name":                 "copilot-thinking-empty",
+			"name":                 "cursor-thinking-empty",
 			"runtime_id":           gapRuntimeID,
 			"visibility":           "private",
 			"max_concurrent_tasks": 1,
@@ -640,7 +641,7 @@ func TestCreateAgent_NoReasoningControlRejectsThinkingLevel(t *testing.T) {
 		w := httptest.NewRecorder()
 		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
 		if w.Code != http.StatusCreated {
-			t.Fatalf("copilot empty thinking_level: expected 201, got %d: %s", w.Code, w.Body.String())
+			t.Fatalf("cursor empty thinking_level: expected 201, got %d: %s", w.Code, w.Body.String())
 		}
 	})
 

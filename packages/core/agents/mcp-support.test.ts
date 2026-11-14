@@ -8,7 +8,6 @@ describe("providerSupportsMcpConfig", () => {
   });
   it("rejects providers whose runtime ignores mcp_config", () => {
     expect(providerSupportsMcpConfig("antigravity")).toBe(false);
-    expect(providerSupportsMcpConfig("copilot")).toBe(false);
     // Pi ships without MCP by design: upstream's README states "No MCP." and
     // directs users to extensions instead, so there is no config file Multica
     // could write that pi would read. Only its omp fork consumes mcp_config.

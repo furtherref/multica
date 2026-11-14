@@ -1368,6 +1368,40 @@ func TestCodexRawItemCommandExecution(t *testing.T) {
 	}
 }
 
+func TestCodexRawItemFileChangeAggregatesOutputDelta(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+
+	var messages []Message
+	c.onMessage = func(msg Message) {
+		messages = append(messages, msg)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"fileChange","id":"patch-1"}}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/fileChange/outputDelta","params":{"item":{"type":"fileChange","id":"patch-1"},"delta":"--- a/a.txt\n+++ b/a.txt\n"}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/fileChange/outputDelta","params":{"item":{"type":"fileChange","id":"patch-1"},"delta":"@@ -1 +1 @@\n-old\n+new\n"}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"fileChange","id":"patch-1"}}}`)
+
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+	if messages[0].Type != MessageToolUse || messages[0].Tool != "patch_apply" || messages[0].CallID != "patch-1" {
+		t.Fatalf("unexpected start message: %+v", messages[0])
+	}
+	if messages[1].Type != MessageToolResult || messages[1].Tool != "patch_apply" || messages[1].CallID != "patch-1" {
+		t.Fatalf("unexpected complete message: %+v", messages[1])
+	}
+	// The aggregated deltas now ride through codexPatchResultOutput, which
+	// trims each segment before joining it under the status headline (absent
+	// here: this event carries no status and no changes). The patch body is
+	// unchanged apart from that trailing newline.
+	if messages[1].Output != "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new" {
+		t.Fatalf("unexpected aggregated diff output: %q", messages[1].Output)
+	}
+}
+
 func TestCodexRawItemMCPToolCall(t *testing.T) {
 	t.Parallel()
 
@@ -1430,6 +1464,177 @@ func TestCodexRawItemMCPToolCallFailureIsSanitized(t *testing.T) {
 	}
 	if got := messages[0].Output; got != "failed\nerror: Bearer [REDACTED]" {
 		t.Fatalf("unexpected sanitized MCP failure summary: %q", got)
+	}
+}
+
+func TestCodexRawAgentMessageCompletionWithoutDeltasEmitsFullText(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+
+	var messages []Message
+	c.onMessage = func(msg Message) {
+		messages = append(messages, msg)
+	}
+
+	// No deltas streamed (short reply, or a backend that doesn't stream):
+	// completion must still emit the full text so output is unchanged.
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg-1","text":"Done"}}}`)
+
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 text message, got %d: %+v", len(messages), messages)
+	}
+	if messages[0].Type != MessageText || messages[0].Content != "Done" {
+		t.Fatalf("unexpected message: %+v", messages[0])
+	}
+}
+
+func TestCodexRawTurnDiffEmitsFinalDiffOnTurnCompleted(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	c.threadID = "thr-main"
+	c.turnID = "turn-1"
+
+	var messages []Message
+	c.onMessage = func(msg Message) {
+		messages = append(messages, msg)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-other","turnId":"turn-2","diff":"--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-old\n+new\n"}}`)
+
+	if len(messages) != 0 {
+		t.Fatalf("expected no diff messages before turn/completed, got %d: %+v", len(messages), messages)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-main","turn":{"id":"turn-1","status":"completed"}}}`)
+
+	if len(messages) != 1 {
+		t.Fatalf("expected one buffered patch diff message, got %d: %+v", len(messages), messages)
+	}
+	if messages[0].Type != MessageToolResult || messages[0].Tool != "patch_apply" || messages[0].CallID != "turn-1:diff" {
+		t.Fatalf("unexpected diff message: %+v", messages[0])
+	}
+	if messages[0].Output != "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n" {
+		t.Fatalf("unexpected diff output: %q", messages[0].Output)
+	}
+}
+
+func TestCodexRawTurnDiffSuppressesTransientSnapshots(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	c.threadID = "thr-main"
+	c.turnID = "turn-1"
+
+	var messages []Message
+	c.onMessage = func(msg Message) {
+		messages = append(messages, msg)
+	}
+
+	// Edit, then revise to a different diff. Only the latest should survive.
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+intermediate\n"}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+final\n"}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-main","turn":{"id":"turn-1","status":"completed"}}}`)
+
+	if len(messages) != 1 {
+		t.Fatalf("expected only the final diff to be emitted, got %d: %+v", len(messages), messages)
+	}
+	if messages[0].Output != "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+final\n" {
+		t.Fatalf("expected final diff, got %q", messages[0].Output)
+	}
+}
+
+func TestCodexRawTurnDiffFlushesOnFinalAnswer(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	c.threadID = "thr-main"
+	c.turnID = "turn-1"
+
+	var messages []Message
+	c.onMessage = func(msg Message) {
+		messages = append(messages, msg)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}}`)
+	// Turn finishes via final_answer agentMessage instead of turn/completed.
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-main","item":{"type":"agentMessage","id":"msg-1","text":"Done","phase":"final_answer"}}}`)
+
+	var diffIdx, textIdx int = -1, -1
+	for i, m := range messages {
+		if m.Tool == "patch_apply" && m.CallID == "turn-1:diff" {
+			diffIdx = i
+		}
+		if m.Type == MessageText && m.Content == "Done" {
+			textIdx = i
+		}
+	}
+	if diffIdx < 0 {
+		t.Fatalf("expected buffered diff to flush on final_answer, got messages: %+v", messages)
+	}
+	if textIdx < 0 {
+		t.Fatalf("expected final-answer text to be emitted, got messages: %+v", messages)
+	}
+	// turn/diff/updated arrived before the final-answer text, so the
+	// transcript ordering must preserve that: diff first, text second.
+	if diffIdx > textIdx {
+		t.Fatalf("expected diff (idx=%d) to be emitted before final-answer text (idx=%d): %+v", diffIdx, textIdx, messages)
+	}
+	if messages[diffIdx].Output != "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n" {
+		t.Fatalf("unexpected diff output: %q", messages[diffIdx].Output)
+	}
+}
+
+func TestCodexRawTurnDiffSkipsEmptyFinalSnapshot(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	c.threadID = "thr-main"
+	c.turnID = "turn-1"
+
+	var messages []Message
+	c.onMessage = func(msg Message) {
+		messages = append(messages, msg)
+	}
+
+	// Edit, then revert: turn ends with no net change. No patch_apply entry
+	// should be appended to the append-only timeline.
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-main","turnId":"turn-1","diff":""}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-main","turn":{"id":"turn-1","status":"completed"}}}`)
+
+	if len(messages) != 0 {
+		t.Fatalf("expected no diff messages when final snapshot is empty, got %d: %+v", len(messages), messages)
+	}
+}
+
+func TestCodexRawItemFileChangeUsesAggregatedOutputFallback(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+
+	var messages []Message
+	c.onMessage = func(msg Message) {
+		messages = append(messages, msg)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"fileChange","id":"patch-1"}}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"fileChange","id":"patch-1","aggregatedOutput":"patched: a.txt"}}}`)
+
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+	if messages[1].Type != MessageToolResult || messages[1].Output != "patched: a.txt" {
+		t.Fatalf("unexpected complete message: %+v", messages[1])
 	}
 }
 
@@ -2361,6 +2566,12 @@ func TestCodexStartOrResumeThreadResumesPriorThread(t *testing.T) {
 				}
 				if params["cwd"] != "/work" {
 					t.Errorf("cwd = %v, want /work", params["cwd"])
+				}
+				if params["excludeTurns"] != true {
+					t.Errorf("excludeTurns = %v, want true to avoid replaying unbounded history over stdout", params["excludeTurns"])
+				}
+				if _, ok := params["history"]; ok {
+					t.Error("resume must load persisted history, not override it")
 				}
 			},
 		},
@@ -3437,6 +3648,66 @@ func TestCodexExecuteFailsWhenProcessExitsDuringActiveTurn(t *testing.T) {
 		t.Fatalf("process exit should fail fast instead of timeout, got %q", result.Error)
 	}
 }
+
+func TestCodexExecuteResumesWithoutHydratingLargeHistory(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	// Simulate an app-server whose persisted history exceeds the stdout line
+	// cap. excludeTurns makes the response small without starting a new thread.
+	fakePath := writeFakeCodexAppServer(t, `
+read line
+echo '{"jsonrpc":"2.0","id":1,"result":{}}'
+read line
+read line
+case "$line" in
+  *'"excludeTurns":true'*)
+    echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr_prior","turns":[]}}}'
+    ;;
+  *)
+    printf '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr_prior","turns":[{"text":"'
+`+fmt.Sprintf(`head -c %d /dev/zero | tr '\0' 'x'`, agentStreamMaxLineBytes+1024*1024)+`
+    printf '"}]}}}\n'
+    exit 0
+    ;;
+esac
+read line
+printf '%s\n' "$line" > "$(dirname "$0")/turn-start.json"
+echo '{"jsonrpc":"2.0","id":3,"result":{}}'
+echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_prior","turn":{"id":"turn-current"}}}'
+echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr_prior","turnId":"turn-current","item":{"type":"agentMessage","id":"msg-current","text":"Continued"}}}'
+echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_prior","turn":{"id":"turn-current","status":"completed"}}}'
+`)
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		ResumeSessionID:           "thr_prior",
+		ResumeExpected:            true,
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 5 * time.Second,
+	})
+	if result.Status != "completed" || result.SessionID != "thr_prior" || result.ResumeRejected || result.Output != "Continued" {
+		t.Fatalf("expected successful continuation of the original thread, got %+v", result)
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(fakePath), "turn-start.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Method string `json:"method"`
+		Params struct {
+			ThreadID string `json:"threadId"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(data, &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Method != "turn/start" || request.Params.ThreadID != "thr_prior" {
+		t.Fatalf("expected turn/start on the original thread, got %s", data)
+	}
+}
+
 func TestCodexExecuteCleansUpWhenScannerOverflowsOnResume(t *testing.T) {
 	// Not t.Parallel(): this test mutates codexGracefulShutdownTimeoutNanos
 	// globally, so running concurrently with other codex Execute tests
@@ -4103,7 +4374,7 @@ func TestCodexExecuteSemanticInactivityAllowsContinuousDeltaProgress(t *testing.
 		`sleep 0.05`+"\n"+
 		`echo '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thr-delta","turnId":"turn-delta","itemId":"msg-1","delta":"thinking"}}'`+"\n"+
 		`sleep 0.05`+"\n"+
-		`echo '{"jsonrpc":"2.0","method":"item/fileChange/outputDelta","params":{"threadId":"thr-delta","item":{"type":"fileChange","id":"patch-1"},"delta":"patched"}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-delta","turnId":"turn-delta","diff":"--- a/a.txt\n+++ b/a.txt\n"}}'`+"\n"+
 		`sleep 0.05`+"\n"+
 		`echo '{"jsonrpc":"2.0","method":"item/mcpToolCall/progress","params":{"threadId":"thr-delta","item":{"type":"mcpToolCall","id":"mcp-1"},"progress":{"message":"still running"}}}'`+"\n"+
 		`sleep 0.05`+"\n"+
@@ -4247,6 +4518,81 @@ func TestCodexExecuteSemanticInactivityDoesNotAffectNormalTurnCompletion(t *test
 	}
 	if result.Output != "Done" {
 		t.Fatalf("expected output Done, got %q", result.Output)
+	}
+}
+
+func TestCodexExecuteFlushesBufferedDiffOnSemanticInactivityTimeout(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	// Fake codex emits turn/started + turn/diff/updated and then hangs.
+	// Semantic inactivity timeout will fire before turn/completed arrives.
+	// Use printf instead of echo so the JSON \n escapes are emitted as
+	// literal "\n" bytes (not interpreted as newlines by the shell).
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-hang"}}}'`+"\n"+
+		`read line`+"\n"+
+		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`printf '%s\n' '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-hang","turn":{"id":"turn-hang"}}}'`+"\n"+
+		`sleep 0.1`+"\n"+
+		`printf '%s\n' '{"jsonrpc":"2.0","method":"turn/diff/updated","params":{"threadId":"thr-hang","turnId":"turn-hang","diff":"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}}'`+"\n"+
+		// Stay alive long enough for semantic inactivity timeout to fire after
+		// the diff is processed.
+		`sleep 5`+"\n")
+
+	backend, err := New("codex", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new codex backend: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt", ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 1500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var diffSeen bool
+	var diffOutput string
+	var allMessages []Message
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for msg := range session.Messages {
+			allMessages = append(allMessages, msg)
+			if msg.Tool == "patch_apply" && msg.CallID == "turn-hang:diff" {
+				diffSeen = true
+				diffOutput = msg.Output
+			}
+		}
+	}()
+
+	select {
+	case result, ok := <-session.Result:
+		if !ok {
+			t.Fatal("result channel closed without a value")
+		}
+		if result.Status != "timeout" {
+			t.Fatalf("expected status=timeout, got %q (error=%q)", result.Status, result.Error)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+	<-done
+
+	if !diffSeen {
+		t.Fatalf("expected buffered diff to flush on semantic inactivity timeout, got messages: %+v", allMessages)
+	}
+	if diffOutput != "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n" {
+		t.Fatalf("unexpected flushed diff: %q", diffOutput)
 	}
 }
 

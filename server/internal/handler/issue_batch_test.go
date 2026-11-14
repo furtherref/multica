@@ -124,6 +124,60 @@ func TestBatchUpdateValidUpdatesPersistAndCount(t *testing.T) {
 	}
 }
 
+func TestUpdateIssueArchiveCancelsActiveTasks(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	issueID := createTestIssue(t, "archive-cancel-single", "in_progress", "medium")
+	t.Cleanup(func() { deleteTestIssue(t, issueID) })
+
+	taskID := createIssueTask(t, issueID, "running")
+
+	w := httptest.NewRecorder()
+	req := newRequest("PUT", "/api/issues/"+issueID, map[string]any{"status": "archive"})
+	req = withURLParam(req, "id", issueID)
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateIssue archive: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if got := taskStatus(t, taskID); got != "cancelled" {
+		t.Fatalf("archive status should cancel active task, got %q", got)
+	}
+}
+
+func TestBatchUpdateArchiveCancelsActiveTasks(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	issueID := createTestIssue(t, "archive-cancel-batch", "in_progress", "medium")
+	t.Cleanup(func() { deleteTestIssue(t, issueID) })
+
+	taskID := createIssueTask(t, issueID, "dispatched")
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
+		"issue_ids": []string{issueID},
+		"updates":   map[string]any{"status": "archive"},
+	})
+	testHandler.BatchUpdateIssues(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("BatchUpdateIssues archive: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Updated int `json:"updated"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Updated != 1 {
+		t.Fatalf("expected updated=1, got %d", resp.Updated)
+	}
+
+	if got := taskStatus(t, taskID); got != "cancelled" {
+		t.Fatalf("batch archive status should cancel active task, got %q", got)
+	}
+}
+
 // TestBatchUpdateStageOnly — regression for the stage barrier feature: a
 // batch update whose only field is `stage` must count as a mutation (hasMutation
 // includes "stage") and actually persist, not silently return {"updated": 0}.
@@ -184,6 +238,33 @@ func deleteTestIssue(t *testing.T, id string) {
 	req := newRequest("DELETE", "/api/issues/"+id, nil)
 	req = withURLParam(req, "id", id)
 	testHandler.DeleteIssue(w, req)
+}
+
+func createIssueTask(t *testing.T, issueID string, status string) string {
+	t.Helper()
+	ctx := context.Background()
+
+	agentID := createHandlerTestAgent(t, "archive-task-agent", nil)
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `SELECT runtime_id FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("load agent runtime: %v", err)
+	}
+
+	var taskID string
+	if err := testPool.QueryRow(ctx,
+		`INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
+		 VALUES ($1, $2, $3, $4, 0)
+		 RETURNING id`,
+		agentID, runtimeID, issueID, status,
+	).Scan(&taskID); err != nil {
+		t.Fatalf("create issue task: %v", err)
+	}
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+	})
+
+	return taskID
 }
 
 // --- MUL-4155: batch cross-stage child-done aggregation ---
@@ -262,12 +343,10 @@ func newStagedBatchFixture(t *testing.T) stagedBatchFixture {
 	fx.stage2 = []IssueResponse{mkChild(2), mkChild(2)}
 
 	t.Cleanup(func() {
-		ctx := context.Background()
-		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, parent.ID)
 		for _, c := range append(append([]IssueResponse{}, fx.stage1...), fx.stage2...) {
-			testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, c.ID)
+			cleanupChildDoneIssue(c.ID)
 		}
-		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, parent.ID)
+		cleanupChildDoneIssue(parent.ID)
 	})
 
 	return fx
@@ -287,67 +366,23 @@ func batchSetStatus(t *testing.T, ids []string, status string) {
 	}
 }
 
-// systemCommentIDOn returns the id of the single (latest) system comment on issueID.
-func systemCommentIDOn(t *testing.T, issueID string) string {
-	t.Helper()
-	var id string
-	if err := testPool.QueryRow(context.Background(),
-		`SELECT id::text FROM comment
-		   WHERE issue_id = $1 AND author_type = 'system'
-		   ORDER BY created_at DESC LIMIT 1`,
-		issueID,
-	).Scan(&id); err != nil {
-		t.Fatalf("read system comment id: %v", err)
-	}
-	return id
-}
-
-// triggerCommentIDForAgentTask returns the trigger_comment_id of the single
-// pending task on issueID for agentID.
-func triggerCommentIDForAgentTask(t *testing.T, issueID, agentID string) string {
-	t.Helper()
-	var id string
-	if err := testPool.QueryRow(context.Background(),
-		`SELECT trigger_comment_id::text FROM agent_task_queue
-		   WHERE issue_id = $1 AND agent_id = $2
-		     AND status IN ('queued','dispatched','running')
-		   ORDER BY created_at DESC LIMIT 1`,
-		issueID, agentID,
-	).Scan(&id); err != nil {
-		t.Fatalf("read task trigger_comment_id: %v", err)
-	}
-	return id
-}
-
-// TestBatchChildDoneCrossStage_OneComment is the MUL-4155 core. A single batch
-// that finishes children across two stages must produce exactly ONE accurate
-// system comment on the parent — announcing the highest stage closed by the
-// final state, never a stale "Stage 2 is next" — and the parent assignee's
-// single wake must be pinned to that final comment, regardless of id order.
-func TestBatchChildDoneCrossStage_OneComment(t *testing.T) {
+// TestBatchChildDoneCrossStage_OneWake is the MUL-4155 core. A single batch
+// that finishes children across two stages must wake the parent once, from
+// the final state: every sub-issue closed, never a stale "Stage 2 is next",
+// regardless of id order.
+func TestBatchChildDoneCrossStage_OneWake(t *testing.T) {
 	assertFinal := func(t *testing.T, parentID, agentID string) {
 		t.Helper()
-		if got := countSystemCommentsOn(t, parentID); got != 1 {
-			t.Fatalf("expected exactly 1 system comment on parent, got %d", got)
+		entries := childDoneEntries(t, parentID)
+		if len(entries) != 1 || entries[0].Stage != nil || entries[0].Total != 4 || entries[0].Outcome != "woke" {
+			t.Fatalf("entries = %+v, want one wrap-up wake", entries)
 		}
-		content, _, _, _ := systemCommentOn(t, parentID)
-		if !strings.Contains(content, "Stage 2 of this issue is complete") {
-			t.Errorf("expected the comment to announce the top closed stage (Stage 2), got: %s", content)
+		runs := childDoneRuns(t, parentID)
+		if len(runs) != 1 || runs[0].ID != entries[0].TaskID || strings.Contains(runs[0].Note, "next_stage") || !strings.Contains(runs[0].Note, `"all":true`) {
+			t.Fatalf("runs = %+v, want one run for the final state", runs)
 		}
-		if !strings.Contains(content, "Stage 1: 2/2 done; Stage 2: 2/2 done") {
-			t.Errorf("expected the final-state stage summary, got: %s", content)
-		}
-		// The bug: a mid-batch snapshot told the parent to advance a stage this
-		// same batch had already finished.
-		if strings.Contains(content, "is next") || strings.Contains(content, "(next)") {
-			t.Errorf("comment must not carry a stale next-stage instruction, got: %s", content)
-		}
-		// Exactly one wake, pinned to the final comment.
 		if got := countPendingTasksForAgent(t, parentID, agentID); got != 1 {
 			t.Fatalf("expected exactly 1 pending parent task, got %d", got)
-		}
-		if trig, want := triggerCommentIDForAgentTask(t, parentID, agentID), systemCommentIDOn(t, parentID); trig != want {
-			t.Errorf("parent wake pinned to %s, want the final comment %s", trig, want)
 		}
 	}
 
@@ -365,46 +400,77 @@ func TestBatchChildDoneCrossStage_OneComment(t *testing.T) {
 }
 
 // TestBatchChildDoneCrossStage_Cancelled — cancelling every stage in one batch
-// is terminal too, but the notification must distinguish cancellation from
-// successful completion while still emitting one accurate final comment.
+// closes them too; the facts count the cancellations apart from finished work.
 func TestBatchChildDoneCrossStage_Cancelled(t *testing.T) {
 	fx := newStagedBatchFixture(t)
 	batchSetStatus(t, []string{fx.stage1[0].ID, fx.stage1[1].ID, fx.stage2[0].ID, fx.stage2[1].ID}, "cancelled")
 
-	if got := countSystemCommentsOn(t, fx.parent.ID); got != 1 {
-		t.Fatalf("expected exactly 1 system comment on parent, got %d", got)
-	}
-	content, _, _, _ := systemCommentOn(t, fx.parent.ID)
-	if !strings.Contains(content, "Stage 2 of this issue is closed") {
-		t.Errorf("expected Stage 2 closed announcement for cancelled work, got: %s", content)
-	}
-	if !strings.Contains(content, "Stage 1: 0/2 done, 2 cancelled; Stage 2: 0/2 done, 2 cancelled") {
-		t.Errorf("expected cancelled children to be counted separately from done, got: %s", content)
-	}
-	if strings.Contains(content, "is next") || strings.Contains(content, "(next)") {
-		t.Errorf("comment must not carry a stale next-stage instruction, got: %s", content)
+	runs := childDoneRuns(t, fx.parent.ID)
+	if len(runs) != 1 || !strings.Contains(runs[0].Note, `"cancelled":4`) || strings.Contains(runs[0].Note, "next_stage") {
+		t.Fatalf("runs = %+v, want one wake counting 4 cancellations", runs)
 	}
 }
 
 // TestBatchChildDoneClosesLowerStageOnly — when a batch finishes only the lower
-// stage (a later stage still has open children), the parent must be told Stage 1
-// is complete AND accurately pointed at Stage 2 as next. Guards against
-// over-suppressing the legitimate advance instruction.
+// stage, the parent is told Stage 1 closed and pointed at Stage 2.
 func TestBatchChildDoneClosesLowerStageOnly(t *testing.T) {
 	fx := newStagedBatchFixture(t)
 	batchSetStatus(t, []string{fx.stage1[0].ID, fx.stage1[1].ID}, "done")
 
-	if got := countSystemCommentsOn(t, fx.parent.ID); got != 1 {
-		t.Fatalf("expected exactly 1 system comment on parent, got %d", got)
+	entries := childDoneEntries(t, fx.parent.ID)
+	if len(entries) != 1 || entries[0].Stage == nil || *entries[0].Stage != 1 || entries[0].Total != 2 {
+		t.Fatalf("entries = %+v, want stage 1", entries)
 	}
-	content, _, _, _ := systemCommentOn(t, fx.parent.ID)
-	if !strings.Contains(content, "Stage 1 of this issue is complete") {
-		t.Errorf("expected Stage 1 completion announcement, got: %s", content)
+	runs := childDoneRuns(t, fx.parent.ID)
+	if len(runs) != 1 || !strings.Contains(runs[0].Note, `"next_stage":2`) {
+		t.Fatalf("runs = %+v, want the next stage named", runs)
 	}
-	if !strings.Contains(content, "Stage 2: 0/2 done (next)") {
-		t.Errorf("expected accurate next-stage progress, got: %s", content)
+}
+
+// Fix (e), batch child side: batch-archiving all children must close the
+// barrier and notify the parent exactly once.
+func TestBatchChildArchiveNotifiesParentOnce(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
 	}
-	if !strings.Contains(content, "Stage 2 is next") {
-		t.Errorf("expected the advance-to-next-stage instruction, got: %s", content)
+	fx := newChildDoneFixture(t, "in_progress")
+	second := createIssueViaHTTP(t, map[string]any{
+		"title":           "batch-archive-child-2",
+		"status":          "in_progress",
+		"parent_issue_id": fx.parent.ID,
+	})
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
+		"issue_ids": []string{fx.child.ID, second.ID},
+		"updates":   map[string]any{"status": "archive"},
+	})
+	testHandler.BatchUpdateIssues(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := len(childDoneEntries(t, fx.parent.ID)); got != 1 {
+		t.Fatalf("batch-archiving all children must notify parent exactly once, got %d entries", got)
+	}
+}
+
+// Fix (e), batch parent side: a batch child completion must also leave an
+// archived parent inert.
+func TestBatchChildDoneSkipsArchivedParent(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fx := newChildDoneFixture(t, "in_progress")
+	updateChildStatus(t, fx.parent.ID, "archive")
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
+		"issue_ids": []string{fx.child.ID},
+		"updates":   map[string]any{"status": "done"},
+	})
+	testHandler.BatchUpdateIssues(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := len(childDoneEntries(t, fx.parent.ID)); got != 0 {
+		t.Fatalf("archived parent must stay inert on batch child done, got %d entries", got)
 	}
 }

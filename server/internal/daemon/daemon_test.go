@@ -1555,6 +1555,39 @@ func TestWatchTaskCancellation_RunningTaskNotInterrupted(t *testing.T) {
 	}
 }
 
+// TestWatchTaskCancellation_ImmediateFirstCheck pins the fix wave 4 change:
+// the watcher performs a first check() before entering the select loop, so a
+// task that is ALREADY terminal when the watcher starts (e.g. the archive
+// race — cancel landed between /start and the watcher spinning up) is
+// detected in milliseconds instead of waiting out the first poll interval.
+// The 30s poll interval here rules out the ticker path; only the immediate
+// check can close this fast.
+func TestWatchTaskCancellation_ImmediateFirstCheck(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"cancelled"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{client: NewClient(srv.URL), logger: slog.Default()}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	start := time.Now()
+	cancelled := d.watchTaskCancellation(ctx, "task-already-terminal", 30*time.Second, slog.Default())
+
+	select {
+	case <-cancelled:
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("expected the immediate first check to close well under the 30s poll interval, took %s", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchTaskCancellation did not perform an immediate first check")
+	}
+}
+
 func TestMergeUsage(t *testing.T) {
 	t.Parallel()
 
@@ -1611,8 +1644,9 @@ func newTestDaemon(t *testing.T) *Daemon {
 	}))
 	t.Cleanup(srv.Close)
 	return &Daemon{
-		client: NewClient(srv.URL),
-		logger: slog.Default(),
+		client:              NewClient(srv.URL),
+		logger:              slog.Default(),
+		cancelledResultWait: 10 * time.Millisecond,
 	}
 }
 
@@ -2666,7 +2700,7 @@ func newTranscriptRecorder(t *testing.T) (*Daemon, *transcriptRecorder) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(srv.Close)
-	return &Daemon{client: NewClient(srv.URL), logger: slog.Default()}, rec
+	return &Daemon{client: NewClient(srv.URL), logger: slog.Default(), cancelledResultWait: 10 * time.Millisecond}, rec
 }
 
 // TestExecuteAndDrain_FlushesTranscriptBeforeReturningResult pins the
@@ -5454,9 +5488,22 @@ func TestHandleTask_ReportsUsageBeforeCancel(t *testing.T) {
 			recordCall("usage")
 			w.WriteHeader(http.StatusOK)
 		case strings.HasSuffix(r.URL.Path, "/status"):
-			recordCall("status")
+			// The cancellation watcher performs an immediate first status
+			// check when it starts, concurrently with the runner. Answer
+			// "running" until usage has been reported so that early read
+			// neither interrupts the task nor races into callOrder; only the
+			// post-run status check — the one this test orders against —
+			// sees "cancelled".
+			mu.Lock()
+			usageSeen := slices.Contains(callOrder, "usage")
+			mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
+			if !usageSeen {
+				_, _ = w.Write([]byte(`{"status":"running"}`))
+				return
+			}
+			recordCall("status")
 			_, _ = w.Write([]byte(`{"status":"cancelled"}`))
 		default:
 			w.WriteHeader(http.StatusOK)
@@ -6543,7 +6590,7 @@ func TestBuildPromptSquadLeaderMultiThreadCarvesOutNoAction(t *testing.T) {
 // TestHermesProfileChainCoversLaunchPrefix is the daemon half of GH #7046's
 // Hermes regression. A custom runtime profile's fixed_args are no longer folded
 // into custom_args — they become the launch prefix and reach hermes ahead of
-// custom_args, with the backend's own `acp` token between the two.
+// custom_args, which in turn precede the backend's own `acp` token.
 //
 // Both halves of the profile chain therefore have to run against the argv the
 // backend really assembles. Resolving or stripping against a hand-built
@@ -6552,10 +6599,10 @@ func TestBuildPromptSquadLeaderMultiThreadCarvesOutNoAction(t *testing.T) {
 func TestHermesProfileChainCoversLaunchPrefix(t *testing.T) {
 	t.Parallel()
 
-	// A prefix ending in a value-taking flag: the `acp` token decides which
-	// selection hermes sees, so it must be present when the daemon resolves.
-	launchPrefix := []string{"--model"}
-	customArgs := []string{"-p", "research", "--yolo"}
+	// A prefix ending in a bare `-p`: the selection straddles the two regions,
+	// so only the assembled argv shows which profile hermes sees.
+	launchPrefix := []string{"-p"}
+	customArgs := []string{"research", "--yolo"}
 
 	sel := agent.ParseHermesProfileArgs(
 		agent.HermesLaunchArgv(launchPrefix, customArgs, slog.Default()))
@@ -6571,10 +6618,10 @@ func TestHermesProfileChainCoversLaunchPrefix(t *testing.T) {
 		agent.HermesLaunchArgv(strippedPrefix, strippedCustom, slog.Default())); sel.Found {
 		t.Fatalf("the launched argv can still redirect HERMES_HOME: %+v", sel)
 	}
-	if strings.Join(strippedPrefix, "\x00") != "--model" {
-		t.Errorf("prefix = %v, want the non-selector token kept", strippedPrefix)
+	if len(strippedPrefix) != 0 {
+		t.Errorf("prefix = %v, want the straddling `-p` removed", strippedPrefix)
 	}
 	if strings.Join(strippedCustom, "\x00") != "--yolo" {
-		t.Errorf("custom = %v, want only the selector removed", strippedCustom)
+		t.Errorf("custom = %v, want only the selector's value removed", strippedCustom)
 	}
 }

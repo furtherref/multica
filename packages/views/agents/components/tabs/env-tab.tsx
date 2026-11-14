@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipboardEvent } from "react";
 import {
   Eye,
@@ -79,10 +79,21 @@ function entriesToEnvMap(entries: EnvEntry[]): Record<string, string> {
 
 export function EnvTab({
   agent,
+  canEdit,
   onDirtyChange,
   onSaved,
 }: {
   agent: Agent;
+  /**
+   * Mirrors the backend env gate (agent owner or workspace owner/admin —
+   * `canEditAgent` in @multica/core/permissions). When false the tab is
+   * read-only: configured-key count plus a permission hint, no Reveal
+   * button — so members never hit the backend 403. `null` means the
+   * permission is still resolving (member list loading): show the neutral
+   * pre-reveal copy with neither the Reveal button nor the denial hint, so
+   * a slow fetch never flashes a hard "no permission" message at an admin.
+   */
+  canEdit: boolean | null;
   onDirtyChange?: (dirty: boolean) => void;
   // Notifier so the parent page can refresh its agent cache after a
   // successful PUT — the parent owns the `Agent` object the rest of
@@ -129,10 +140,45 @@ export function EnvTab({
     onDirtyChange?.(hasUnsavedWork);
   }, [hasUnsavedWork, onDirtyChange]);
 
+  // Mid-session permission loss (ownership reassigned in the inspector, or
+  // role downgraded — a WS invalidation re-renders us with canEdit=false):
+  // unmount the editor and drop the revealed values instead of leaving a
+  // Save button that can only produce a backend 403. Discarding unsaved
+  // edits here is intentional — the user no longer may write them.
+  // Explicitly NOT on `null`: that's "permission unknown (loading)", and a
+  // transient resolving state must never nuke an open editor.
+  useEffect(() => {
+    if (canEdit === false && revealed !== null) {
+      setRevealed(null);
+      setOriginalMap({});
+    }
+  }, [canEdit, revealed]);
+
+  // Latest-value mirror of `canEdit` for the async reveal/save handlers. They
+  // close over `canEdit` at call time, so they cannot see a permission revoked
+  // *while a request is in flight*; reading the ref after the await lets them
+  // drop a late response instead of writing plaintext env to state (see
+  // handleReveal / handleSave). Updated during render rather than in an effect
+  // on purpose: a fetch promise resolves on a microtask that can run before a
+  // passive effect would, so an effect-updated ref would still hold the stale
+  // value at that moment. The write is idempotent (derived straight from a
+  // prop), which is what makes updating it in render safe here.
+  const canEditRef = useRef(canEdit);
+  canEditRef.current = canEdit;
+
   const handleReveal = useCallback(async () => {
     setRevealing(true);
     try {
       const resp = await api.getAgentEnv(agent.id);
+      // Permission may have been revoked while the request was in flight
+      // (ownership reassigned / role downgraded → a WS invalidation flips
+      // canEdit to false). Writing the response to state here would render
+      // one frame of the plaintext editor before the canEdit-effect above
+      // tears it down — a brief but real leak of secret values onto the
+      // screen. Drop the response instead; the user already lost the right
+      // to see it. The audit row for the reveal was still written
+      // server-side, which is correct: the read did happen.
+      if (canEditRef.current !== true) return;
       const env = resp.custom_env ?? {};
       setOriginalMap(env);
       setRevealed(envMapToEntries(env));
@@ -278,6 +324,10 @@ export function EnvTab({
 
   const handleSave = async () => {
     if (revealed === null) return;
+    // Don't attempt a write the backend will 403. The Save button is also
+    // disabled when canEdit !== true; this guards the narrow race where the
+    // permission flips between render and the click handler firing.
+    if (canEditRef.current !== true) return;
     const keys = revealed.filter((e) => e.key.trim()).map((e) => e.key.trim());
     const uniqueKeys = new Set(keys);
     if (uniqueKeys.size < keys.length) {
@@ -290,6 +340,11 @@ export function EnvTab({
       const resp = await api.updateAgentEnv(agent.id, {
         custom_env: currentEnvMap,
       });
+      // Same late-response guard as handleReveal: the PUT response carries the
+      // full plaintext env, so if permission was revoked while it was in
+      // flight, drop it instead of re-rendering the editor with secret values.
+      // The write already happened server-side; we just don't echo it back.
+      if (canEditRef.current !== true) return;
       const env = resp.custom_env ?? {};
       const savedEntries = envMapToEntries(env);
       setOriginalMap(env);
@@ -319,10 +374,17 @@ export function EnvTab({
     }
   };
 
-  // Pre-reveal state: show count + Reveal button. We never auto-fetch
-  // on mount so a member just navigating between tabs doesn't trigger
-  // an audit-log entry; the reveal must be intentional.
-  if (revealed === null) {
+  // Pre-reveal state: show count + (when canEdit === true) the Reveal button.
+  // We never auto-fetch on mount so a member just navigating between tabs
+  // doesn't trigger an audit-log entry; the reveal must be intentional.
+  //
+  // `canEdit === false` short-circuits to this read-only view too: if
+  // permission was revoked after a reveal, render it immediately instead of
+  // painting the editor for the one frame before the cleanup effect resets
+  // `revealed`. The effect still runs to clear the in-memory plaintext.
+  // `null` (still loading) is intentionally NOT short-circuited, so an
+  // already-open editor doesn't flicker while the member list refetches.
+  if (revealed === null || canEdit === false) {
     return (
       <div className="space-y-4">
         <div className="flex items-start justify-between gap-3">
@@ -336,26 +398,30 @@ export function EnvTab({
                 : t(($) => $.tab_body.env.not_revealed_empty)}
             </p>
             <p className="text-caption text-muted-foreground">
-              {t(($) => $.tab_body.env.not_revealed_hint)}
+              {canEdit === false
+                ? t(($) => $.tab_body.env.no_permission_hint)
+                : t(($) => $.tab_body.env.not_revealed_hint)}
             </p>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={revealing}
-            onClick={handleReveal}
-            className="shrink-0"
-          >
-            {revealing ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Eye className="h-3.5 w-3.5" />
-            )}
-            {revealing
-              ? t(($) => $.tab_body.env.revealing)
-              : t(($) => $.tab_body.env.reveal_action)}
-          </Button>
+          {canEdit === true && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={revealing}
+              onClick={handleReveal}
+              className="shrink-0"
+            >
+              {revealing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Eye className="h-3.5 w-3.5" />
+              )}
+              {revealing
+                ? t(($) => $.tab_body.env.revealing)
+                : t(($) => $.tab_body.env.reveal_action)}
+            </Button>
+          )}
         </div>
       </div>
     );
@@ -497,7 +563,7 @@ export function EnvTab({
         )}
         <Button
           onClick={handleSave}
-          disabled={!dirty || saving || bulkError !== null}
+          disabled={!dirty || saving || canEdit !== true || bulkError !== null}
           size="sm"
         >
           {saving ? (

@@ -45,6 +45,8 @@ export function blockedReasonLabel(reasonCode: string, t: IssuesT): string {
       return t(($) => $.comment.trigger_blocked_target_unavailable);
     case "runtime_offline":
       return t(($) => $.comment.trigger_blocked_runtime_offline);
+    case "issue_archived":
+      return t(($) => $.comment.trigger_blocked_issue_archived);
     case "runtime_unusable":
       return t(($) => $.comment.trigger_blocked_runtime_unusable);
     case "runtime_profile_missing":
@@ -53,6 +55,8 @@ export function blockedReasonLabel(reasonCode: string, t: IssuesT): string {
       return t(($) => $.comment.trigger_blocked_agent_runtime_required);
     case "runtime_access_denied":
       return t(($) => $.comment.trigger_blocked_runtime_access_denied);
+    case "budget_exceeded":
+      return t(($) => $.comment.trigger_blocked_budget_exceeded);
     default:
       return t(($) => $.comment.trigger_blocked_generic);
   }
@@ -68,6 +72,8 @@ export function blockedShortReasonLabel(reasonCode: string, t: IssuesT): string 
       return t(($) => $.comment.trigger_blocked_short_target_unavailable);
     case "runtime_offline":
       return t(($) => $.comment.trigger_blocked_short_runtime_offline);
+    case "issue_archived":
+      return t(($) => $.comment.trigger_blocked_short_issue_archived);
     case "runtime_unusable":
       return t(($) => $.comment.trigger_blocked_short_runtime_unusable);
     case "runtime_profile_missing":
@@ -76,6 +82,8 @@ export function blockedShortReasonLabel(reasonCode: string, t: IssuesT): string 
       return t(($) => $.comment.trigger_blocked_short_agent_runtime_required);
     case "runtime_access_denied":
       return t(($) => $.comment.trigger_blocked_short_runtime_access_denied);
+    case "budget_exceeded":
+      return t(($) => $.comment.trigger_blocked_short_budget_exceeded);
     default:
       return t(($) => $.comment.trigger_blocked_short_generic);
   }

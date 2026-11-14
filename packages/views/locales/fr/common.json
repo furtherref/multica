@@ -128,5 +128,26 @@
   },
   "navigation": {
     "open_in_new_tab": "Ouvrir dans un nouvel onglet"
+  },
+  "status_pill": {
+    "stages": {
+      "offline": "Hors ligne",
+      "reconnecting": "Reconnexion",
+      "retrying": "Nouvelle tentative",
+      "queued": "En file d'attente",
+      "waiting_local_directory": "En attente du répertoire local",
+      "waiting_local_directory_reason": "En attente de {{reason}}",
+      "starting_up": "Démarrage",
+      "thinking": "Réflexion",
+      "typing": "Rédaction"
+    },
+    "tools": {
+      "running_command": "Exécution d'une commande",
+      "reading_files": "Lecture de fichiers",
+      "searching_code": "Recherche dans le code",
+      "making_edits": "Modifications en cours",
+      "searching_web": "Recherche sur le web",
+      "fallback": "Au travail"
+    }
   }
 }

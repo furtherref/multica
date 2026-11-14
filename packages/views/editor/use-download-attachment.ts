@@ -105,11 +105,15 @@ function hasDesktopDownloadBridge(): boolean {
  *   proxy selection, so large files stay in the browser's native download
  *   pipeline.
  *
- * - **Desktop**: uses `desktopAPI.downloadURL()` which invokes Electron's
- *   native `webContents.downloadURL()`, showing a save dialog and saving
- *   the file directly. This avoids the system browser entirely and fixes
- *   the Linux/Ubuntu issue where HTML files are rendered inline instead
- *   of being downloaded.
+ * - **Desktop**: hands the attachment's public storage `url` to
+ *   `desktopAPI.downloadURL()`, which invokes Electron's native
+ *   `webContents.downloadURL()` to show a save dialog and write the file
+ *   directly. It downloads the storage URL rather than the access-controlled
+ *   `download_url` endpoint because a main-process `downloadURL` request can't
+ *   carry the renderer's Bearer token (the endpoint would 401 and Electron
+ *   would save the error body). This also avoids the system browser entirely
+ *   and fixes the Linux/Ubuntu issue where HTML files are rendered inline
+ *   instead of being downloaded.
  */
 export function useDownloadAttachment(): (attachmentId: string) => Promise<void> {
   const { t } = useT("editor");

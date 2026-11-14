@@ -363,6 +363,32 @@ func TestShouldCleanTaskDir_CancelledIssueOverTTL(t *testing.T) {
 	}
 }
 
+func TestShouldCleanTaskDir_ArchiveIssueOverTTL(t *testing.T) {
+	t.Parallel()
+	issueID := "22222222-2222-2222-2222-222222222223"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(fmt.Sprintf("/api/daemon/issues/%s/gc-check", issueID), func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":     "archive",
+			"updated_at": time.Now().Add(-6 * 24 * time.Hour),
+		})
+	})
+
+	d := newGCTestDaemon(t, mux)
+	taskDir := createTaskDir(t, d.cfg.WorkspacesRoot, "ws1", "task-archive", &execenv.GCMeta{
+		IssueID:     issueID,
+		WorkspaceID: "ws1",
+		CompletedAt: time.Now(),
+	})
+
+	action := d.shouldCleanTaskDir(context.Background(), taskDir)
+	if action != gcActionClean {
+		t.Fatalf("expected gcActionClean, got %d", action)
+	}
+}
+
 func TestShouldCleanTaskDir_OpenIssueSkipped(t *testing.T) {
 	t.Parallel()
 	issueID := "33333333-3333-3333-3333-333333333333"

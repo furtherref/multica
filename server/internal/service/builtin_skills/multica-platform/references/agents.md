@@ -146,12 +146,12 @@ same range check before sending create or update requests.
 
 `thinking_level` is validated only at the provider level: fixed-vocabulary
 providers reject an unrecognized literal, while dynamic-vocabulary providers
-such as Codex/OpenCode accept a syntactically safe token. Pi's provider-level
-vocabulary is fixed (`off|minimal|low|medium|high|xhigh|max`), but its exact
-supported subset is model-specific and discovered from the local Pi RPC model
-catalog. A value unsupported for the chosen model is NOT rejected here — the
-daemon checks its local model catalog at execution time, logs a warning, and
-omits the incompatible override.
+such as Codex/OpenCode/Copilot/Kimi accept a syntactically safe token. Pi's
+provider-level vocabulary is fixed (`off|minimal|low|medium|high|xhigh|max`),
+but its exact supported subset is model-specific and discovered from the
+local Pi RPC model catalog. A value unsupported for the chosen model is NOT
+rejected here — the daemon checks its local model catalog at execution time,
+logs a warning, and omits the incompatible override.
 
 Set it from the CLI with `--thinking-level` on `agent create` and `agent
 update`, mirroring `--model`: the flag is a thin pass-through to the top-level
@@ -160,10 +160,11 @@ clears it back to the runtime default. The CLI deliberately does not enumerate
 the valid levels — they are runtime/model-specific (Claude currently uses
 `low|medium|high|xhigh|max`; Pi uses
 `off|minimal|low|medium|high|xhigh|max`; Codex values are discovered from the
-runtime's model catalog). It forwards the token, the server applies the
-provider's fixed-enum or safe-token gate, and the daemon performs the exact
-model/level check. A runtime whose provider has no thinking concept rejects any
-non-empty value with a 400.
+runtime's model catalog; Copilot and Kimi levels come from their local CLI's
+discovered catalog). It forwards the token, the server applies the provider's
+fixed-enum or safe-token gate, and the daemon performs the exact model/level
+check. A runtime whose provider has no thinking concept rejects any non-empty
+value with a 400.
 
 `service_tier` is the matching first-class Codex speed control. It has three
 distinct states:
@@ -286,7 +287,12 @@ Two ways `mcp_config` differs from `custom_env`:
 - **It is serialized on read, but redacted.** `agent get`/`list` return
   `mcp_config` only to callers allowed to view agent secrets; otherwise the
   field is `null` and `mcp_config_redacted` is `true`. Agent actors never see
-  it, and a workspace may force redaction for everyone.
+  it. The workspace-level `always_redact_env` setting (legacy key name) forces
+  `mcp_config` redaction for everyone, including the agent owner and workspace
+  owner/admin — but it governs `mcp_config` exposure only. It does NOT restrict
+  the dedicated audited env endpoints (`GET`/`PUT /api/agents/{id}/env`), which
+  stay accessible to the agent owner and workspace owner/admin regardless of
+  the setting, with every reveal and edit recorded in the audit log.
 
 Provider support is not uniform: Qwen Code accepts a managed `mcp_config` through a daemon-owned 0600 temporary JSON file passed with `--mcp-config`; it is removed when the run exits. Leave the field unset (`null`) to inherit Qwen Code native settings.
 
@@ -375,3 +381,7 @@ State-changing (require an explicit instruction — do not run speculatively):
   unknown provider-level literal is — model-specific gaps fail at run time.
 - "`set` and `add` are interchangeable for skills." `set` replaces all
   bindings; using it when you meant `add` silently removes capabilities.
+- "The workspace `always_redact_env` setting hides env values." It does not —
+  despite the legacy key name it only forces `mcp_config` redaction on agent
+  reads. Env values remain readable by the agent owner or workspace owner/admin
+  through the audited env endpoint regardless of the setting.

@@ -14,6 +14,7 @@ import {
   Check,
   ChevronRight,
   CircleUser,
+  FileText,
   FolderKanban,
   Maximize2,
   Minimize2,
@@ -35,7 +36,11 @@ import type {
 } from "@multica/core/types";
 import { contentReferencesAttachment } from "@multica/core/types";
 import {
+  Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
   DialogTitle,
 } from "@multica/ui/components/ui/dialog";
 import {
@@ -76,9 +81,11 @@ import {
   useCreateIssue,
   useUpdateIssue,
 } from "@multica/core/issues/mutations";
+import { issueTemplateListOptions } from "@multica/core/issue-templates";
 import { useAttachLabelToIssue } from "@multica/core/labels";
 import { propertyListOptions } from "@multica/core/properties";
 import {
+  api,
   ApiError,
   DuplicateIssueErrorBodySchema,
   type DuplicateIssueErrorBody,
@@ -296,6 +303,8 @@ export function ManualCreatePanel({
     typeof data?.stage === "number" ? (data.stage as number) : null,
   );
   const [parentPickerOpen, setParentPickerOpen] = useState(false);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  const [pendingTemplateId, setPendingTemplateId] = useState<string | null>(null);
   // Toolbar fields hidden via Settings → Preferences → Issue creation reuse the overflow reveal
   // pattern: the ⋯ menu item flips this open, which mounts the inline pill
   // (the popover's anchor) AND opens the picker. Closing without a value
@@ -321,6 +330,7 @@ export function ManualCreatePanel({
   // Fetch parent issue details for the chip (status/identifier/title).
   // List cache usually has it already, so this resolves synchronously.
   const wsId = useWorkspaceId();
+  const { data: issueTemplates = [] } = useQuery(issueTemplateListOptions(wsId));
   const queryClient = useQueryClient();
   const { categoryOf: draftStatusCategory, colorOf, iconOf } = useIssueStatuses(wsId);
   const { data: workspaceProperties = [] } = useQuery(propertyListOptions(wsId));
@@ -389,6 +399,11 @@ export function ManualCreatePanel({
   const updateStartDate = (v: string | null) => { setStartDate(v); setManual({ startDate: v }); };
   const updateDueDate = (v: string | null) => { setDueDate(v); setShared({ dueDate: v }); };
   const updateLabelIds = (ids: string[]) => { setLabelIds(ids); setManual({ labelIds: ids }); };
+  // Issue-template application is async (the picker loads the full template
+  // body); the token guards against a slower earlier pick overwriting a later
+  // one.
+  const [applyingTemplate, setApplyingTemplate] = useState(false);
+  const applyTokenRef = useRef(0);
   const updatePropertyValue = (propertyId: string, value: IssuePropertyValue | undefined) => {
     const next = { ...propertyValues };
     if (value === undefined) delete next[propertyId];
@@ -407,7 +422,9 @@ export function ManualCreatePanel({
     priority: manualFields.includes("priority") || priority !== "none" || fieldPickerOpen === "priority",
     assignee: manualFields.includes("assignee") || assigneeId != null || fieldPickerOpen === "assignee",
     labels: manualFields.includes("labels") || labelIds.length > 0 || fieldPickerOpen === "labels",
-    project: manualFields.includes("project") || projectId != null || fieldPickerOpen === "project",
+    // Project is required in this fork (handleSubmit gates on it), so its pill
+    // must never be hidden by the Settings → Issue field config.
+    project: true,
     due_date: manualFields.includes("due_date") || dueDate !== null || dueDatePickerOpen,
     start_date: manualFields.includes("start_date") || startDate !== null || startDatePickerOpen,
   };
@@ -451,6 +468,55 @@ export function ManualCreatePanel({
     });
     descEditorRef.current?.clearContent();
     setFormResetKey((key) => key + 1);
+  };
+
+  const applyTemplate = (templateId: string) => {
+    const summary = issueTemplates.find((item) => item.id === templateId);
+    if (!summary) {
+      toast.error(t(($) => $.create_issue.template.apply_failed));
+      return;
+    }
+    const token = ++applyTokenRef.current;
+    setTemplatePickerOpen(false);
+    setPendingTemplateId(null);
+    setApplyingTemplate(false);
+    const cachedContent = (summary as unknown as Record<string, unknown>).issue_content as string | undefined;
+    if (cachedContent) {
+      updateTitle(summary.issue_title);
+      descEditorRef.current?.setMarkdown(cachedContent);
+      setManual({ description: cachedContent });
+      setFormResetKey((key) => key + 1);
+    } else {
+      setApplyingTemplate(true);
+      api.getIssueTemplate(templateId).then((full) => {
+        if (applyTokenRef.current !== token) return;
+        if (!full.id || !full.issue_title) {
+          toast.error(t(($) => $.create_issue.template.apply_failed));
+          return;
+        }
+        updateTitle(full.issue_title);
+        descEditorRef.current?.setMarkdown(full.issue_content);
+        setManual({ description: full.issue_content });
+        setFormResetKey((key) => key + 1);
+      }).catch(() => {
+        if (applyTokenRef.current !== token) return;
+        toast.error(t(($) => $.create_issue.template.apply_failed));
+      }).finally(() => {
+        if (applyTokenRef.current !== token) return;
+        setApplyingTemplate(false);
+      });
+    }
+  };
+
+  const handleSelectTemplate = (templateId: string) => {
+    const hasExistingTitle = title.trim().length > 0;
+    const hasExistingContent =
+      (descEditorRef.current?.getMarkdown()?.trim() || draft.manual.description.trim()).length > 0;
+    if (hasExistingTitle || hasExistingContent) {
+      setPendingTemplateId(templateId);
+      return;
+    }
+    applyTemplate(templateId);
   };
 
   // Manual create runs through the shared await-then-render composer contract
@@ -786,11 +852,16 @@ export function ManualCreatePanel({
   // at the fix; otherwise hand off to the composer (single-flight + gate live
   // there).
   const handleSubmit = () => {
+    // A template still being fetched would overwrite the title/body mid-submit.
+    if (applyingTemplate) return;
     if (anchorCommentId && !sourcePreview) return;
     if (!title.trim()) {
       titleEditorRef.current?.focus();
       return;
     }
+    // Project is required in this fork; the footer button mirrors this via
+    // the missing_project affordance.
+    if (!projectId) return;
     void composer.submit();
   };
   const submitting = composer.submitting;
@@ -846,7 +917,7 @@ export function ManualCreatePanel({
 
   // One state for the button and the keyboard paths, so a rendered affordance
   // can never disagree with what `handleSubmit` will actually do.
-  const submitState: "submitting" | "uploading" | "missing_title" | "source_unavailable" | "ready" =
+  const submitState: "submitting" | "uploading" | "missing_title" | "source_unavailable" | "missing_project" | "ready" =
     submitting
       ? "submitting"
       : gate.uploading
@@ -855,8 +926,11 @@ export function ManualCreatePanel({
           ? "source_unavailable"
           : !title.trim()
             ? "missing_title"
-            : "ready";
-  const submitBusy = submitState === "submitting" || submitState === "uploading";
+            : !projectId
+              ? "missing_project"
+              : "ready";
+  const submitBusy =
+    submitState === "submitting" || submitState === "uploading" || applyingTemplate;
 
   // Built once and reused by both footer branches: rendering a separate Button
   // per branch is how the keycaps drifted out of one of them before.
@@ -869,7 +943,12 @@ export function ManualCreatePanel({
       // keyboard and screen-reader users could never reach the tooltip that
       // explains why nothing happens. `handleSubmit` is the real gate either way.
       disabled={submitBusy}
-      aria-disabled={submitState === "missing_title" || submitState === "source_unavailable" || undefined}
+      aria-disabled={
+        submitState === "missing_title" ||
+        submitState === "missing_project" ||
+        submitState === "source_unavailable" ||
+        undefined
+      }
       aria-busy={submitBusy || undefined}
       // The Button base only dims/blocks on native `disabled`, so aria-disabled
       // would otherwise stay a fully lit, pressable-looking primary button.
@@ -949,7 +1028,7 @@ export function ManualCreatePanel({
             </div>
 
             {/* Title */}
-            <div className="px-5 pb-2 shrink-0">
+            <div className={cn("px-5 pb-2 shrink-0", applyingTemplate && "pointer-events-none opacity-50")}>
               <TitleEditor
                 key={formResetKey}
                 ref={titleEditorRef}
@@ -964,7 +1043,7 @@ export function ManualCreatePanel({
             </div>
 
             {/* Description — takes remaining space */}
-            <div {...descDropZoneProps} className="relative flex flex-1 min-h-0 overflow-y-auto px-5">
+            <div {...descDropZoneProps} className={cn("relative flex flex-1 min-h-0 overflow-y-auto px-5", applyingTemplate && "pointer-events-none opacity-50")}>
               <ContentEditor
                 ref={descEditorRef}
                 defaultValue={draft.manual.description}
@@ -1006,7 +1085,7 @@ export function ManualCreatePanel({
                   onUpdate={(u) => { if (u.status) updateStatus(u.status); }}
                   triggerRender={<PillButton />}
                   align="start"
-                  open={fieldPickerOpen === "status" ? true : undefined}
+                  open={fieldPickerOpen === "status"}
                   onOpenChange={(open) => setFieldPickerOpen(open ? "status" : null)}
                 />
               )}
@@ -1018,7 +1097,7 @@ export function ManualCreatePanel({
                   onUpdate={(u) => { if (u.priority) updatePriority(u.priority); }}
                   triggerRender={<PillButton />}
                   align="start"
-                  open={fieldPickerOpen === "priority" ? true : undefined}
+                  open={fieldPickerOpen === "priority"}
                   onOpenChange={(open) => setFieldPickerOpen(open ? "priority" : null)}
                 />
               )}
@@ -1034,7 +1113,8 @@ export function ManualCreatePanel({
                   )}
                   triggerRender={<PillButton />}
                   align="start"
-                  open={fieldPickerOpen === "assignee" ? true : undefined}
+                  width="w-80 max-w-[calc(100vw-2rem)]"
+                  open={fieldPickerOpen === "assignee"}
                   onOpenChange={(open) => setFieldPickerOpen(open ? "assignee" : null)}
                 />
               )}
@@ -1049,7 +1129,7 @@ export function ManualCreatePanel({
                   onSelectedIdsChange={updateLabelIds}
                   triggerRender={<PillButton />}
                   align="start"
-                  open={fieldPickerOpen === "labels" ? true : undefined}
+                  open={fieldPickerOpen === "labels"}
                   onOpenChange={(open) => setFieldPickerOpen(open ? "labels" : null)}
                 />
               )}
@@ -1066,7 +1146,8 @@ export function ManualCreatePanel({
                     />
                   }
                   align="start"
-                  open={fieldPickerOpen === "project" ? true : undefined}
+                  required
+                  open={fieldPickerOpen === "project"}
                   onOpenChange={(open) => setFieldPickerOpen(open ? "project" : null)}
                 />
               )}
@@ -1409,6 +1490,16 @@ export function ManualCreatePanel({
                   multiple
                   onSelect={(file) => descEditorRef.current?.uploadFile(file)}
                 />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => setTemplatePickerOpen(true)}
+                  className="text-muted-foreground"
+                >
+                  <FileText className="h-3 w-3" />
+                  {t(($) => $.create_issue.template.trigger)}
+                </Button>
               </div>
               <button
                 type="button"
@@ -1431,20 +1522,116 @@ export function ManualCreatePanel({
                 />
                 {t(($) => $.create_issue.create_another)}
               </label>
-              {submitState === "missing_title" ? (
+              {submitState === "missing_title" || submitState === "missing_project" ? (
                 <TooltipProvider delay={200}>
                   <Tooltip>
                     {/* No `<span>` wrapper needed now: aria-disabled leaves the
                         button focusable and hoverable, so it can anchor its own
                         tooltip. */}
                     <TooltipTrigger render={createButton} />
-                    <TooltipContent side="top">{t(($) => $.create_issue.title_required)}</TooltipContent>
+                    <TooltipContent side="top">
+                      {submitState === "missing_title"
+                        ? t(($) => $.create_issue.title_required)
+                        : t(($) => $.create_issue.project_required)}
+                    </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
               ) : (
                 createButton
               )}
             </div>
+
+            <Dialog open={templatePickerOpen} onOpenChange={setTemplatePickerOpen}>
+              <DialogContent className="sm:max-w-lg">
+                <DialogHeader>
+                  <DialogTitle>{t(($) => $.create_issue.template.title)}</DialogTitle>
+                  <DialogDescription>
+                    {t(($) => $.create_issue.template.description)}
+                  </DialogDescription>
+                </DialogHeader>
+                {issueTemplates.length === 0 ? (
+                  <div className="rounded-md border border-dashed px-4 py-8 text-center">
+                    <FileText className="mx-auto h-6 w-6 text-faint-foreground" />
+                    <p className="mt-2 text-body font-medium">
+                      {t(($) => $.create_issue.template.empty_title)}
+                    </p>
+                    <p className="mt-1 text-caption text-muted-foreground">
+                      {t(($) => $.create_issue.template.empty_description)}
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="mt-4"
+                      onClick={() => {
+                        setTemplatePickerOpen(false);
+                        router.push(p.issueTemplates());
+                      }}
+                    >
+                      {t(($) => $.create_issue.template.manage)}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="max-h-80 overflow-y-auto">
+                    <div className="space-y-1">
+                      {issueTemplates.map((template) => (
+                        <button
+                          key={template.id}
+                          type="button"
+                          onClick={() => handleSelectTemplate(template.id)}
+                          className="flex w-full items-start gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-accent"
+                        >
+                          <FileText className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-body font-medium">
+                              {template.name}
+                            </span>
+                            <span className="mt-0.5 block truncate text-caption text-muted-foreground">
+                              {template.issue_title}
+                            </span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </DialogContent>
+            </Dialog>
+
+            <Dialog
+              open={!!pendingTemplateId}
+              onOpenChange={(open) => {
+                if (!open) setPendingTemplateId(null);
+              }}
+            >
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>
+                    {t(($) => $.create_issue.template.confirm_title)}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {t(($) => $.create_issue.template.confirm_description)}
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => setPendingTemplateId(null)}
+                  >
+                    {t(($) => $.create_issue.template.confirm_cancel)}
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      if (pendingTemplateId) applyTemplate(pendingTemplateId);
+                    }}
+                  >
+                    {t(($) => $.create_issue.template.confirm_apply)}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
     </>
   );
 }

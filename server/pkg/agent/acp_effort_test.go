@@ -388,10 +388,17 @@ func TestACPCatalogProviderGate(t *testing.T) {
 	if !ThinkingControlSupported("hermes") || !IsKnownThinkingValue("hermes", "high") {
 		t.Error("hermes should advertise reasoning control now that jcode applies it")
 	}
-	// Copilot discovers over ACP but executes through its own CLI, so it must
-	// not be swept in by the generalization.
-	if ThinkingControlSupported("copilot") {
-		t.Error("copilot executes outside ACP; a picker here would do nothing")
+	// Copilot discovers model catalogs over ACP but executes through its own
+	// CLI, so an ACP-driven effort picker would do nothing — it must not be
+	// swept into the ACP-catalog gate by the generalization. It still
+	// legitimately advertises reasoning control through its own daemon-local
+	// catalog (`copilot --help`), a separate, non-ACP mechanism (see
+	// thinkingDynamicCatalogProviders), so ThinkingControlSupported stays true.
+	if UsesACPCatalogThinking("copilot") {
+		t.Error("copilot executes outside ACP; an ACP-driven picker here would do nothing")
+	}
+	if !ThinkingControlSupported("copilot") || !IsKnownThinkingValue("copilot", "high") {
+		t.Error("copilot should still advertise reasoning control through its own CLI catalog")
 	}
 }
 

@@ -1,117 +1,148 @@
 // @vitest-environment jsdom
 
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  type RenderResult,
-} from "@testing-library/react";
-import {
-  QueryClient,
-  QueryClientProvider,
-} from "@tanstack/react-query";
-import { api } from "@multica/core/api";
-import {
-  chatKeys,
-  mergeTaskMessagesBySeq,
-} from "@multica/core/chat/queries";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import type { AgentTask } from "@multica/core/types/agent";
 import type { TaskMessagePayload } from "@multica/core/types/events";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { api, ApiError } from "@multica/core/api";
 import { TranscriptButton } from "./transcript-button";
 import type { TimelineItem } from "./build-timeline";
 
+const { MockApiError } = vi.hoisted(() => {
+  class MockApiError extends Error {
+    readonly status: number;
+    readonly statusText: string;
+    readonly body?: unknown;
+
+    constructor(message: string, status: number, statusText: string, body?: unknown) {
+      super(message);
+      this.name = "ApiError";
+      this.status = status;
+      this.statusText = statusText;
+      this.body = body;
+    }
+  }
+
+  return { MockApiError };
+});
+
 vi.mock("@multica/core/api", () => ({
+  ApiError: MockApiError,
   api: {
     listTaskMessages: vi.fn(),
   },
 }));
 
-// Render the timeline items so tests can assert the dialog grows in place.
-// `tool_use` / `tool_result` entries don't coalesce, so each message stays a
-// distinct row — unlike adjacent text/thinking, which buildTimeline merges.
+// Render items so tests can assert what the dialog actually shows.
 vi.mock("./agent-transcript-dialog", () => ({
   AgentTranscriptDialog: ({
     open,
     onOpenChange,
     items,
+    loadIncomplete,
+    loadPending,
+    onRetryLoad,
+    retrying,
   }: {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     items: TimelineItem[];
+    loadIncomplete?: boolean;
+    loadPending?: boolean;
+    onRetryLoad?: () => void;
+    retrying?: boolean;
   }) =>
     open ? (
-      <div role="dialog" data-testid="transcript-dialog">
+      <div role="dialog">
         <button type="button" onClick={() => onOpenChange(false)}>
           Close
         </button>
-        {items.map((item) => (
-          <div key={item.seq} data-testid="event" data-seq={item.seq} />
-        ))}
+        {loadIncomplete && <div data-testid="load-incomplete">incomplete</div>}
+        {loadPending && <div data-testid="load-pending">loading</div>}
+        {loadIncomplete && onRetryLoad && (
+          <button type="button" disabled={retrying} onClick={() => onRetryLoad()}>
+            Retry load
+          </button>
+        )}
+        <ul>
+          {items.map((item) => (
+            <li key={item.seq}>{item.content}</li>
+          ))}
+        </ul>
       </div>
     ) : null,
 }));
 
-const LIVE_TASK_ID = "4a2e8d1c-7f9b-4e2a-9c1d-123456789abc";
+// `taskMessagesOptions` is gated on a real UUID via `isTaskMessageTaskId`, so
+// a task must carry a UUID for the shared cache path to engage.
+const TASK_UUID = "11111111-1111-4111-8111-111111111111";
 
-const baseTask: AgentTask = {
-  id: LIVE_TASK_ID,
+const completedTask: AgentTask = {
+  id: "task-1",
   agent_id: "agent-1",
   runtime_id: "",
   issue_id: "issue-1",
-  status: "running",
+  status: "completed",
   priority: 0,
   dispatched_at: "2026-05-15T10:00:05.000Z",
   started_at: "2026-05-15T10:00:06.000Z",
-  completed_at: null,
+  completed_at: "2026-05-15T10:00:10.000Z",
   result: null,
   error: null,
   created_at: "2026-05-15T10:00:00.000Z",
 };
 
-const msg = (seq: number, tool: string): TaskMessagePayload => ({
-  task_id: LIVE_TASK_ID,
-  issue_id: "issue-1",
-  seq,
-  type: "tool_use",
-  tool,
-  input: { i: String(seq) },
-});
+const runningTask: AgentTask = {
+  ...completedTask,
+  id: TASK_UUID,
+  status: "running",
+  completed_at: null,
+};
 
-function newClient() {
+const terminalTask: AgentTask = {
+  ...completedTask,
+  id: TASK_UUID,
+  status: "completed",
+};
+
+const items: TimelineItem[] = [
+  {
+    seq: 1,
+    type: "text",
+    content: "hello world",
+  },
+];
+
+function msg(
+  seq: number,
+  content: string,
+  type: TaskMessagePayload["type"] = "text",
+): TaskMessagePayload {
+  return { task_id: TASK_UUID, issue_id: "issue-1", seq, type, content };
+}
+
+function renderWithClient(ui: ReactNode, qc: QueryClient) {
+  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+}
+
+function makeClient() {
   return new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
 }
 
-function renderWith(qc: QueryClient, ui: React.ReactNode): RenderResult {
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
-}
-
-const listTaskMessages = vi.mocked(api.listTaskMessages);
-
 beforeEach(() => {
-  listTaskMessages.mockReset();
-  listTaskMessages.mockResolvedValue([]);
-});
-
-afterEach(() => {
   vi.clearAllMocks();
+  vi.mocked(api.listTaskMessages).mockResolvedValue([]);
 });
 
 describe("TranscriptButton", () => {
   it("closes the transcript dialog when desktop navigation starts", async () => {
-    const items: TimelineItem[] = [{ seq: 1, type: "text", content: "hello" }];
-    const qc = newClient();
-    renderWith(
-      qc,
-      <TranscriptButton
-        task={{ ...baseTask, status: "completed" }}
-        agentName="Codex"
-        items={items}
-      />,
+    renderWithClient(
+      <TranscriptButton task={completedTask} agentName="Codex" items={items} />,
+      makeClient(),
     );
 
     fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
@@ -130,119 +161,231 @@ describe("TranscriptButton", () => {
     });
   });
 
-  it("live mode: the open dialog grows as the shared cache receives new messages", async () => {
-    const qc = newClient();
-    qc.setQueryData(chatKeys.taskMessages(LIVE_TASK_ID), [msg(1, "Bash")]);
-    listTaskMessages.mockResolvedValue([msg(1, "Bash")]);
+  it("renders messages from the shared task-messages cache", async () => {
+    const qc = makeClient();
+    // Simulate the WS `task:message` handler having seeded the cache already.
+    qc.setQueryData(["task-messages", TASK_UUID], [msg(1, "first line")]);
+    vi.mocked(api.listTaskMessages).mockResolvedValue([msg(1, "first line")]);
 
-    renderWith(qc, <TranscriptButton task={baseTask} agentName="Codex" isLive />);
-
-    fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
-    await waitFor(() =>
-      expect(screen.getAllByTestId("event")).toHaveLength(1),
+    renderWithClient(
+      <TranscriptButton task={runningTask} agentName="Codex" isLive />,
+      qc,
     );
 
-    // Simulate a WS `task:message` append into the shared cache.
+    fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
+
+    expect(await screen.findByText("first line")).toBeInTheDocument();
+  });
+
+  it("reflects new task messages pushed into the cache while open (no frozen snapshot)", async () => {
+    const qc = makeClient();
+    qc.setQueryData(["task-messages", TASK_UUID], [msg(1, "first line")]);
+    vi.mocked(api.listTaskMessages).mockResolvedValue([msg(1, "first line")]);
+
+    renderWithClient(
+      <TranscriptButton task={runningTask} agentName="Codex" isLive />,
+      qc,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
+    expect(await screen.findByText("first line")).toBeInTheDocument();
+
+    // A later WS `task:message` lands in the shared cache while the dialog is
+    // open. Use a distinct message type so `buildTimeline` keeps it as its own
+    // node (adjacent same-type text fragments coalesce — covered separately in
+    // build-timeline.test.ts); here we only assert the live update flows in.
     act(() => {
       qc.setQueryData<TaskMessagePayload[]>(
-        chatKeys.taskMessages(LIVE_TASK_ID),
-        (old = []) => mergeTaskMessagesBySeq(old, [msg(2, "Read")]),
+        ["task-messages", TASK_UUID],
+        (old = []) => [...old, msg(2, "second line", "tool_result")],
       );
     });
 
-    await waitFor(() =>
-      expect(screen.getAllByTestId("event")).toHaveLength(2),
-    );
+    expect(await screen.findByText("second line")).toBeInTheDocument();
+    expect(screen.getByText("first line")).toBeInTheDocument();
   });
 
-  it("live mode: forces a backfill on open even when the cache already has data", async () => {
-    const qc = newClient();
-    qc.setQueryData(chatKeys.taskMessages(LIVE_TASK_ID), [
-      msg(1, "Bash"),
-      msg(2, "Read"),
+  it("does a server catch-up on open, recovering messages missing from the warm cache", async () => {
+    const qc = makeClient();
+    // The cache is "fresh" (staleTime Infinity) but only holds the first
+    // message — e.g. a `task:message` was dropped across a WS reconnect, and
+    // task-messages is never invalidated on reconnect/completion.
+    qc.setQueryData(["task-messages", TASK_UUID], [msg(1, "first line")]);
+    vi.mocked(api.listTaskMessages).mockResolvedValue([
+      msg(1, "first line"),
+      msg(2, "recovered line", "tool_result"),
     ]);
-    listTaskMessages.mockResolvedValue([msg(1, "Bash"), msg(2, "Read")]);
 
-    renderWith(qc, <TranscriptButton task={baseTask} agentName="Codex" isLive />);
+    renderWithClient(
+      <TranscriptButton task={runningTask} agentName="Codex" isLive />,
+      qc,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
 
-    await waitFor(() =>
-      expect(listTaskMessages).toHaveBeenCalledWith(LIVE_TASK_ID),
-    );
+    expect(await screen.findByText("recovered line")).toBeInTheDocument();
+    expect(api.listTaskMessages).toHaveBeenCalledWith(TASK_UUID);
   });
 
-  it("terminal mode: fetches once on open and does not subscribe to the cache", async () => {
-    const qc = newClient();
-    listTaskMessages.mockResolvedValue([msg(1, "Bash")]);
+  it("keeps a WS append that lands while the on-open catch-up is in flight", async () => {
+    const qc = makeClient();
+    qc.setQueryData(["task-messages", TASK_UUID], [msg(1, "first line")]);
 
-    renderWith(
+    // The catch-up read saw only seq 1 server-side and resolves later — after a
+    // WS append has already put seq 2 in the cache. A whole-cache replace would
+    // clobber seq 2; a seq merge must preserve it. Assert on the cache directly:
+    // it settles deterministically on resolve, free of render-flush timing.
+    let resolveFetch: (v: TaskMessagePayload[]) => void = () => {};
+    vi.mocked(api.listTaskMessages).mockImplementation(
+      () =>
+        new Promise<TaskMessagePayload[]>((res) => {
+          resolveFetch = res;
+        }),
+    );
+
+    renderWithClient(
+      <TranscriptButton task={runningTask} agentName="Codex" isLive />,
       qc,
-      <TranscriptButton
-        task={{ ...baseTask, status: "completed", completed_at: "2026-05-15T10:00:10.000Z" }}
-        agentName="Codex"
-      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
-    await waitFor(() =>
-      expect(screen.getAllByTestId("event")).toHaveLength(1),
-    );
+    expect(await screen.findByText("first line")).toBeInTheDocument();
 
-    // A later cache write must NOT reach the terminal dialog: it renders a
-    // one-shot local snapshot, never an observer of the shared cache.
-    act(() => {
-      qc.setQueryData(chatKeys.taskMessages(LIVE_TASK_ID), [
-        msg(1, "Bash"),
-        msg(2, "Read"),
-      ]);
-    });
-
-    expect(screen.getAllByTestId("event")).toHaveLength(1);
-    expect(listTaskMessages).toHaveBeenCalledTimes(1);
-  });
-
-  it("running→terminal: keeps the dialog populated and takes a final backfill", async () => {
-    const qc = newClient();
-    qc.setQueryData(chatKeys.taskMessages(LIVE_TASK_ID), [msg(1, "Bash")]);
-    listTaskMessages.mockResolvedValue([msg(1, "Bash")]);
-
-    const { rerender } = renderWith(
-      qc,
-      <TranscriptButton task={baseTask} agentName="Codex" isLive />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
-    await waitFor(() =>
-      expect(screen.getAllByTestId("event")).toHaveLength(1),
-    );
-    await waitFor(() => expect(listTaskMessages).toHaveBeenCalledTimes(1));
-
-    // Task finishes: parent flips isLive→false and the status to terminal.
-    rerender(
-      <QueryClientProvider client={qc}>
-        <TranscriptButton
-          task={{ ...baseTask, status: "completed", completed_at: "2026-05-15T10:00:10.000Z" }}
-          agentName="Codex"
-          isLive={false}
-        />
-      </QueryClientProvider>,
-    );
-
-    // Dialog stays mounted (latched), and the terminal transition triggers a
-    // second authoritative backfill rather than blanking to local state.
-    expect(screen.getByTestId("transcript-dialog")).toBeInTheDocument();
-    await waitFor(() => expect(listTaskMessages).toHaveBeenCalledTimes(2));
-
-    // The final tail message still flows in through the shared cache.
+    // WS append arrives while the catch-up is still pending.
     act(() => {
       qc.setQueryData<TaskMessagePayload[]>(
-        chatKeys.taskMessages(LIVE_TASK_ID),
-        (old = []) => mergeTaskMessagesBySeq(old, [msg(2, "Read")]),
+        ["task-messages", TASK_UUID],
+        (old = []) => [...old, msg(2, "second line", "tool_result")],
       );
     });
-    await waitFor(() =>
-      expect(screen.getAllByTestId("event")).toHaveLength(2),
+    expect(await screen.findByText("second line")).toBeInTheDocument();
+
+    // Catch-up now resolves with the stale server snapshot (only seq 1).
+    await act(async () => {
+      resolveFetch([msg(1, "first line")]);
+      await Promise.resolve();
+    });
+
+    // The WS-appended seq 2 must survive the catch-up reconciliation.
+    const cached = qc.getQueryData<TaskMessagePayload[]>(["task-messages", TASK_UUID]);
+    expect(cached?.map((m) => m.seq)).toEqual([1, 2]);
+    expect(screen.getByText("second line")).toBeInTheDocument();
+  });
+
+  it("marks a terminal warm-cache transcript incomplete while catch-up is still pending", async () => {
+    const qc = makeClient();
+    qc.setQueryData(["task-messages", TASK_UUID], [msg(1, "first line")]);
+    vi.mocked(api.listTaskMessages).mockImplementation(
+      () => new Promise<TaskMessagePayload[]>(() => {}),
     );
+
+    renderWithClient(
+      <TranscriptButton task={terminalTask} agentName="Codex" />,
+      qc,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText("first line")).toBeInTheDocument();
+    expect(screen.getByTestId("load-incomplete")).toBeInTheDocument();
+    expect(screen.getByTestId("load-pending")).toBeInTheDocument();
+  });
+
+  it("keeps warm cached terminal content visible but incomplete when catch-up fails", async () => {
+    const qc = makeClient();
+    qc.setQueryData(["task-messages", TASK_UUID], [msg(1, "first line")]);
+    vi.mocked(api.listTaskMessages).mockRejectedValue(new Error("network"));
+
+    renderWithClient(
+      <TranscriptButton task={terminalTask} agentName="Codex" />,
+      qc,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText("first line")).toBeInTheDocument();
+    expect(screen.getByTestId("load-incomplete")).toBeInTheDocument();
+    expect(screen.queryByTestId("load-pending")).not.toBeInTheDocument();
+  });
+
+  it("keeps warm cached transcript content visible but incomplete when authoritative catch-up is forbidden", async () => {
+    const qc = makeClient();
+    qc.setQueryData(["task-messages", TASK_UUID], [msg(1, "first line")]);
+    vi.mocked(api.listTaskMessages).mockRejectedValue(
+      new ApiError("forbidden", 403, "Forbidden"),
+    );
+
+    renderWithClient(
+      <TranscriptButton task={terminalTask} agentName="Codex" />,
+      qc,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByTestId("load-pending")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("first line")).toBeInTheDocument();
+    expect(screen.getByTestId("load-incomplete")).toBeInTheDocument();
+    expect(qc.getQueryData<TaskMessagePayload[]>(["task-messages", TASK_UUID])).toEqual([
+      msg(1, "first line"),
+    ]);
+  });
+
+  it("keeps the incomplete warning visible while a retry catch-up is pending", async () => {
+    const qc = makeClient();
+    qc.setQueryData(["task-messages", TASK_UUID], [msg(1, "first line")]);
+    let resolveRetry: (value: TaskMessagePayload[]) => void = () => {};
+    vi.mocked(api.listTaskMessages)
+      .mockRejectedValueOnce(new Error("network"))
+      .mockImplementationOnce(
+        () =>
+          new Promise<TaskMessagePayload[]>((resolve) => {
+            resolveRetry = resolve;
+          }),
+      );
+
+    renderWithClient(
+      <TranscriptButton task={terminalTask} agentName="Codex" />,
+      qc,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
+
+    const retry = await screen.findByRole("button", { name: "Retry load" });
+    expect(screen.getByTestId("load-incomplete")).toBeInTheDocument();
+    expect(screen.queryByTestId("load-pending")).not.toBeInTheDocument();
+
+    fireEvent.click(retry);
+
+    expect(screen.getByTestId("load-incomplete")).toBeInTheDocument();
+    expect(screen.getByTestId("load-pending")).toBeInTheDocument();
+    expect(retry).toBeDisabled();
+
+    await act(async () => {
+      resolveRetry([msg(1, "first line")]);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("load-incomplete")).not.toBeInTheDocument();
+    });
+  });
+
+  it("still opens the dialog when the messages fetch fails (no permanent loading)", async () => {
+    const qc = makeClient();
+    vi.mocked(api.listTaskMessages).mockRejectedValue(new Error("network"));
+
+    renderWithClient(
+      <TranscriptButton task={terminalTask} agentName="Codex" />,
+      qc,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View transcript" }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
   });
 });

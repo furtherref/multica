@@ -1,4 +1,4 @@
-import { cloneElement, type ReactElement, type ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configStore } from "@multica/core/config";
@@ -36,6 +36,8 @@ vi.mock("../i18n", () => ({
 // Follows the app-sidebar.test.tsx convention of flattening the Base UI
 // dropdown primitives to plain children so the menu content is always in
 // the DOM, instead of exercising the real portal/open-state interaction.
+// DropdownMenuItem honors the `render` prop (cloneElement) so link items
+// still produce real <a> elements for the href assertions below.
 //
 // The mock deliberately preserves ONE real invariant: DropdownMenuLabel wraps
 // Base UI's Menu.GroupLabel, whose useMenuGroupRootContext() throws when it has
@@ -45,7 +47,7 @@ vi.mock("../i18n", () => ({
 // the moment the Help menu opened. Mirroring the throw here keeps the guard.
 // The group context lives inside the factory so it survives vi.mock hoisting.
 vi.mock("@multica/ui/components/ui/dropdown-menu", async () => {
-  const { createContext, useContext } = await import("react");
+  const { createContext, useContext, cloneElement } = await import("react");
   const GroupContext = createContext(false);
   return {
     DropdownMenu: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -56,11 +58,20 @@ vi.mock("@multica/ui/components/ui/dropdown-menu", async () => {
     // href assertion silently unfalsifiable.
     DropdownMenuItem: ({
       children,
-      render,
+      render: renderProp,
+      onClick,
     }: {
       children: ReactNode;
       render?: ReactElement;
-    }) => (render ? cloneElement(render, undefined, children) : <>{children}</>),
+      onClick?: () => void;
+    }) =>
+      renderProp ? (
+        cloneElement(renderProp, undefined, children)
+      ) : (
+        <button type="button" onClick={onClick}>
+          {children}
+        </button>
+      ),
     DropdownMenuGroup: ({ children }: { children: ReactNode }) => (
       <GroupContext.Provider value={true}>{children}</GroupContext.Provider>
     ),
@@ -87,6 +98,19 @@ afterEach(() => {
 });
 
 describe("HelpLauncher", () => {
+  it("links docs and changelog to the FurtherRef desktop site", () => {
+    render(<HelpLauncher />);
+
+    expect(screen.getByRole("link", { name: /docs/i })).toHaveAttribute(
+      "href",
+      "https://multica.furtherref.com/docs",
+    );
+    expect(screen.getByRole("link", { name: /change log/i })).toHaveAttribute(
+      "href",
+      "https://multica.furtherref.com/changelog",
+    );
+  });
+
   it("does not show a version row when the server omits it", () => {
     render(<HelpLauncher />);
     expect(screen.queryByText(/Server version/)).not.toBeInTheDocument();
@@ -104,13 +128,13 @@ describe("HelpLauncher", () => {
   it("links to the download page on web", () => {
     render(<HelpLauncher />);
     const link = screen.getByRole("link", { name: /Desktop app/ });
-    expect(link).toHaveAttribute("href", "https://multica.ai/download");
+    expect(link).toHaveAttribute("href", "https://multica.furtherref.com/download");
   });
 
   it.each([
-    ["en", "https://multica.ai/docs"],
-    ["zh-Hans", "https://multica.ai/docs/zh"],
-    ["fr", "https://multica.ai/docs/fr"],
+    ["en", "https://multica.furtherref.com/docs"],
+    ["zh-Hans", "https://multica.furtherref.com/docs/zh"],
+    ["fr", "https://multica.furtherref.com/docs/fr"],
   ])("links Docs to the %s docs", (language, href) => {
     i18nState.language = language;
     render(<HelpLauncher />);

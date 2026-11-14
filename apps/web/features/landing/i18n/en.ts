@@ -1,4 +1,4 @@
-import { githubUrl, discordUrl } from "../components/shared";
+import { githubUrl } from "../components/shared";
 import type { LandingDict } from "./types";
 
 export function createEnDict(
@@ -23,7 +23,7 @@ export function createEnDict(
     headlineLine2: "won\u2019t be human.",
     subheading:
       "Multica is a source-available platform that turns coding agents into real teammates. Assign tasks, track progress, compound skills \u2014 manage your human + agent workforce in one place.",
-    cta: "Start free trial",
+    cta: "Log in",
     downloadDesktop: "Download Desktop",
     talkToSales: "Talk to sales",
     worksWith: "Works with 20+ AI coding tools",
@@ -126,15 +126,14 @@ export function createEnDict(
   },
 
   howItWorks: {
-    label: "Get started",
+    label: "Access",
     headlineMain: "Hire your first AI employee",
     headlineFaded: "in the next hour.",
     steps: [
       {
-        title: allowSignup ? "Sign up & create your workspace" : "Login to your workspace",
-        description: allowSignup
-          ? "Enter your email, verify with a code, and you\u2019re in. Your workspace is created automatically \u2014 no setup wizard, no configuration forms."
-          : "Enter your email, verify with a code, and you\u2019re logged into your workspace \u2014 no setup wizard, no configuration forms.",
+        title: "Log in to your workspace",
+        description:
+          "Enter your email, verify with a code, and you\u2019re logged into your workspace \u2014 no setup wizard, no configuration forms.",
       },
       {
         title: "Install the CLI & connect your machine",
@@ -152,7 +151,7 @@ export function createEnDict(
           "Pick your agent from the assignee dropdown \u2014 just like assigning to a teammate. The task is queued, claimed, and executed automatically. Watch progress in real time.",
       },
     ],
-    cta: "Get started",
+    cta: "Log in",
     ctaGithub: "View on GitHub",
     ctaDocs: "Read the docs",
   },
@@ -235,7 +234,7 @@ export function createEnDict(
   footer: {
     tagline:
       "Project management for human + agent teams. Source-available, self-hostable, built for the future of work.",
-    cta: "Get started",
+    cta: "Log in",
     groups: {
       product: {
         label: "Product",
@@ -252,8 +251,6 @@ export function createEnDict(
         links: [
           { label: "Documentation", href: docsHref },
           { label: "API", href: githubUrl },
-          { label: "X (Twitter)", href: "https://x.com/MulticaAI" },
-          { label: "Discord", href: discordUrl },
         ],
       },
       company: {
@@ -308,7 +305,6 @@ export function createEnDict(
           linkLabel: "Licensing FAQ",
           href: "/licensing",
         },
-        { label: "Community & support", linkLabel: "Discord", href: discordUrl },
         { label: "Source code & issues", linkLabel: "GitHub", href: githubUrl },
       ],
     },
@@ -394,7 +390,7 @@ export function createEnDict(
       {
         heading: "Getting a commercial license",
         paragraphs: [
-          "Tell us about your use case through [Contact Sales](/contact-sales) and we\u2019ll get back to you within three business days. Not sure whether your setup needs a license? Ask us on [Discord](" + discordUrl + ") or through the same form.",
+          "Tell us about your use case through [Contact Sales](/contact-sales) and we\u2019ll get back to you within three business days. Not sure whether your setup needs a license? Ask us through the same form.",
         ],
       },
     ],
@@ -522,6 +518,70 @@ export function createEnDict(
       fixes: "Bug Fixes",
     },
     entries: [
+      {
+        version: "0.6.1",
+        date: "2026-10-01",
+        title: "Cumulative run cost curves, a faster Issues list, and steadier workspace switching",
+        changes: [],
+        features: [
+          "The run chart follows your pointer, and shows the quiet stretches between runs.",
+          "An Issue's sidebar shows the cumulative cost of its runs as a curve.",
+          "Mark a duplicate Issue from the command line and keep the link to the original.",
+        ],
+        improvements: [
+          "The Issues list stays steady as runs come and go, and the working-agents filter returns faster.",
+        ],
+        fixes: [
+          "Codex offers GPT-6.1 Sol, and cost for the GPT-6 models reads at current prices.",
+          "Hitting a provider's usage limit reads as a quota, not as a credential problem.",
+          "Closing the floating chat leaves your keyboard shortcuts working, and keeps your draft.",
+          "On Windows, a repository checks out even after your workspaces folder was moved.",
+          "Switching workspace from an open chat lands you there, with your session and project still selected.",
+        ],
+      },
+      {
+        version: "0.6.0",
+        date: "2026-09-28",
+        title: "Conditional wakeups, instant search, deliverable previews, and a new Settings page",
+        changes: [],
+        features: [
+          "An Issue can wake its agent when a status changes, a sub-issue finishes, or a pull request moves.",
+          "Give a wakeup an expiry, and see every check it made.",
+          "Issue and project search return results instantly on web and desktop.",
+          "Reply to a running agent and choose to add to this run, queue a new one, or restart it.",
+          "See a receipt telling you the running agent got your reply.",
+          "Find an Issue's deliverables in one sidebar, with versions and details.",
+          "Attachments sit in a grid, and HTML, Markdown, CSV, JSON, and YAML preview in place.",
+          "Mermaid diagrams show whole, zoom in close, and images copy in one click.",
+          "See a run's timeline on the Issue, along with failed and cancelled states.",
+          "Let an Issue move itself the way you choose once its pull requests are merged.",
+          "Preview an Issue beside the list without leaving it.",
+          "WeCom notices arrive in each person's own language.",
+          "Pick Claude Opus 5.5 and GPT-6 Sol/Luna from the model list.",
+          "See a repository's project description as you pick it.",
+        ],
+        improvements: [
+          "Settings are grouped into personal, workspace, and this device, and you can search them.",
+          "Agent task history pages through and adds up the time spent.",
+          "Back, forward, and the sidebar toggle sit together on the left in the desktop app.",
+          "See how many agents each MCP server is assigned to.",
+        ],
+        fixes: [
+          "Model settings you saved stay saved.",
+          "A Hermes task runs with the settings you picked.",
+          "MCP tool inputs stay fully visible.",
+          "An attachment you quote in Telegram reaches the agent with your message.",
+          "WeCom no longer answers the same message twice.",
+          "Tools with the same name across plugins no longer replace each other.",
+          "A link opened by Issue identifier expands the comment it points to.",
+          "Opening a project on mobile shows its Issues right away.",
+          "Select all, and every selected Issue is deleted.",
+          "Run status reads accurately.",
+          "A saved view keeps the name you typed.",
+          "The wakeup menu shows its options correctly.",
+          "A pull request row shows the whole diff, and spins while checks run.",
+        ],
+      },
       {
         version: "0.5.3",
         date: "2026-09-24",
@@ -2323,7 +2383,6 @@ export function createEnDict(
         features: [
           "Lark conversations now reply inside the original topic when a message starts from a topic, keeping team discussions easier to follow",
           "Squad leaders can see member skills in the roster, making delegation more precise",
-          "Discord is now available from the website footer, help menu, README, and a dismissible in-app sidebar card",
         ],
         improvements: [
           "Agent activity in Issue headers opens on hover, so live work is easier to check at a glance",

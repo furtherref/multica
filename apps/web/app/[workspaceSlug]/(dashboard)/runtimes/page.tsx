@@ -1,3 +1,5 @@
+"use client";
+
 import { RuntimesPage } from "@multica/views/runtimes";
 
 const cloudRuntimeEnabled =

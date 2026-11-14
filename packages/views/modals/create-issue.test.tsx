@@ -54,6 +54,9 @@ const mockApiUploadFile = vi.hoisted(() => vi.fn());
 
 const sourceContextPanelData = () => ({
   anchor_comment_id: "comment-source",
+  // The fork requires a project on manual create; the real caller
+  // (openCommentSubIssue) forwards the parent issue's project_id.
+  project_id: "project-1",
   source_context_preview: {
     source_issue: {
       id: "issue-source",
@@ -254,6 +257,11 @@ vi.mock("@multica/core/issues/stores/quick-create-store", () => ({
     (selector ? selector(mockQuickCreateStore) : mockQuickCreateStore),
 }));
 
+vi.mock("@multica/core/issues/stores/create-mode-store", () => ({
+  useCreateModeStore: (selector?: (state: { lastMode: string; setLastMode: () => void }) => unknown) =>
+    selector ? selector({ lastMode: "manual", setLastMode: vi.fn() }) : { lastMode: "manual", setLastMode: vi.fn() },
+}));
+
 vi.mock("@multica/core/issues/stores/issue-create-settings-store", () => ({
   useIssueCreateSettingsStore: (
     selector?: (state: typeof mockCreateSettingsStore) => unknown,
@@ -269,6 +277,25 @@ vi.mock("@multica/core/issues/mutations", () => ({
     }) => mockCreateCommentSubIssue(anchorCommentId, data),
   }),
   useUpdateIssue: () => ({ mutate: vi.fn() }),
+}));
+
+vi.mock("@multica/core/issue-templates", () => ({
+  issueTemplateListOptions: () => ({
+    queryKey: ["issue-templates", "ws-test", "list"],
+    queryFn: () => Promise.resolve([
+      {
+        id: "template-1",
+        workspace_id: "ws-test",
+        name: "Bug report",
+        issue_title: "Investigate login bug",
+        issue_content: "## Context\n\nLogin fails",
+        config: {},
+        created_by: null,
+        created_at: "2026-05-12T00:00:00Z",
+        updated_at: "2026-05-12T00:00:00Z",
+      },
+    ]),
+  }),
 }));
 
 vi.mock("@multica/core/labels", () => ({
@@ -324,6 +351,17 @@ vi.mock("@multica/core/api", async () => {
   >("@multica/core/api/schemas");
   return {
     api: {
+      getIssueTemplate: vi.fn().mockResolvedValue({
+        id: "template-1",
+        workspace_id: "ws-test",
+        name: "Bug report",
+        issue_title: "Investigate login bug",
+        issue_content: "## Context\n\nLogin fails",
+        config: {},
+        created_by: null,
+        created_at: "2026-05-12T00:00:00Z",
+        updated_at: "2026-05-12T00:00:00Z",
+      }),
       createCommentSubIssue: mockCreateCommentSubIssue,
       listProperties: mockListProperties,
       setIssueProperty: mockSetIssueProperty,
@@ -353,6 +391,11 @@ vi.mock("../editor", async () => {
     const inFlightRef = useRef(0);
     useImperativeHandle(ref, () => ({
       getMarkdown: () => valueRef.current,
+      setMarkdown: (markdown: string) => {
+        valueRef.current = markdown;
+        setValue(markdown);
+        onUpdate?.(markdown);
+      },
       clearContent: () => {
         valueRef.current = "";
         setValue("");
@@ -488,23 +531,46 @@ vi.mock("../issues/components/pickers/custom-property-picker", () => ({
 }));
 
 vi.mock("../projects/components/project-picker", () => ({
-  ProjectPicker: ({ projectId, onUpdate }: any) => (
-    <button
-      type="button"
-      data-testid="project-picker"
-      data-project-id={projectId ?? "none"}
-      onClick={() => onUpdate({ project_id: "proj-1" })}
-    >
-      Project {projectId ?? "none"}
-    </button>
+  ProjectPicker: ({
+    projectId,
+    onUpdate,
+    required,
+    open,
+  }: {
+    projectId: string | null;
+    onUpdate: (updates: { project_id: string | null }) => void;
+    required?: boolean;
+    open?: boolean;
+  }) => (
+    <div>
+      <span>{projectId ? "Project selected" : "No project"}</span>
+      {required && (
+        <span aria-label="Project required" className="text-destructive">
+          *
+        </span>
+      )}
+      <button
+        type="button"
+        data-testid="project-picker"
+        data-open={String(open)}
+        data-project-id={projectId ?? "none"}
+        onClick={() => onUpdate({ project_id: "project-1" })}
+      >
+        Select project
+      </button>
+    </div>
   ),
 }));
 
 vi.mock("@multica/ui/components/ui/dialog", () => ({
-  Dialog: ({ children }: { children: React.ReactNode }) => <div data-testid="dialog-root">{children}</div>,
+  Dialog: ({ children, open = true }: { children: React.ReactNode; open?: boolean }) =>
+    open ? <div data-testid="dialog-root">{children}</div> : null,
   DialogContent: ({ children, className }: { children: React.ReactNode; className?: string }) => (
     <div className={className}>{children}</div>
   ),
+  DialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
+  DialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  DialogHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogTitle: ({ children, className }: { children: React.ReactNode; className?: string }) => (
     <div className={className}>{children}</div>
   ),
@@ -719,7 +785,7 @@ describe("CreateIssueModal", () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
 
-    renderModal(<CreateIssueModal onClose={onClose} />);
+    renderModal(<CreateIssueModal onClose={onClose} data={{ project_id: "project-1" }} />);
 
     fireEvent.change(screen.getByPlaceholderText("Issue title"), {
       target: { value: "  Ship create issue regression coverage  " },
@@ -738,7 +804,7 @@ describe("CreateIssueModal", () => {
         due_date: undefined,
         attachment_ids: undefined,
         parent_issue_id: undefined,
-        project_id: undefined,
+        project_id: "project-1",
       });
     });
 
@@ -769,7 +835,7 @@ describe("CreateIssueModal", () => {
       "bbbbbbbb-1111-2222-3333-444444444444",
     ];
 
-    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "project-1" }} />);
 
     fireEvent.change(screen.getByPlaceholderText("Issue title"), {
       target: { value: "Labeled issue" },
@@ -807,7 +873,7 @@ describe("CreateIssueModal", () => {
       "bbbbbbbb-1111-2222-3333-444444444444",
     ];
 
-    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "project-1" }} />);
 
     fireEvent.change(screen.getByPlaceholderText("Issue title"), {
       target: { value: "Labeled issue" },
@@ -832,7 +898,7 @@ describe("CreateIssueModal", () => {
     const onClose = vi.fn();
     mockQuickCreateStore.keepOpen = true;
 
-    renderModal(<CreateIssueModal onClose={onClose} />);
+    renderModal(<CreateIssueModal onClose={onClose} data={{ project_id: "project-1" }} />);
 
     await user.type(screen.getByPlaceholderText("Issue title"), "First follow-up issue");
     await user.type(screen.getByPlaceholderText("Add description..."), "Description to clear");
@@ -850,7 +916,7 @@ describe("CreateIssueModal", () => {
         due_date: undefined,
         attachment_ids: undefined,
         parent_issue_id: undefined,
-        project_id: undefined,
+        project_id: "project-1",
       });
     });
 
@@ -878,7 +944,7 @@ describe("CreateIssueModal", () => {
   it("includes configured custom properties in the atomic create request", async () => {
     const user = userEvent.setup();
 
-    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "project-1" }} />);
 
     await screen.findByText("Customer tier");
     await user.click(screen.getByText("Customer tier"));
@@ -898,6 +964,8 @@ describe("CreateIssueModal", () => {
 
   it("keeps the draft open and highlights the rejected custom property", async () => {
     const user = userEvent.setup();
+    // The fork requires a project before create (#28).
+    mockDraftStore.draft.shared.projectId = "project-1";
     const onClose = vi.fn();
     mockDraftStore.draft.manual.propertyValues = {
       "property-tier": "option-enterprise",
@@ -937,6 +1005,8 @@ describe("CreateIssueModal", () => {
     "removes only the rejected unavailable property from the %s draft before a manual retry",
     async (path) => {
       const user = userEvent.setup();
+      // The fork requires a project before create (#28).
+      mockDraftStore.draft.shared.projectId = "project-1";
       const onClose = vi.fn();
       mockDraftStore.draft.manual = {
         ...mockDraftStore.draft.manual,
@@ -1045,6 +1115,8 @@ describe("CreateIssueModal", () => {
     "does not change the draft for an unlocatable property error (%s)",
     async (propertyId) => {
       const user = userEvent.setup();
+      // The fork requires a project before create (#28).
+      mockDraftStore.draft.shared.projectId = "project-1";
       mockDraftStore.draft.manual.title = "Keep this draft";
       mockDraftStore.draft.manual.propertyValues = { "property-stale": "old value" };
       const originalDraft = structuredClone(mockDraftStore.draft);
@@ -1070,6 +1142,8 @@ describe("CreateIssueModal", () => {
 
   it("does not treat an unloaded property catalog as an unavailable property", async () => {
     const user = userEvent.setup();
+    // The fork requires a project before create (#28).
+    mockDraftStore.draft.shared.projectId = "project-1";
     mockDraftStore.draft.manual.title = "Keep this draft";
     mockDraftStore.draft.manual.propertyValues = { "property-tier": "option-enterprise" };
     mockListProperties.mockReturnValueOnce(new Promise(() => {}));
@@ -1089,6 +1163,8 @@ describe("CreateIssueModal", () => {
 
   it("preserves edits made while the unavailable-property error is pending", async () => {
     const user = userEvent.setup();
+    // The fork requires a project before create (#28).
+    mockDraftStore.draft.shared.projectId = "project-1";
     mockDraftStore.draft.manual.title = "Draft before submit";
     mockDraftStore.draft.manual.propertyValues = {
       "property-stale": "old value",
@@ -1120,6 +1196,8 @@ describe("CreateIssueModal", () => {
 
   it("does not remove a property from a reopened draft after a late rejection", async () => {
     const user = userEvent.setup();
+    // The fork requires a project before create (#28).
+    mockDraftStore.draft.shared.projectId = "project-1";
     mockDraftStore.draft.manual.title = "Draft before submit";
     mockDraftStore.draft.manual.propertyValues = { "property-stale": "old value" };
     let rejectCreate!: (error: Error) => void;
@@ -1195,7 +1273,7 @@ describe("CreateIssueModal", () => {
       },
     ];
 
-    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "project-1" }} />);
 
     expect(screen.getByPlaceholderText("Add description...")).toHaveAttribute(
       "data-attachments-count",
@@ -1258,6 +1336,88 @@ describe("CreateIssueModal", () => {
         attachments: [expect.objectContaining({ clientUploadId: referenced.id })],
       });
     });
+  });
+
+  it("requires a project before creating a manual issue", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+
+    renderModal(<CreateIssueModal onClose={onClose} />);
+
+    expect(screen.getByLabelText("Project required")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Issue title"), "Needs a project");
+
+    // The button stays focusable (aria-disabled, not native disabled) so its
+    // tooltip can explain why nothing happens; handleSubmit is the real gate.
+    const createButton = screen.getByRole("button", { name: "Create Issue" });
+    expect(createButton).toHaveAttribute("aria-disabled", "true");
+
+    await user.click(createButton);
+    expect(mockCreateIssue).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Select project" }));
+
+    // The footer swaps from the tooltip-wrapped branch to the bare button, so
+    // re-query instead of holding the detached pre-swap element.
+    const readyButton = screen.getByRole("button", { name: "Create Issue" });
+    expect(readyButton).not.toHaveAttribute("aria-disabled");
+
+    await user.click(readyButton);
+
+    await waitFor(() => {
+      expect(mockCreateIssue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Needs a project",
+          project_id: "project-1",
+        }),
+      );
+    });
+  });
+
+  it("keeps the field pickers fully controlled so selecting an item closes them", () => {
+    // Base UI resolves open as `openProp ?? internalOpen`. Passing `undefined`
+    // while closed makes the menu uncontrolled at mount: a pill click sets the
+    // INTERNAL open flag, onOpenChange(true) then flips the prop to `true`
+    // (controlled), and on select the prop goes back to `undefined` — which
+    // falls through to the stale internal `true`, so the menu never closes.
+    // The wiring must therefore always pass a boolean.
+    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+
+    expect(screen.getByTestId("project-picker")).toHaveAttribute("data-open", "false");
+  });
+
+  it("applies an issue template to title and description", async () => {
+    const user = userEvent.setup();
+
+    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "project-1" }} />);
+
+    await screen.findByRole("button", { name: "Apply Issue Template" });
+    await user.click(screen.getByRole("button", { name: "Apply Issue Template" }));
+    await user.click(await screen.findByText("Bug report"));
+
+    expect(screen.getByPlaceholderText("Issue title")).toHaveValue("Investigate login bug");
+    expect(screen.getByPlaceholderText("Add description...")).toHaveValue("## Context\n\nLogin fails");
+  });
+
+  it("confirms before overwriting existing title and description with a template", async () => {
+    const user = userEvent.setup();
+
+    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "project-1" }} />);
+
+    await user.type(screen.getByPlaceholderText("Issue title"), "Existing title");
+    await user.type(screen.getByPlaceholderText("Add description..."), "Existing body");
+    await user.click(await screen.findByRole("button", { name: "Apply Issue Template" }));
+    await user.click(await screen.findByText("Bug report"));
+
+    expect(await screen.findByText("Overwrite current title and content?")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Issue title")).toHaveValue("Existing title");
+    expect(screen.getByPlaceholderText("Add description...")).toHaveValue("Existing body");
+
+    await user.click(screen.getByRole("button", { name: "Overwrite" }));
+
+    expect(screen.getByPlaceholderText("Issue title")).toHaveValue("Investigate login bug");
+    expect(screen.getByPlaceholderText("Add description...")).toHaveValue("## Context\n\nLogin fails");
   });
 
   it("mount prune keeps in-flight placeholders while dropping unreferenced uploaded rows", async () => {
@@ -1353,7 +1513,7 @@ describe("CreateIssueModal", () => {
       }),
     );
 
-    renderModal(<CreateIssueModal onClose={onClose} />);
+    renderModal(<CreateIssueModal onClose={onClose} data={{ project_id: "project-1" }} />);
     await user.type(screen.getByPlaceholderText("Issue title"), "Login bug");
     await user.click(screen.getByRole("button", { name: "Create Issue" }));
 
@@ -1386,7 +1546,7 @@ describe("CreateIssueModal", () => {
       }),
     );
 
-    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "project-1" }} />);
     await user.type(screen.getByPlaceholderText("Issue title"), "Login bug");
     await user.click(screen.getByRole("button", { name: "Create Issue" }));
 
@@ -1406,7 +1566,7 @@ describe("CreateIssueModal", () => {
       }),
     );
 
-    renderModal(<CreateIssueModal onClose={onClose} />);
+    renderModal(<CreateIssueModal onClose={onClose} data={{ project_id: "project-1" }} />);
     await user.type(screen.getByPlaceholderText("Issue title"), "One more issue");
     await user.click(screen.getByRole("button", { name: "Create Issue" }));
 
@@ -1424,7 +1584,7 @@ describe("CreateIssueModal", () => {
     const user = userEvent.setup();
     mockCreateIssue.mockRejectedValue(new Error("Server is overloaded, try again"));
 
-    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "project-1" }} />);
     await user.type(screen.getByPlaceholderText("Issue title"), "Anything");
     await user.click(screen.getByRole("button", { name: "Create Issue" }));
 
@@ -1438,7 +1598,7 @@ describe("CreateIssueModal", () => {
     const user = userEvent.setup();
     mockCreateIssue.mockRejectedValue("network exploded");
 
-    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "project-1" }} />);
     await user.type(screen.getByPlaceholderText("Issue title"), "Anything");
     await user.click(screen.getByRole("button", { name: "Create Issue" }));
 
@@ -1481,12 +1641,12 @@ describe("CreateIssueModal", () => {
     expect(screen.getByTestId("project-picker")).toHaveAttribute("data-project-id", "none");
 
     await user.click(screen.getByTestId("project-picker"));
-    expect(mockSetShared).toHaveBeenCalledWith({ projectId: "proj-1" });
+    expect(mockSetShared).toHaveBeenCalledWith({ projectId: "project-1" });
 
     firstOpen.unmount();
     renderModal(<CreateIssueModal onClose={vi.fn()} />);
 
-    expect(screen.getByTestId("project-picker")).toHaveAttribute("data-project-id", "proj-1");
+    expect(screen.getByTestId("project-picker")).toHaveAttribute("data-project-id", "project-1");
   });
 
   // Manual → agent must forward parent_issue_id when the modal was opened
@@ -1772,12 +1932,14 @@ describe("CreateIssueModal", () => {
   // typed after closing and reopening.
   describe("stale-submit draft guard", () => {
     function renderManualPanel(onClose = vi.fn()) {
+      // The fork requires a project before create, so these tests seed one.
       return renderModal(
         <ManualCreatePanel
           onClose={onClose}
           onSwitchMode={vi.fn()}
           isExpanded={false}
           setIsExpanded={vi.fn()}
+          data={{ project_id: "project-1" }}
         />,
       );
     }
@@ -1878,6 +2040,7 @@ describe("CreateIssueModal", () => {
         <ManualCreatePanel
           onClose={vi.fn()}
           onSwitchMode={onSwitchMode}
+          data={{ project_id: "project-1" }}
           isExpanded={false}
           setIsExpanded={vi.fn()}
         />,
@@ -1960,12 +2123,14 @@ describe("CreateIssueModal", () => {
   // has had one all along.
   describe("send shortcut", () => {
     function renderManual() {
+      // The fork requires a project before create, so the chord tests seed one.
       return renderModal(
         <ManualCreatePanel
           onClose={vi.fn()}
           onSwitchMode={vi.fn()}
           isExpanded={false}
           setIsExpanded={vi.fn()}
+          data={{ project_id: "project-1" }}
         />,
       );
     }

@@ -66,6 +66,8 @@ import {
 } from "@multica/ui/components/ui/tooltip";
 import { cn } from "@multica/ui/lib/utils";
 import { AppLink, useNavigation } from "../../navigation";
+import { zipSync, strToU8 } from "fflate";
+import { sanitizeExportName, collectExportFiles, updateFrontmatter } from "../lib/parse-skill-bundle";
 import { BreadcrumbHeader } from "../../layout/breadcrumb-header";
 import { PAGE_GUTTER, PAGE_RAIL } from "../../layout/page-header";
 import { useCanEditSkill } from "../hooks/use-can-edit-skill";
@@ -1202,6 +1204,49 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
                 </TooltipContent>
               </Tooltip>
             )}
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    disabled={isDirty}
+                    onClick={() => {
+                      const safeName = sanitizeExportName(skill.name);
+                      const folder = safeName + "/";
+                      const data: Record<string, Uint8Array> = {
+                        [folder + "SKILL.md"]: strToU8(updateFrontmatter(skill.content, skill.name, skill.description)),
+                      };
+                      const exported = collectExportFiles(skill.files ?? []);
+                      if (exported.hasCollisions) {
+                        toast.error(t(($) => $.detail.download_collision_error));
+                        return;
+                      }
+                      for (const f of exported.files) {
+                        data[folder + f.path] = strToU8(f.content);
+                      }
+                      const zipped = zipSync(data);
+                      const blob = new Blob([zipped], { type: "application/zip" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = `${safeName}.zip`;
+                      a.click();
+                      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                    }}
+                    className="text-muted-foreground"
+                    aria-label={t(($) => $.detail.download_aria)}
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </Button>
+                }
+              />
+              <TooltipContent>
+                {isDirty
+                  ? t(($) => $.detail.download_tooltip_dirty)
+                  : t(($) => $.detail.download_tooltip)}
+              </TooltipContent>
+            </Tooltip>
             <Button
               variant="outline"
               size="xs"

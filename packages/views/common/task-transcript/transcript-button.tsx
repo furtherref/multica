@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Loader2, ScrollText } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Loader2, ScrollText } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 import {
   Tooltip,
@@ -13,6 +13,7 @@ import { api } from "@multica/core/api";
 import {
   chatKeys,
   isTaskMessageTaskId,
+  mergeTaskMessagesBySeq,
   taskMessagesOptions,
 } from "@multica/core/chat/queries";
 import type { AgentTask } from "@multica/core/types/agent";
@@ -20,19 +21,22 @@ import type { TaskMessagePayload } from "@multica/core/types/events";
 import { AgentTranscriptDialog } from "./agent-transcript-dialog";
 import { buildTimeline, type TimelineItem } from "./build-timeline";
 
+type CatchupStatus = "idle" | "pending" | "verified" | "failed";
+
 interface TranscriptButtonProps {
   task: AgentTask;
   agentName: string;
   /**
-   * Pre-loaded timeline. When provided the button skips the fetch and opens
-   * the dialog immediately — used by surfaces that already own an accumulating
-   * timeline. Omit for terminal tasks; the button will fetch via
-   * `api.listTaskMessages` on the first click and cache the result. Omit for
-   * live tasks too: the button then subscribes to the shared task-messages
-   * cache so the dialog keeps growing as new events arrive.
+   * Pre-loaded timeline. When provided the button skips the shared cache and
+   * renders these items directly — used by surfaces that already own a live
+   * timeline (e.g. a card whose `items` accumulate via WS). Omit it and the
+   * button reads the shared `task-messages` cache instead.
    */
   items?: TimelineItem[];
   isLive?: boolean;
+  /** Transient activity hint (e.g. "reconnecting") forwarded to the dialog's
+   *  empty-state live label. Supply from the same source as `items`. */
+  activity?: string;
   className?: string;
   title?: string;
   renderButton?: boolean;
@@ -57,23 +61,16 @@ interface TranscriptButtonProps {
 
 /**
  * Compact icon-button that opens the full transcript dialog. Used on any
- * surface that lists agent tasks (issue activity card, agent detail
- * activity tab). Owns its own dialog state and lazy-load — the parent
- * just drops it in.
- *
- * Three data modes:
- *  - Provided items: parent owns the timeline, we just render it.
- *  - Live cache: `isLive` with no provided items and a persisted task id —
- *    subscribe to the shared `["task-messages", taskId]` cache (seeded by the
- *    WS `task:message` stream) so the open dialog keeps growing in real time,
- *    and force a seq-merged backfill on open to heal any WS reconnect gap.
- *  - Lazy: terminal tasks fetch once on first click and cache locally.
+ * surface that lists agent tasks (issue execution log, issue header chip,
+ * agent detail activity tab). Owns its own dialog state; the parent just
+ * drops it in.
  */
 export function TranscriptButton({
   task,
   agentName,
   items: providedItems,
   isLive = false,
+  activity,
   className,
   title = "View transcript",
   renderButton = true,
@@ -90,66 +87,100 @@ export function TranscriptButton({
   // A dialog-owning parent knows better than this instance's own clicks —
   // when the trigger lives elsewhere, those never happen.
   const returnFocus = finalFocus ?? fromKeyboard;
-  const [loading, setLoading] = useState(false);
-  const [loadedItems, setLoadedItems] = useState<TimelineItem[] | null>(null);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = controlledOnOpenChange ?? setUncontrolledOpen;
 
-  // Live cache mode: the running task feeds the shared task-messages cache, so
-  // we render straight off that cache instead of a one-shot local snapshot.
-  const liveCacheMode =
-    isLive && providedItems === undefined && isTaskMessageTaskId(task.id);
+  // Two modes share one transcript surface:
+  //   - A live card may hand us `items` directly (already accumulating via WS
+  //     in the parent) — we render them as-is.
+  //   - Every other surface (issue execution log, header chip, agent activity
+  //     tab) omits `items`; we read the shared `task-messages` cache — the same
+  //     entry `useRealtimeSync` seeds from `task:message` events. This keeps all
+  //     entry points on one source of truth and lets an open dialog grow live,
+  //     instead of each button freezing its own one-shot fetch (which surfaced
+  //     empty/partial logs when opened early in a run).
+  const usesSharedCache = providedItems === undefined;
+  const canFetch = usesSharedCache && isTaskMessageTaskId(task.id);
+  const qc = useQueryClient();
 
-  // Latch the live path for the duration of an open session. The parent flips
-  // `isLive` to false the moment the task finishes; without the latch the
-  // dialog would drop to empty `loadedItems` mid-view. Staying on the cache
-  // path keeps every delivered seq on screen and lets the dialog take a final
-  // authoritative backfill on the running→terminal transition.
-  const [liveSession, setLiveSession] = useState(false);
+  // Subscribe to the shared `task-messages` cache for reactive reads (the same
+  // entry `useRealtimeSync` seeds from `task:message` events), but DON'T let the
+  // query drive fetching — a query refetch replaces the whole cache, which would
+  // clobber a WS increment that arrived while the HTTP read was in flight. We
+  // fetch manually below and merge by seq instead.
+  const { data: messages } = useQuery({
+    ...taskMessagesOptions(task.id),
+    enabled: false,
+  });
+
+  const [catchupStatus, setCatchupStatus] =
+    useState<CatchupStatus>("idle");
+  const catchupSeq = useRef(0);
+
+  // Catch up from the server each time the dialog opens. `task:message`
+  // increments can be lost across a WS disconnect, and the cache is never
+  // invalidated on reconnect/completion (staleTime: Infinity), so the warm
+  // cache alone could show a permanently partial transcript. Reconcile with the
+  // authoritative DB list by MERGING into live cache (not replacing) so a
+  // concurrent WS append is never dropped; WS keeps it live while open.
+  const runCatchup = useCallback(async () => {
+    if (!canFetch) return;
+    const seq = ++catchupSeq.current;
+    setCatchupStatus("pending");
+    try {
+      const fetched = await api.listTaskMessages(task.id);
+      qc.setQueryData<TaskMessagePayload[]>(
+        chatKeys.taskMessages(task.id),
+        (current) => mergeTaskMessagesBySeq(current ?? [], fetched),
+      );
+      if (catchupSeq.current === seq) setCatchupStatus("verified");
+    } catch {
+      if (catchupSeq.current !== seq) return;
+      setCatchupStatus("failed");
+    }
+  }, [canFetch, task.id, qc]);
+
   useEffect(() => {
-    if (!open) {
-      setLiveSession(false);
-      return;
-    }
-    if (liveCacheMode) {
-      setLiveSession(true);
-    }
-  }, [liveCacheMode, open]);
+    catchupSeq.current += 1;
+    setCatchupStatus("idle");
+  }, [task.id]);
 
-  // Live mode renders from the cache; lazy/provided modes from local state.
-  const items = providedItems ?? loadedItems ?? [];
+  // Catch up on open, and again the moment the task reaches a terminal
+  // state — the shared cache can still be missing the final tail of
+  // messages a completed task never re-broadcasts over WS.
+  useEffect(() => {
+    if (open && canFetch) void runCatchup();
+  }, [open, canFetch, runCatchup, isLive]);
 
-  const handleClick = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const keyboard = e.detail === 0;
-      setFromKeyboard(keyboard);
-      if (liveCacheMode) {
-        setLiveSession(true);
-        setOpen(true, keyboard);
-        return;
-      }
-      if (providedItems !== undefined || loadedItems !== null) {
-        setOpen(true, keyboard);
-        return;
-      }
-      setLoading(true);
-      api
-        .listTaskMessages(task.id)
-        .then((msgs) => {
-          setLoadedItems(buildTimeline(msgs));
-          setOpen(true, keyboard);
-        })
-        .catch((err) => {
-          console.error(err);
-          setLoadedItems([]);
-          setOpen(true, keyboard);
-        })
-        .finally(() => setLoading(false));
-    },
-    [liveCacheMode, providedItems, loadedItems, setOpen, task.id],
+  const rawItems = useMemo(
+    () => providedItems ?? buildTimeline(messages ?? []),
+    [providedItems, messages],
   );
+
+  // A terminal task only treats the transcript as complete after the
+  // authoritative /messages catch-up succeeds. A warm cache can still be useful
+  // to display partial content, but it is not proof of completeness because WS
+  // events can be missed during reconnects.
+  const needsVerifiedCatchup = open && canFetch && !isLive;
+  const catchupPending =
+    needsVerifiedCatchup &&
+    catchupStatus !== "verified" &&
+    catchupStatus !== "failed";
+  const catchupIncomplete =
+    needsVerifiedCatchup && catchupStatus !== "verified";
+  const awaitingFirstLoad =
+    catchupPending && messages === undefined;
+  const dialogReady = open && !awaitingFirstLoad;
+  const items = rawItems;
+
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const keyboard = e.detail === 0;
+    setFromKeyboard(keyboard);
+    if (canFetch) setCatchupStatus("pending");
+    setOpen(true, keyboard);
+  }, [canFetch, setOpen]);
 
   useEffect(() => {
     if (!open) return;
@@ -171,14 +202,14 @@ export function TranscriptButton({
           <TooltipTrigger
             render={<button type="button" />}
             onClick={handleClick}
-            disabled={loading}
+            disabled={awaitingFirstLoad}
             aria-label={title}
             className={cn(
               "flex items-center justify-center rounded-xs p-1 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors disabled:opacity-50",
               className,
             )}
           >
-            {loading ? (
+            {awaitingFirstLoad ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <ScrollText className="h-3.5 w-3.5" />
@@ -188,104 +219,23 @@ export function TranscriptButton({
         </Tooltip>
       ) : null}
 
-      {open &&
-        (liveSession ? (
-          <LiveTranscriptDialog
-            task={task}
-            agentName={agentName}
-            isLive={isLive}
-            onOpenChange={setOpen}
-            finalFocus={returnFocus}
-            headerSlot={headerSlot}
-          />
-        ) : (
-          <AgentTranscriptDialog
-            open={open}
-            onOpenChange={setOpen}
-            task={task}
-            items={items}
-            agentName={agentName}
-            isLive={isLive}
-            finalFocus={returnFocus}
-            headerSlot={headerSlot}
-          />
-        ))}
+      {dialogReady && (
+        <AgentTranscriptDialog
+          open={open}
+          onOpenChange={setOpen}
+          task={task}
+          items={items}
+          agentName={agentName}
+          isLive={isLive}
+          activity={activity}
+          finalFocus={returnFocus}
+          headerSlot={headerSlot}
+          loadIncomplete={catchupIncomplete}
+          loadPending={catchupPending}
+          onRetryLoad={runCatchup}
+          retrying={catchupPending}
+        />
+      )}
     </>
-  );
-}
-
-interface LiveTranscriptDialogProps {
-  task: AgentTask;
-  agentName: string;
-  isLive: boolean;
-  onOpenChange: (open: boolean) => void;
-  finalFocus: boolean;
-  headerSlot?: React.ReactNode;
-}
-
-/**
- * Live transcript view backed by the shared task-messages cache. Mounted only
- * while the dialog is open, so closed live rows hold no query subscription and
- * don't widen the baseline request volume.
- *
- * The cache observer is read-only (`enabled: false`): the WS `task:message`
- * handler is the live writer, and the backfill below is the only fetch here.
- * Keeping React Query from issuing its own refetch is deliberate — its result
- * would blind-replace the cache and could drop a seq that arrived mid-flight,
- * whereas the backfill merges by seq.
- */
-function LiveTranscriptDialog({
-  task,
-  agentName,
-  isLive,
-  onOpenChange,
-  finalFocus,
-  headerSlot,
-}: LiveTranscriptDialogProps) {
-  const queryClient = useQueryClient();
-  const { data } = useQuery({
-    ...taskMessagesOptions(task.id),
-    enabled: false,
-  });
-
-  // Force a backfill on open, and again when the task reaches a terminal state.
-  // `taskMessagesOptions` is `staleTime: Infinity`, so a plain subscription
-  // never refetches — a WS reconnect gap (or the final tail of messages a
-  // completed issue task never re-broadcasts) would otherwise leave a hole.
-  // The query's `structuralSharing` folds this response into whatever the
-  // realtime stream has already written, so neither side loses a seq.
-  useEffect(() => {
-    if (!isTaskMessageTaskId(task.id)) return;
-    let cancelled = false;
-    api
-      .listTaskMessages(task.id)
-      .then((msgs) => {
-        if (cancelled) return;
-        queryClient.setQueryData<TaskMessagePayload[]>(
-          chatKeys.taskMessages(task.id),
-          msgs,
-        );
-      })
-      .catch((err) => {
-        console.error(err);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [task.id, isLive, queryClient]);
-
-  const items = useMemo(() => buildTimeline(data ?? []), [data]);
-
-  return (
-    <AgentTranscriptDialog
-      open
-      onOpenChange={onOpenChange}
-      task={task}
-      items={items}
-      agentName={agentName}
-      isLive={isLive}
-      finalFocus={finalFocus}
-      headerSlot={headerSlot}
-    />
   );
 }

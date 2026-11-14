@@ -159,6 +159,7 @@
   },
   "picker": {
     "no_project": "プロジェクトなし",
+    "project_required": "プロジェクトは必須です",
     "empty": "プロジェクトはまだありません",
     "search_placeholder": "プロジェクトを検索...",
     "clear_aria": "プロジェクトをクリア"

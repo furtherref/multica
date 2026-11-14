@@ -994,3 +994,15 @@ func writeSkillFiles(skillsDir string, skills []SkillContextForEnv, manifest *si
 
 	return nil
 }
+
+// renderSkillBullet renders a skill as a markdown list item for the skill
+// listings in the runtime brief. The description is appended as the
+// per-skill trigger signal when present so the agent can match a skill to its
+// task; skills without a description fall back to a bare name (no dangling em
+// dash).
+func renderSkillBullet(skill SkillContextForEnv) string {
+	if d := strings.TrimSpace(skill.Description); d != "" {
+		return fmt.Sprintf("- **%s** — %s\n", skill.Name, d)
+	}
+	return fmt.Sprintf("- **%s**\n", skill.Name)
+}

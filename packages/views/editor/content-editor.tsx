@@ -253,6 +253,7 @@ type ContentEditorProps = ContentEditorBaseProps & ContentEditorValueProps;
 
 interface ContentEditorRef {
   getMarkdown: () => string;
+  setMarkdown: (markdown: string) => void;
   clearContent: () => void;
   focus: () => void;
   /**
@@ -903,8 +904,32 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       // placeholder no longer serialises at all, which is strictly stronger
       // than scrubbing it back out afterwards.
       getMarkdown: () => editor?.getMarkdown() ?? "",
+      setMarkdown: (markdown: string) => {
+        editor?.commands.setContent(
+          preprocessMarkdown(markdown, {
+            cdnDomain: configStore.getState().cdnDomain,
+          }),
+          { contentType: "markdown" },
+        );
+        // Normalized the same way the debounced `onUpdate` path does, so
+        // seeding a template does not immediately re-emit as a user edit.
+        // `base` is whatever the editor was showing before this imperative
+        // replace; the new markdown becomes the base for subsequent edits.
+        const base = documentBaseRef.current;
+        const normalized = normalizeMarkdown(markdown);
+        documentBaseRef.current = normalized;
+        lastEmittedRef.current = normalized;
+        onUpdateRef.current?.(normalized, base);
+      },
       clearContent: () => {
-        editor?.commands.clearContent();
+        if (!editor) return;
+        editor.commands.clearContent();
+        // Clearing maps the selection across the replace, and an
+        // `AllSelection` (a send right after Cmd+A) maps onto itself. A
+        // composer that refocuses after sending would then paint it over the
+        // emptied line as a lone selected space, so park the caret at the
+        // start (0 clamps to the first text position).
+        editor.commands.setTextSelection(0);
       },
       focus: () => {
         if (editor) editor.commands.focus();

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { X } from "lucide-react";
 import {
   Card,
   CardHeader,
@@ -19,9 +20,13 @@ import {
   InputOTPGroup,
   InputOTPSlot,
 } from "@multica/ui/components/ui/input-otp";
-import { useAuthStore } from "@multica/core/auth";
+import {
+  useAuthStore,
+  SESSION_ENDED_REASON_KEY,
+  ACCOUNT_SUSPENDED_CODE,
+} from "@multica/core/auth";
 import { workspaceKeys } from "@multica/core/workspace/queries";
-import { api } from "@multica/core/api";
+import { api, errorCode } from "@multica/core/api";
 import type { User } from "@multica/core/types";
 import { useT } from "../i18n";
 
@@ -78,6 +83,15 @@ export function redirectToCliCallback(url: string, token: string, state: string)
  * Allows localhost and private/LAN IPs (RFC 1918) to support self-hosted setups
  * on local VMs while blocking arbitrary public hosts.
  */
+/**
+ * True when `err` is the server's structured rejection for a suspended
+ * account (403 with `body.code === "ACCOUNT_SUSPENDED"`), as opposed to any
+ * other login failure.
+ */
+function isAccountSuspendedError(err: unknown): boolean {
+  return errorCode(err) === ACCOUNT_SUSPENDED_CODE;
+}
+
 export function validateCliCallback(cliCallback: string): boolean {
   try {
     const cbUrl = new URL(cliCallback);
@@ -116,6 +130,11 @@ export function LoginPage({
   const [loading, setLoading] = useState(false);
   const [cooldown, setCooldown] = useState(0);
   const [existingUser, setExistingUser] = useState<User | null>(null);
+  // Show-once notice for a session that was just ended by an account
+  // suspension (set by the ApiClient/core-provider before the logout
+  // redirect landed here). Cleared immediately so refreshing the login page
+  // doesn't keep re-showing it.
+  const [showSuspendedNotice, setShowSuspendedNotice] = useState(false);
   // Tracks how the existing session was detected so handleCliAuthorize
   // uses the matching token source (cookie → issueCliToken, localStorage → direct).
   const authSourceRef = useRef<"cookie" | "localStorage">("cookie");
@@ -123,6 +142,13 @@ export function LoginPage({
   // because the user asked to leave. Without saying so, landing here reads as
   // the app having lost their work for no reason.
   const sessionExpired = useAuthStore((state) => state.expired);
+
+  useEffect(() => {
+    if (localStorage.getItem(SESSION_ENDED_REASON_KEY) === "account_suspended") {
+      localStorage.removeItem(SESSION_ENDED_REASON_KEY);
+      setShowSuspendedNotice(true);
+    }
+  }, []);
 
   // Check for existing session when CLI callback is present.
   // Prioritises cookie auth (= current browser session) to avoid authorising
@@ -189,9 +215,11 @@ export function LoginPage({
         setCooldown(60);
       } catch (err) {
         setError(
-          err instanceof Error
-            ? err.message
-            : `${t(($) => $.errors.send_failed)} ${t(($) => $.errors.server_unreachable)}`,
+          isAccountSuspendedError(err)
+            ? t(($) => $.login.account_suspended_notice)
+            : err instanceof Error
+              ? err.message
+              : `${t(($) => $.errors.send_failed)} ${t(($) => $.errors.server_unreachable)}`,
         );
       } finally {
         setLoading(false);
@@ -227,9 +255,11 @@ export function LoginPage({
         onSuccess();
       } catch (err) {
         setError(
-          err instanceof Error
-            ? err.message
-            : t(($) => $.errors.code_invalid),
+          isAccountSuspendedError(err)
+            ? t(($) => $.login.account_suspended_notice)
+            : err instanceof Error
+              ? err.message
+              : t(($) => $.errors.code_invalid),
         );
         setCode("");
         setLoading(false);
@@ -246,7 +276,11 @@ export function LoginPage({
       setCooldown(60);
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : t(($) => $.errors.resend_failed),
+        isAccountSuspendedError(err)
+          ? t(($) => $.login.account_suspended_notice)
+          : err instanceof Error
+            ? err.message
+            : t(($) => $.errors.resend_failed),
       );
     }
   };
@@ -436,6 +470,19 @@ export function LoginPage({
                 {t(($) => $.errors.session_expired)}
               </AlertDescription>
             </Alert>
+          )}
+          {showSuspendedNotice && (
+            <div className="flex items-start justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-body text-destructive">
+              <span>{t(($) => $.login.account_suspended_notice)}</span>
+              <button
+                type="button"
+                aria-label={t(($) => $.login.account_suspended_dismiss)}
+                onClick={() => setShowSuspendedNotice(false)}
+                className="shrink-0 cursor-pointer text-destructive hover:opacity-80"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
           )}
           <form id="login-form" onSubmit={handleSendCode} className="space-y-4">
             <div className="space-y-2">

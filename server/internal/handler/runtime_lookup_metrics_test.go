@@ -35,7 +35,7 @@ func TestAgentRuntimeLookupWSHotPathIsZeroRead(t *testing.T) {
 	identity := daemonws.ClientIdentity{
 		WorkspaceID: testWorkspaceID,
 		RuntimeLeases: map[string]*daemonws.RuntimeLease{
-			runtimeID: daemonws.NewRuntimeLease(testWorkspaceID, "online", time.Now(), true),
+			runtimeID: daemonws.NewRuntimeLease(testWorkspaceID, "", "online", time.Now(), true),
 		},
 	}
 

@@ -23,6 +23,7 @@ dist-electron
 # Desktop production config is public (backend URL, etc.) — track it so
 # `pnpm package` produces a release-ready build without extra setup.
 !apps/desktop/.env.production
+!apps/desktop/.env.furtherref
 # Desktop staging config is public (staging API/web URLs) — track it so
 # `pnpm dev:desktop:staging` works from a fresh checkout instead of relying
 # on a hand-written local env file (MUL-5025: a misnamed VITE_ var there

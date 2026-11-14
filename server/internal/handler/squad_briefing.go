@@ -105,8 +105,8 @@ Your responsibilities, in order:
 // job is the owning/guest permission boundary, drawn at the Agent Identity
 // layer (Instruction Precedence puts it above the workflow). The owning
 // leader needs the standing wrap-up instruction below — the @mention-dispatch
-// shape (no child issues, so no child-done system comment) never produces a
-// comment that asks for in_review, so without it the parent would sit in
+// shape (no child issues, so no sub-issue wakeup) never produces a
+// trigger that asks for in_review, so without it the parent would sit in
 // in_progress forever; the guest leader gets the prohibition instead
 // (squadParentStatusNotOwned). Both compositions are pinned by
 // handler/squad_parent_status_contract_test.go.
@@ -139,6 +139,15 @@ const squadOperatingProtocolHardRules = `Hard rules:
   Roster. A plain "@name" or bare name does NOT trigger the agent —
   if you skip the mention link, the task is never delivered and the
   issue stalls. This is non-negotiable: no mention link = no delegation.
+- The mention markdown has TWO parts: the visible ` + "`" + `[Label]` + "`" + ` and the
+  routable ` + "`" + `(mention://agent/<UUID>)` + "`" + `. **Only the UUID decides who
+  gets triggered** — the Label is decorative. **Never combine one
+  roster row's Label with another row's UUID.** Copy the ENTIRE
+  ` + "`" + `[@Name](mention://agent/<UUID>)` + "`" + ` string from a single Squad
+  Roster row as-is; do not edit either side.
+  Wrong: ` + "`" + `[@Reviewer-Alice](mention://agent/<Bob's UUID>)` + "`" + ` —
+  the UI shows "@Reviewer-Alice" but Bob is triggered and replies.
+  This is the worst kind of bug: it looks right and behaves wrong.
 - Do NOT restate the issue body or prior comments in your delegation —
   the assignee already has them. Repeating context is noise that
   buries the actual instruction.
@@ -146,7 +155,17 @@ const squadOperatingProtocolHardRules = `Hard rules:
   other suitable members. The squad exists so work is split — bypassing
   it defeats the point.
 - Do NOT @mention members who don't appear in the Squad Roster below;
-  they are not part of this squad.
+  they are not part of this squad. The server enforces this for
+  agent-authored comments on a squad-assigned issue: an out-of-roster
+  agent mention is silently dropped (no task is ever enqueued for it),
+  so picking a same-role agent from outside the roster will look like
+  you delegated but result in nothing happening at all.
+- Do NOT call ` + "`" + `multica agent list` + "`" + ` (or any other
+  workspace-wide listing command) to find collaborators on this issue.
+  The Squad Roster above is authoritative — every UUID you need to
+  paste into a mention link is already there. Reaching outside the
+  roster via the global agent list is how cross-squad mis-dispatch
+  happens.
 - One delegation comment per turn is enough. Avoid spamming multiple
   near-identical comments.
 - If the squad has no member capable of the task, post a comment
@@ -361,8 +380,10 @@ func formatRosterRow(name, kind, role, skills, mention string) string {
 }
 
 // formatMention emits a mention markdown string that round-trips through
-// util.ParseMentions. The label is the human display name; the link target
-// uses the mention:// scheme with the entity type and UUID.
+// util.ParseMentions. The label is the human display name (with `[`/`]`
+// escaped so names containing brackets — e.g. "David[TF]" or "Alice [QA"
+// — don't make the resulting markdown ambiguous to the scanner); the link
+// target uses the mention:// scheme with the entity type and UUID.
 func formatMention(name, mentionType, id string) string {
-	return "[@" + name + "](mention://" + mentionType + "/" + id + ")"
+	return "[@" + util.EscapeMentionLabel(name) + "](mention://" + mentionType + "/" + id + ")"
 }

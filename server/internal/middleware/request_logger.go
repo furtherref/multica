@@ -139,6 +139,9 @@ func RequestLogger(next http.Handler) http.Handler {
 			"path", redactWebhookPath(r.URL.Path),
 			"status", status,
 			"duration", duration.Round(time.Microsecond).String(),
+			// BytesWritten is the application response size observed before an
+			// ingress proxy may compress or otherwise transform the body.
+			"response_bytes", ww.BytesWritten(),
 		}
 		if rid := chimw.GetReqID(r.Context()); rid != "" {
 			attrs = append(attrs, "request_id", rid)

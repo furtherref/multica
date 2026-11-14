@@ -13,6 +13,7 @@ import { InboxDetailLabel, useTypeLabels } from "./inbox-detail-label";
 import {
   getInboxDisplayTitle,
   isAutopilotQuotaNotice,
+  isRuntimeBudgetNotice,
 } from "./inbox-display";
 import { useInboxContextMenu } from "./inbox-context-menu";
 import { useStatusLabel } from "../../issues/utils/status-label";
@@ -72,9 +73,14 @@ export function InboxListItem({
       ? paths.workspace(slug).issueDetail(item.issue_id)
       : null;
   const intentNavigate = useIntentNavigate();
-  const displayTitle = isAutopilotQuotaNotice(item.type)
-    ? typeLabels[item.type]
-    : getInboxDisplayTitle(item);
+  // Both system notices carry an English server-written title. The localized
+  // type label already names them exactly, so it replaces the title in every
+  // locale — the body still renders from the server (the budget notice keeps
+  // the generic body; only the quota notice gets its own component).
+  const displayTitle =
+    isAutopilotQuotaNotice(item.type) || isRuntimeBudgetNotice(item.type)
+      ? typeLabels[item.type]
+      : getInboxDisplayTitle(item);
   const isArchivedView = view === "archived";
   // Archiving deliberately leaves `read` untouched so unarchiving restores the
   // real unread state, so archived rows would otherwise keep an unread marker

@@ -19,7 +19,7 @@ import { workspaceKeys } from "@multica/core/workspace/queries";
 import { useAuthStore } from "@multica/core/auth";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { isAgentRuntimeBound } from "@multica/core/agents";
-import { api } from "@multica/core/api";
+import { searchIssues, searchProjects } from "@multica/core/search-index";
 import {
   isIssueDirectHit,
   isProjectDirectHit,
@@ -306,13 +306,13 @@ export const MentionList = forwardRef<MentionListRef, MentionListProps>(
           try {
             if (includeProjectSearch) {
               const [issues, projects] = await Promise.all([
-                api.searchIssues({
+                searchIssues({
                   q,
                   limit: SERVER_CONTEXT_SEARCH_LIMIT,
                   include_closed: true,
                   signal: controller.signal,
                 }),
-                api.searchProjects({
+                searchProjects({
                   q,
                   limit: SERVER_CONTEXT_SEARCH_LIMIT,
                   include_closed: true,
@@ -326,7 +326,7 @@ export const MentionList = forwardRef<MentionListRef, MentionListProps>(
                 ]);
               }
             } else {
-              const res = await api.searchIssues({
+              const res = await searchIssues({
                 q,
                 limit: SERVER_ISSUE_SEARCH_LIMIT,
                 include_closed: true,
@@ -553,8 +553,10 @@ function MentionRow({
   const { t } = useT("editor");
   const { t: issuesT } = useT("issues");
   if (item.type === "issue") {
-    // Visually dim closed issues (done/cancelled) so they're distinguishable
-    // from active ones in the suggestion list — they're still selectable.
+    // Visually dim closed issues so they're distinguishable from active ones
+    // in the suggestion list — they're still selectable. Closed by CATEGORY, so
+    // a custom status that behaves as done reads as closed too (MUL-6243). The
+    // fork's `archive` status (#39) resolves to `closed` as well.
     const isClosed =
       item.statusCategory === "done" || item.statusCategory === "closed";
     return (
@@ -583,11 +585,26 @@ function MentionRow({
           <span className="flex min-w-0 items-center gap-2">
             <span className="shrink-0 font-medium text-muted-foreground">{item.label}</span>
             {item.description && (
-              <span
-                className={`truncate text-foreground ${isClosed ? "line-through" : ""}`}
-              >
-                {item.description}
-              </span>
+              // The title truncates in the narrow list; the tooltip keeps the
+              // full text reachable (fork #56).
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span
+                      className={`truncate text-foreground ${isClosed ? "line-through" : ""}`}
+                    >
+                      {item.description}
+                    </span>
+                  }
+                />
+                <TooltipContent
+                  align="start"
+                  className="z-[60]"
+                  positionerClassName="z-[70]"
+                >
+                  {item.description}
+                </TooltipContent>
+              </Tooltip>
             )}
           </span>
         </span>
@@ -829,7 +846,7 @@ export function createMentionSuggestion(
     );
 
     // Cached issues give an instant first paint; MentionList adds server
-    // matches for done/cancelled and any other issues not in this cache.
+    // matches for closed and any other issues not in this cache.
     const issueItems: MentionItem[] = cachedIssues
       .filter(
         (i) =>

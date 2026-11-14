@@ -665,6 +665,7 @@ func TestExpandCategories(t *testing.T) {
 	})
 
 	// A non-category mixed in with real ones drops out; the rest still expand.
+	// Closed carries the fork's archive status (#39) as a built-in behavior.
 	t.Run("drops a non-category alongside real ones", func(t *testing.T) {
 		q := newFakeQuerier(custom("shipped", CategoryDone))
 		alongside, err := ExpandCategories(ctx, q, testWorkspace, []string{CategoryDone, CategoryClosed, "not_a_category"})
@@ -672,8 +673,110 @@ func TestExpandCategories(t *testing.T) {
 			t.Fatalf("expand: %v", err)
 		}
 		slices.Sort(alongside)
-		if want := []string{Cancelled, Done, "shipped"}; !slices.Equal(alongside, want) {
+		if want := []string{Archive, Cancelled, Done, "shipped"}; !slices.Equal(alongside, want) {
 			t.Errorf("expand(done, closed, not_a_category) = %v, want %v", alongside, want)
 		}
 	})
+
+	// The fork's archive status has no catalog row; closed must still expand to
+	// it so every indexed terminal predicate excludes archived issues.
+	t.Run("closed includes the fork archive status without a catalog row", func(t *testing.T) {
+		got, err := ExpandCategories(ctx, newFakeQuerier(), testWorkspace, []string{CategoryClosed})
+		if err != nil {
+			t.Fatalf("expand: %v", err)
+		}
+		if strings.Join(got, ",") != "cancelled,archive" {
+			t.Errorf("expand(closed) on an empty catalog = %v, want [cancelled archive]", got)
+		}
+	})
+
+	// Installed clients and older fork producers still send the legacy
+	// behavior vocabulary, archive included.
+	t.Run("legacy terminal keys still pull in archive", func(t *testing.T) {
+		q := newFakeQuerier(custom("verified", CategoryDone))
+		got, err := ExpandCategories(ctx, q, testWorkspace, []string{Done, Cancelled, Archive})
+		if err != nil {
+			t.Fatalf("expand: %v", err)
+		}
+		slices.Sort(got)
+		if want := []string{Archive, Cancelled, Done, "verified"}; !slices.Equal(got, want) {
+			t.Errorf("expand(done, cancelled, archive) = %v, want %v", got, want)
+		}
+	})
+}
+
+// The fork's archive status is closed for every lifecycle decision, resolves
+// without a catalog read, and keeps its raw key on the wire for installed
+// fork clients.
+func TestArchiveIsAClosedBehaviorWithoutACatalogRow(t *testing.T) {
+	ctx := context.Background()
+	q := newFakeQuerier()
+	if got, ok := CategoryForBehavior(Archive); !ok || got != CategoryClosed {
+		t.Errorf("CategoryForBehavior(archive) = %q, %v; want %q, true", got, ok, CategoryClosed)
+	}
+	if got, err := CategoryWithError(ctx, q, testWorkspace, Archive); err != nil || got != CategoryClosed {
+		t.Errorf("CategoryWithError(archive) = %q, %v; want %q", got, err, CategoryClosed)
+	}
+	if got := NewResolver(testWorkspace).Category(ctx, q, Archive); got != CategoryClosed {
+		t.Errorf("Resolver.Category(archive) = %q, want %q", got, CategoryClosed)
+	}
+	if q.lookups != 0 || q.lists != 0 {
+		t.Errorf("archive resolution touched the catalog: %d lookup(s), %d list(s)", q.lookups, q.lists)
+	}
+	if got := WireCategory(Archive, CategoryClosed); got != Archive {
+		t.Errorf("WireCategory(archive, closed) = %q, want %q", got, Archive)
+	}
+	if IsBuiltIn(Archive) || IsCategory(Archive) {
+		t.Error("archive must stay outside the catalog's built-in keys and categories")
+	}
+}
+
+// A custom status keyed `archive` would shadow the fork's retired-work status:
+// Resolve would return the catalog row and every `== "archive"` guard would
+// start firing for an ordinary custom status.
+func TestArchiveIsNotAvailableAsACustomKey(t *testing.T) {
+	if _, err := ValidateKey(Archive); err == nil {
+		t.Error("ValidateKey(archive) accepted the fork's built-in archive key")
+	}
+	if _, err := DeriveKey("Archive", CategoryClosed, map[string]bool{}); err == nil {
+		t.Error("DeriveKey(\"Archive\") slugged onto the reserved archive key")
+	}
+}
+
+// WritableCategory answers Resolve's question for background writers: a
+// built-in without I/O, a live custom status from the shared catalog read,
+// and "" for an archived, unknown or unreadable one.
+func TestResolverWritableCategory(t *testing.T) {
+	archived := custom("retired", InProgress)
+	archived.ArchivedAt = pgtype.Timestamptz{Valid: true}
+	q := newFakeQuerier(custom("awaiting_regression", InReview), archived)
+	r := NewResolver(testWorkspace)
+	ctx := context.Background()
+
+	if got := r.WritableCategory(ctx, q, Done); got != CategoryDone {
+		t.Errorf("WritableCategory(done) = %q, want %q", got, CategoryDone)
+	}
+	if got := r.WritableCategory(ctx, q, InReview); got != CategoryStarted {
+		t.Errorf("WritableCategory(in_review) = %q, want %q", got, CategoryStarted)
+	}
+	if q.lists != 0 || q.lookups != 0 {
+		t.Errorf("built-ins touched the catalog: %d list(s), %d lookup(s)", q.lists, q.lookups)
+	}
+	if got := r.WritableCategory(ctx, q, "awaiting_regression"); got != CategoryStarted {
+		t.Errorf("WritableCategory(awaiting_regression) = %q, want %q", got, CategoryStarted)
+	}
+	for _, key := range []string{"retired", "ghost"} {
+		if got := r.WritableCategory(ctx, q, key); got != "" {
+			t.Errorf("WritableCategory(%q) = %q, want empty", key, got)
+		}
+	}
+	if q.lists != 1 || q.lookups != 0 {
+		t.Errorf("catalog reads = %d list(s), %d lookup(s); want 1 and 0", q.lists, q.lookups)
+	}
+
+	failing := newFakeQuerier(custom("awaiting_regression", InReview))
+	failing.err = errors.New("connection refused")
+	if got := NewResolver(testWorkspace).WritableCategory(ctx, failing, "awaiting_regression"); got != "" {
+		t.Errorf("WritableCategory on a failed read = %q, want empty", got)
+	}
 }

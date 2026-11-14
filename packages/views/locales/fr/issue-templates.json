@@ -1,0 +1,85 @@
+{
+  "fields": {
+    "name": "Nom du modèle",
+    "issue_title": "Titre de la tâche",
+    "issue_content": "Contenu de la tâche"
+  },
+  "page": {
+    "title": "Modèles de tâche",
+    "tagline": "Gérez des modèles réutilisables de titre et de contenu de tâche.",
+    "new_template": "Nouveau modèle de tâche",
+    "search_placeholder": "Rechercher par nom de modèle, titre ou contenu...",
+    "empty": {
+      "title": "Aucun modèle de tâche pour l'instant",
+      "description": "Créez un modèle pour réutiliser un titre et un contenu lors de la création de tâches."
+    },
+    "no_matches": {
+      "title": "Aucune correspondance",
+      "with_query": "Aucun modèle ne correspond à « {{query}} »."
+    },
+    "list_error": {
+      "title": "Impossible de charger les modèles de tâche",
+      "fallback": "Une erreur est survenue lors du chargement des modèles de tâche.",
+      "retry": "Réessayer"
+    }
+  },
+  "table": {
+    "name": "Nom",
+    "source": "Source · Créateur",
+    "updated": "Mise à jour",
+    "no_content": "Aucun contenu",
+    "source_manual": "Créé manuellement",
+    "by_creator": "Créé par {{name}}"
+  },
+  "create": {
+    "title": "Nouveau modèle de tâche",
+    "description": "Les modèles ne s'appliquent qu'au titre et au contenu de la tâche.",
+    "close": "Fermer",
+    "name_placeholder": "Exemple : rapport de bug",
+    "issue_title_placeholder": "Exemple : corriger un problème dans {{module}}",
+    "issue_content_placeholder": "## Contexte\n\n## Étapes\n\n## Résultat attendu\n",
+    "cancel": "Annuler",
+    "submit": "Créer le modèle",
+    "submitting": "Création...",
+    "toast_created": "Modèle de tâche créé",
+    "fallback_error": "Échec de la création du modèle de tâche"
+  },
+  "detail": {
+    "all_templates": "Tous les modèles de tâche",
+    "delete_aria": "Supprimer le modèle de tâche",
+    "toast_saved": "Modèle de tâche enregistré",
+    "toast_save_failed": "Échec de l'enregistrement du modèle de tâche",
+    "toast_deleted": "Modèle de tâche supprimé",
+    "toast_delete_failed": "Échec de la suppression du modèle de tâche",
+    "save_bar": {
+      "unsaved": "Modifications non enregistrées",
+      "discard": "Abandonner",
+      "save": "Enregistrer les modifications",
+      "saving": "Enregistrement..."
+    },
+    "sidebar": {
+      "metadata": "Métadonnées",
+      "source": "Source",
+      "created": "Création",
+      "updated": "Mise à jour",
+      "created_by": "Créateur",
+      "id": "ID"
+    },
+    "content_edit": "Modifier",
+    "content_preview": "Aperçu",
+    "no_content": "Aucun contenu pour l'instant. Cliquez sur le bouton de modification pour ajouter le contenu de la tâche.",
+    "not_found": {
+      "title": "Modèle de tâche introuvable",
+      "fallback": "Ce modèle a peut-être été supprimé, ou vous n'y avez pas accès.",
+      "back": "Retour aux modèles de tâche"
+    },
+    "delete_dialog": {
+      "title": "Supprimer ce modèle de tâche ?",
+      "description": "« {{name}} » sera définitivement supprimé. Les tâches existantes ne sont pas affectées.",
+      "warning": "Cette action est irréversible.",
+      "cancel": "Annuler",
+      "confirm": "Supprimer définitivement",
+      "deleting": "Suppression..."
+    }
+  }
+}

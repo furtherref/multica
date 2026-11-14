@@ -71,7 +71,9 @@ func TestStatusCompatibilityContractedStorageGroupsAndPagination(t *testing.T) {
 					seen := map[string]bool{}
 					for _, cell := range cells {
 						legacy := spec.Kind != "status" && spec.CategoryFormat == ""
-						if legacy && !slices.Contains(installedStatusBuckets, cell.Value.Status) {
+						// Installed fork clients also know the fork's `archive` bucket
+						// (validIssueStatuses carries it); upstream's list does not.
+						if legacy && !slices.Contains(installedStatusBuckets, cell.Value.Status) && cell.Value.Status != issuestatus.Archive {
 							t.Fatalf("installed consumer hides %q", cell.Value.Status)
 						}
 						var cursor *string

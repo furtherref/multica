@@ -89,6 +89,29 @@ func squadMemberToResponse(m db.SquadMember) SquadMemberResponse {
 	}
 }
 
+// ── Authorization helpers ───────────────────────────────────────────────────
+
+// requireSquadManager resolves the calling workspace member, loads the
+// target squad, and confirms the caller may manage it. On any failure it
+// writes the appropriate HTTP response and returns ok=false — callers
+// must return immediately.
+func (h *Handler) requireSquadManager(w http.ResponseWriter, r *http.Request) (db.Squad, db.Member, bool) {
+	workspaceID := workspaceIDFromURL(r, "workspaceId")
+	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	if !ok {
+		return db.Squad{}, db.Member{}, false
+	}
+	squad, _, ok := h.loadSquadInWorkspace(w, r)
+	if !ok {
+		return db.Squad{}, db.Member{}, false
+	}
+	if !canManageSquad(member, squad) {
+		writeError(w, http.StatusForbidden, "insufficient permissions")
+		return db.Squad{}, db.Member{}, false
+	}
+	return squad, member, true
+}
+
 func addSquadMemberPreview(summary *squadMemberSummary, memberType string, memberID pgtype.UUID, role string) {
 	summary.count++
 	if len(summary.preview) >= 3 {
@@ -338,17 +361,8 @@ func (h *Handler) GetSquad(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	workspaceID := workspaceIDFromURL(r, "workspaceId")
-	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	squad, member, ok := h.requireSquadManager(w, r)
 	if !ok {
-		return
-	}
-
-	squad, _, ok := h.loadSquadInWorkspace(w, r)
-	if !ok {
-		return
-	}
-	if !canManageSquad(member, squad) {
-		writeError(w, http.StatusForbidden, "insufficient permissions")
 		return
 	}
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
@@ -482,17 +496,8 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) DeleteSquad(w http.ResponseWriter, r *http.Request) {
 	workspaceID := workspaceIDFromURL(r, "workspaceId")
-	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	squad, _, ok := h.requireSquadManager(w, r)
 	if !ok {
-		return
-	}
-
-	squad, _, ok := h.loadSquadInWorkspace(w, r)
-	if !ok {
-		return
-	}
-	if !canManageSquad(member, squad) {
-		writeError(w, http.StatusForbidden, "insufficient permissions")
 		return
 	}
 
@@ -766,17 +771,8 @@ func (h *Handler) ListSquadMemberStatus(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) AddSquadMember(w http.ResponseWriter, r *http.Request) {
 	workspaceID := workspaceIDFromURL(r, "workspaceId")
-	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	squad, member, ok := h.requireSquadManager(w, r)
 	if !ok {
-		return
-	}
-
-	squad, _, ok := h.loadSquadInWorkspace(w, r)
-	if !ok {
-		return
-	}
-	if !canManageSquad(member, squad) {
-		writeError(w, http.StatusForbidden, "insufficient permissions")
 		return
 	}
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
@@ -855,17 +851,8 @@ func (h *Handler) AddSquadMember(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) RemoveSquadMember(w http.ResponseWriter, r *http.Request) {
 	workspaceID := workspaceIDFromURL(r, "workspaceId")
-	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	squad, _, ok := h.requireSquadManager(w, r)
 	if !ok {
-		return
-	}
-
-	squad, _, ok := h.loadSquadInWorkspace(w, r)
-	if !ok {
-		return
-	}
-	if !canManageSquad(member, squad) {
-		writeError(w, http.StatusForbidden, "insufficient permissions")
 		return
 	}
 
@@ -911,17 +898,8 @@ func (h *Handler) RemoveSquadMember(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) UpdateSquadMemberRole(w http.ResponseWriter, r *http.Request) {
 	workspaceID := workspaceIDFromURL(r, "workspaceId")
-	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	squad, _, ok := h.requireSquadManager(w, r)
 	if !ok {
-		return
-	}
-
-	squad, _, ok := h.loadSquadInWorkspace(w, r)
-	if !ok {
-		return
-	}
-	if !canManageSquad(member, squad) {
-		writeError(w, http.StatusForbidden, "insufficient permissions")
 		return
 	}
 

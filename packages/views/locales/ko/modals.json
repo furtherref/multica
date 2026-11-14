@@ -149,6 +149,7 @@
     "description_placeholder": "설명 추가...",
     "more_options_aria": "추가 옵션",
     "title_required": "만들려면 제목을 입력하세요",
+    "project_required": "만들려면 프로젝트를 선택하세요",
     "submit": "태스크 만들기",
     "submitting": "만드는 중...",
     "toast_created": "태스크를 만들었습니다",
@@ -245,7 +246,30 @@
       "error_daemon_version": "이 에이전트의 데몬 CLI({{current}})가 필요한 버전 {{min}}보다 낮습니다. 에이전트로 만들기를 사용하려면 데몬을 업그레이드하세요.",
       "error_unknown": "제출하지 못했습니다. 다시 시도하세요.",
       "sub_issue_of": "{{identifier}}의 하위 태스크"
+    },
+    "template": {
+      "trigger": "태스크 템플릿 적용",
+      "title": "템플릿 선택",
+      "description": "선택한 템플릿이 태스크 제목과 내용을 채웁니다.",
+      "empty_title": "태스크 템플릿이 없습니다",
+      "empty_description": "설정의 태스크 템플릿 페이지에서 만드세요.",
+      "manage": "태스크 템플릿 열기",
+      "apply_failed": "태스크 템플릿을 적용하지 못했습니다",
+      "confirm_title": "현재 제목과 내용을 덮어쓸까요?",
+      "confirm_description": "템플릿을 적용하면 현재 태스크 제목과 내용이 대체됩니다. 다른 필드는 그대로 유지됩니다.",
+      "confirm_cancel": "취소",
+      "confirm_apply": "덮어쓰기"
     }
+  },
+  "issue_status_confirm": {
+    "title": "태스크 상태를 변경할까요?",
+    "description_cancelled": "이 태스크가 취소됨으로 표시됩니다. 지금 취소하면 현재 상태를 유지합니다.",
+    "description_archive": "이 태스크가 보관으로 이동됩니다. 지금 취소하면 현재 상태를 유지합니다.",
+    "description_cancelled_batch": "선택한 태스크 {{count}}개가 취소됨으로 표시됩니다. 지금 취소하면 현재 상태를 유지합니다.",
+    "description_archive_batch": "선택한 태스크 {{count}}개가 보관으로 이동됩니다. 지금 취소하면 현재 상태를 유지합니다.",
+    "cancel": "취소",
+    "confirm": "확인",
+    "confirming": "확인 중..."
   },
   "mark_duplicate": {
     "title": "중복으로 표시",

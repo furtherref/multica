@@ -34,6 +34,17 @@ const (
 	Cancelled  = "cancelled"
 )
 
+// Archive is the fork's retired-work status (#39, migration 069). It is a plain
+// issue.status value with no catalog row, so IsBuiltIn and IsCategory stay
+// false and no custom status can inherit its stricter guards (no enqueue,
+// claim, retry or comment trigger; see the explicit `== "archive"` checks).
+// Its lifecycle category is closed: CategoryForBehavior and
+// BehaviorsForCategory carry it there, so category-based terminal decisions
+// and every ExpandCategories(closed) predicate treat archived issues as closed
+// without a second SQL clause. WireCategory keeps the raw key on the wire,
+// which is what installed fork clients have always received.
+const Archive = "archive"
+
 // The four stored lifecycle categories.
 const (
 	CategoryUnstarted = "unstarted"
@@ -141,7 +152,7 @@ func CategoryForBehavior(behavior string) (string, bool) {
 		return CategoryStarted, true
 	case Done:
 		return CategoryDone, true
-	case Cancelled:
+	case Cancelled, Archive:
 		return CategoryClosed, true
 	default:
 		return "", false
@@ -159,7 +170,7 @@ func BehaviorsForCategory(category string) []string {
 	case CategoryDone:
 		return []string{Done}
 	case CategoryClosed:
-		return []string{Cancelled}
+		return []string{Cancelled, Archive}
 	default:
 		return nil
 	}
@@ -187,7 +198,7 @@ func WireCategory(status, category string) string {
 	if normalized, ok := ParseCategory(category); ok {
 		category = normalized
 	}
-	if IsBuiltIn(status) {
+	if IsBuiltIn(status) || status == Archive {
 		return status
 	}
 	switch category {
@@ -227,10 +238,17 @@ func ValidateKey(key string) (string, error) {
 	if !keyPattern.MatchString(key) {
 		return "", errors.New("status key must be 1-32 characters of lowercase letters, digits or underscore, starting with a letter or digit")
 	}
-	if IsBuiltIn(key) || IsCategory(key) {
+	if isReservedKey(key) {
 		return "", fmt.Errorf("%q is a reserved status or category key and cannot be reused", key)
 	}
 	return key, nil
+}
+
+// isReservedKey reports the keys no custom status may take: the built-ins, the
+// category names, and the fork's `archive` issue status, which a catalog row
+// would otherwise shadow with a second, differently-behaving meaning.
+func isReservedKey(key string) bool {
+	return IsBuiltIn(key) || IsCategory(key) || key == Archive
 }
 
 // maxKeyLen mirrors the 32-character ceiling in keyPattern and the issue_status
@@ -298,7 +316,7 @@ func slugify(name string) string {
 // unchanged from before.
 func DeriveKey(name, category string, taken map[string]bool) (string, error) {
 	if slug := slugify(name); slug != "" {
-		if IsBuiltIn(slug) || IsCategory(slug) {
+		if isReservedKey(slug) {
 			return "", fmt.Errorf("%q is a reserved status or category key and cannot be reused; rename the status or pass an explicit key", slug)
 		}
 		return firstFreeKey(slug, taken)
@@ -346,7 +364,7 @@ func firstFreeKey(base string, taken map[string]bool) (string, error) {
 // seeded yet, so an unseeded workspace cannot mint a custom status that
 // shadows one.
 func keyOccupied(key string, taken map[string]bool) bool {
-	if IsBuiltIn(key) || IsCategory(key) {
+	if isReservedKey(key) {
 		return true
 	}
 	return taken[key]
@@ -586,6 +604,7 @@ type Resolver struct {
 	workspaceID pgtype.UUID
 	categories  map[string]string
 	names       map[string]string
+	archived    map[string]bool
 	loaded      bool
 	loadErr     error
 }
@@ -615,9 +634,13 @@ func (r *Resolver) load(ctx context.Context, q Querier) {
 	}
 	r.categories = make(map[string]string, len(entries))
 	r.names = make(map[string]string, len(entries))
+	r.archived = make(map[string]bool)
 	for _, e := range entries {
 		r.categories[e.Key] = e.Category
 		r.names[e.Key] = e.Name
+		if e.ArchivedAt.Valid {
+			r.archived[e.Key] = true
+		}
 	}
 }
 
@@ -650,6 +673,27 @@ func (r *Resolver) Category(ctx context.Context, q Querier, status string) strin
 		return category
 	}
 	r.load(ctx, q)
+	category := r.categories[status]
+	if !IsCategory(category) {
+		return ""
+	}
+	return category
+}
+
+// WritableCategory returns the category of a status a background writer may
+// still move an issue to: a built-in (resolved without I/O), or a custom
+// status that exists and is not archived. It returns "" for anything else,
+// including a failed catalog read, so side-effect callers fail closed. It
+// mirrors Resolve's rules while sharing the Resolver's single catalog read.
+func (r *Resolver) WritableCategory(ctx context.Context, q Querier, status string) string {
+	if IsBuiltIn(status) {
+		category, _ := CategoryForBehavior(status)
+		return category
+	}
+	r.load(ctx, q)
+	if r.archived[status] {
+		return ""
+	}
 	category := r.categories[status]
 	if !IsCategory(category) {
 		return ""

@@ -2,7 +2,11 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/pricing"
+	"github.com/multica-ai/multica/server/internal/service"
 )
 
 // TestDecidePostMergeMiss is Elon round-4 must-fix: the active-task check governs
@@ -41,6 +45,34 @@ func TestDecidePostMergeMiss(t *testing.T) {
 	})
 }
 
+// TestCommentEnqueueFailureReason: an enqueue error that reaches the comment
+// response must be typed, never substring-matched. The two named refusals —
+// fail-closed attribution and a spent runtime cost budget — each carry their
+// own reason so the caller learns what to fix; everything else stays
+// internal_error rather than leaking a raw message. Both must survive the
+// wrapping the enqueue helpers apply on the way out.
+func TestCommentEnqueueFailureReason(t *testing.T) {
+	budget := &service.RuntimeBudgetExceededError{Scope: service.RuntimeBudgetScopeRuntime, Period: pricing.PeriodDaily}
+	cases := []struct {
+		name string
+		err  error
+		want DispatchReasonCode
+	}{
+		{"fail-closed attribution", service.ErrAttributionFailClosed, ReasonAttributionBlocked},
+		{"wrapped fail-closed attribution", fmt.Errorf("enqueue mention task: %w", service.ErrAttributionFailClosed), ReasonAttributionBlocked},
+		{"spent cost budget", budget, ReasonBudgetExceeded},
+		{"wrapped spent cost budget", fmt.Errorf("enqueue mention task: %w", budget), ReasonBudgetExceeded},
+		{"anything else stays unclassified", errors.New("connection reset by peer"), ReasonInternalError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := commentEnqueueFailureReason(tc.err); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestCommentMergeTerminalOutcome is Elon round-5 must-fix: a pending-task merge
 // must report an HONEST public outcome. Only a real merge is coalesced; a
 // fail-closed refusal is blocked/attribution_blocked and any other failure is
@@ -58,6 +90,7 @@ func TestCommentMergeTerminalOutcome(t *testing.T) {
 	}{
 		{"real merge coalesces", commentMergeSucceeded, true, DispatchCoalesced, ReasonCoalesced},
 		{"attribution fail-closed is blocked, not success", commentMergeAttributionBlocked, true, DispatchBlocked, ReasonAttributionBlocked},
+		{"spent cost budget is blocked/budget_exceeded", commentMergeBudgetExceeded, true, DispatchBlocked, ReasonBudgetExceeded},
 		{"unknown error is blocked, not success", commentMergeError, true, DispatchBlocked, ReasonInternalError},
 		{"no pending task defers to active-task decision", commentMergeNoPendingTask, false, "", ""},
 	}

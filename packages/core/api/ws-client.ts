@@ -1,7 +1,15 @@
 import type { WSMessage, WSEventType } from "../types/events";
 import { type Logger, noopLogger } from "../logger";
+import { ACCOUNT_SUSPENDED_CODE } from "../auth/utils";
 
 type EventHandler = (payload: unknown, actorId?: string, actorType?: string) => void;
+type RealtimeScope = "task" | "chat";
+
+interface ActiveScope {
+  scope: RealtimeScope;
+  id: string;
+  refs: number;
+}
 
 // Cap how much of an unparseable frame we put into the log. A malformed or
 // rogue server can stream arbitrarily large garbage, and the warn handler may
@@ -50,6 +58,13 @@ export class WSClient {
   private onReconnectCallbacks = new Set<() => void>();
   private anyHandlers = new Set<(msg: WSMessage) => void>();
   private logger: Logger;
+  private options: { onAuthRejected?: () => void };
+  // Set once the server rejects auth (e.g. suspended account). The server
+  // will keep refusing this credential, so retrying is pointless and just
+  // spams the connection; only an explicit connect() (fresh login) clears it.
+  private authRejected = false;
+  private authenticated = false;
+  private readonly activeScopes = new Map<string, ActiveScope>();
 
   /**
    * Reads the current token at connect time. A reconnect can happen long
@@ -65,6 +80,7 @@ export class WSClient {
       logger?: Logger;
       cookieAuth?: boolean;
       identity?: WSClientIdentity;
+      onAuthRejected?: () => void;
       getToken?: () => string | null;
     },
   ) {
@@ -72,6 +88,7 @@ export class WSClient {
     this.logger = options?.logger ?? noopLogger;
     this.cookieAuth = options?.cookieAuth ?? false;
     this.identity = options?.identity;
+    this.options = { onAuthRejected: options?.onAuthRejected };
     this.getToken = options?.getToken;
   }
 
@@ -82,6 +99,10 @@ export class WSClient {
 
   connect() {
     this.badFrameLogged = false;
+    this.authenticated = false;
+    // A fresh explicit connect() (e.g. after a new login) is allowed to
+    // retry again even if a previous credential was rejected.
+    this.authRejected = false;
     const url = new URL(this.baseUrl);
     // Token is never sent as a URL query parameter — it would be logged by
     // proxies, CDNs, and browser history.  In cookie mode the HttpOnly cookie
@@ -95,6 +116,9 @@ export class WSClient {
       url.searchParams.set("client_version", this.identity.version);
     if (this.identity?.os)
       url.searchParams.set("client_os", this.identity.os);
+    // Additive capability marker: old installed desktop builds omit it and the
+    // server keeps them in authorization-filtered compatibility rooms.
+    url.searchParams.set("task_scopes", "1");
 
     this.ws = new WebSocket(url.toString());
 
@@ -140,6 +164,18 @@ export class WSClient {
         }
         return;
       }
+      if ((msg as any).type === "auth_error") {
+        // The server has rejected this credential outright (bad token, or a
+        // suspended account) — retrying will only reproduce the same
+        // rejection, so stop the reconnect loop here rather than let onclose
+        // schedule another attempt.
+        const code = (msg as { payload?: { code?: string } }).payload?.code;
+        this.logger.warn("ws: auth rejected, stopping reconnects", { code });
+        this.authRejected = true;
+        this.ws?.close();
+        if (code === ACCOUNT_SUSPENDED_CODE) this.options.onAuthRejected?.();
+        return;
+      }
       if ((msg as any).type === "auth_ack") {
         this.onAuthenticated();
         return;
@@ -157,6 +193,8 @@ export class WSClient {
     };
 
     this.ws.onclose = () => {
+      this.authenticated = false;
+      if (this.authRejected) return;
       this.scheduleReconnect();
     };
 
@@ -172,6 +210,7 @@ export class WSClient {
    * does not yet expose a visible disconnected state or manual retry action.
    */
   private scheduleReconnect() {
+    if (this.authRejected) return;
     const base = Math.min(
       RECONNECT_BASE_DELAY_MS * 2 ** this.reconnectAttempt,
       RECONNECT_MAX_DELAY_MS,
@@ -192,8 +231,10 @@ export class WSClient {
 
   private onAuthenticated() {
     this.logger.info("connected");
+    this.authenticated = true;
     const recoveredConnection = this.hasConnectedBefore || this.reconnectAttempt > 0;
     this.reconnectAttempt = 0;
+    this.replayScopes();
     if (recoveredConnection) {
       for (const cb of this.onReconnectCallbacks) {
         try {
@@ -219,7 +260,9 @@ export class WSClient {
       this.ws = null;
     }
     this.hasConnectedBefore = false;
+    this.authenticated = false;
     this.reconnectAttempt = 0;
+    this.activeScopes.clear();
     this.handlers.clear();
     this.anyHandlers.clear();
     this.onReconnectCallbacks.clear();
@@ -247,6 +290,48 @@ export class WSClient {
     return () => {
       this.onReconnectCallbacks.delete(callback);
     };
+  }
+
+  /**
+   * Keep one authorized resource scope live while at least one consumer needs
+   * it. Multiple transcript surfaces share one wire subscription, and active
+   * scopes are replayed immediately after authentication on reconnect.
+   */
+  subscribeScope(scope: RealtimeScope, id: string) {
+    if (!id) return () => {};
+    const key = `${scope}:${id}`;
+    const active = this.activeScopes.get(key);
+    if (active) {
+      this.activeScopes.set(key, { ...active, refs: active.refs + 1 });
+    } else {
+      this.activeScopes.set(key, { scope, id, refs: 1 });
+      this.sendScopeFrame("subscribe", scope, id);
+    }
+
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const current = this.activeScopes.get(key);
+      if (!current) return;
+      if (current.refs > 1) {
+        this.activeScopes.set(key, { ...current, refs: current.refs - 1 });
+        return;
+      }
+      this.activeScopes.delete(key);
+      this.sendScopeFrame("unsubscribe", scope, id);
+    };
+  }
+
+  private replayScopes() {
+    for (const { scope, id } of this.activeScopes.values()) {
+      this.sendScopeFrame("subscribe", scope, id);
+    }
+  }
+
+  private sendScopeFrame(type: "subscribe" | "unsubscribe", scope: RealtimeScope, id: string) {
+    if (!this.authenticated || this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ type, payload: { scope, id } }));
   }
 
   send(message: WSMessage) {

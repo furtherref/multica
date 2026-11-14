@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Agent } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -49,12 +49,19 @@ const agent: Agent = {
   archived_by: null,
 };
 
-function renderTab() {
-  return render(
+function envTabUi(canEdit: boolean | null) {
+  return (
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
-      <EnvTab agent={agent} />
-    </I18nProvider>,
+      <EnvTab agent={agent} canEdit={canEdit} />
+    </I18nProvider>
   );
+}
+
+// Defaults to `true` (full edit access) so every test exercising the
+// reveal/paste/bulk-edit surface below doesn't have to think about the
+// permission gate — only the "EnvTab permission gating" suite varies it.
+function renderTab(canEdit: boolean | null = true) {
+  return render(envTabUi(canEdit));
 }
 
 describe("EnvTab", () => {
@@ -339,7 +346,7 @@ describe("EnvTab unsaved-work reporting", () => {
     const user = userEvent.setup();
     render(
       <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <EnvTab agent={agent} onDirtyChange={onDirtyChange} />
+        <EnvTab agent={agent} canEdit onDirtyChange={onDirtyChange} />
       </I18nProvider>,
     );
 
@@ -424,5 +431,176 @@ describe("EnvTab values that bulk text cannot represent", () => {
     expect(updateAgentEnv.mock.calls[0]?.[1]).toEqual({
       custom_env: { TRICKY: 'foo" #bar', NEW: "" },
     });
+  });
+});
+
+// Fork-only: `canEdit` (migration-free, purely a frontend prop mirroring the
+// backend env gate — `canEditAgent` in @multica/core/permissions) does not
+// exist upstream. These cover the permission-gated read-only view and the
+// async-race guards around canEdit changing mid-flight.
+describe("EnvTab permission gating", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("hides the reveal button and shows a permission hint when canEdit is false", () => {
+    renderTab(false);
+
+    expect(
+      screen.queryByRole("button", { name: /reveal & edit/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/only the agent owner or a workspace owner\/admin/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the reveal button and fetches env on click when canEdit is true", async () => {
+    getAgentEnv.mockResolvedValue({
+      agent_id: "agent-1",
+      custom_env: { FOO: "bar" },
+    });
+    const user = userEvent.setup();
+    renderTab(true);
+
+    await user.click(screen.getByRole("button", { name: /reveal & edit/i }));
+
+    await waitFor(() => expect(getAgentEnv).toHaveBeenCalledWith("agent-1"));
+    expect(await screen.findByDisplayValue("FOO")).toBeInTheDocument();
+  });
+
+  it("shows neutral copy with no reveal button while permission is unknown (canEdit null)", () => {
+    renderTab(null);
+
+    expect(
+      screen.queryByRole("button", { name: /reveal & edit/i }),
+    ).not.toBeInTheDocument();
+    // Loading must never be presented as a hard denial.
+    expect(
+      screen.queryByText(/only the agent owner or a workspace owner\/admin/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("unmounts the editor when canEdit flips to false after a reveal", async () => {
+    getAgentEnv.mockResolvedValue({
+      agent_id: "agent-1",
+      custom_env: { FOO: "bar" },
+    });
+    const user = userEvent.setup();
+    const { rerender } = renderTab(true);
+
+    await user.click(screen.getByRole("button", { name: /reveal & edit/i }));
+    expect(await screen.findByDisplayValue("FOO")).toBeInTheDocument();
+
+    // Mid-session permission loss: ownership reassigned / role downgraded.
+    rerender(envTabUi(false));
+
+    await waitFor(() =>
+      expect(screen.queryByDisplayValue("FOO")).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole("button", { name: /^save$/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/only the agent owner or a workspace owner\/admin/i),
+    ).toBeInTheDocument();
+  });
+
+  it("drops a reveal response that lands after canEdit stops being true mid-flight", async () => {
+    // canEdit goes true -> null (permission re-resolving, e.g. the member
+    // list refetches) while the reveal request is in flight. The post-reveal
+    // cleanup effect only fires on an explicit `false`, so for the `null`
+    // case the guard inside handleReveal is the ONLY thing stopping the late
+    // response from rendering a frame of the plaintext editor.
+    let resolveEnv: (v: {
+      agent_id: string;
+      custom_env: Record<string, string>;
+    }) => void;
+    getAgentEnv.mockReturnValue(
+      new Promise((res) => {
+        resolveEnv = res;
+      }),
+    );
+    const { rerender } = renderTab(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /reveal & edit/i }));
+    await waitFor(() =>
+      expect(getAgentEnv).toHaveBeenCalledWith("agent-1"),
+    );
+
+    // Permission is no longer known to be `true` before the response lands.
+    rerender(envTabUi(null));
+
+    // The late response must be dropped — never written to state — so the
+    // plaintext editor never mounts, not even for one frame.
+    await act(async () => {
+      resolveEnv!({ agent_id: "agent-1", custom_env: { FOO: "bar" } });
+    });
+
+    expect(screen.queryByDisplayValue("FOO")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^save$/i }),
+    ).not.toBeInTheDocument();
+    // `null` shows neutral pre-reveal copy, never the hard denial hint.
+    expect(
+      screen.queryByText(/only the agent owner or a workspace owner\/admin/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("disables Save once permission stops being true, even with pending edits", async () => {
+    getAgentEnv.mockResolvedValue({
+      agent_id: "agent-1",
+      custom_env: { FOO: "bar" },
+    });
+    const user = userEvent.setup();
+    const { rerender } = renderTab(true);
+
+    await user.click(screen.getByRole("button", { name: /reveal & edit/i }));
+    const keyInput = await screen.findByDisplayValue("FOO");
+    fireEvent.change(keyInput, { target: { value: "FOOX" } });
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
+
+    // Permission becomes unknown (member list refetch). The editor stays
+    // mounted (null doesn't trigger the cleanup effect), but Save must not be
+    // clickable while we don't know the user may write.
+    rerender(envTabUi(null));
+    expect(screen.getByDisplayValue("FOOX")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+  });
+
+  it("drops a save response that lands after canEdit stops being true mid-flight", async () => {
+    getAgentEnv.mockResolvedValue({
+      agent_id: "agent-1",
+      custom_env: { FOO: "bar" },
+    });
+    let resolveSave: (v: {
+      agent_id: string;
+      custom_env: Record<string, string>;
+    }) => void;
+    updateAgentEnv.mockReturnValue(
+      new Promise((res) => {
+        resolveSave = res;
+      }),
+    );
+    const user = userEvent.setup();
+    const { rerender } = renderTab(true);
+
+    await user.click(screen.getByRole("button", { name: /reveal & edit/i }));
+    const keyInput = await screen.findByDisplayValue("FOO");
+    fireEvent.change(keyInput, { target: { value: "FOOX" } });
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(updateAgentEnv).toHaveBeenCalled());
+
+    // Permission lost while the PUT is in flight.
+    rerender(envTabUi(null));
+
+    // The PUT response carries the full plaintext env; it must be dropped, so
+    // the editor keeps the user's local edit instead of re-rendering secrets
+    // echoed back by the server.
+    await act(async () => {
+      resolveSave!({ agent_id: "agent-1", custom_env: { FOO: "bar" } });
+    });
+
+    expect(screen.getByDisplayValue("FOOX")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("FOO")).not.toBeInTheDocument();
   });
 });

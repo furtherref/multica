@@ -20,9 +20,8 @@ import (
 // workspaceCoAuthoredByEnabled gates the prepare-commit-msg hook installed in
 // agent worktrees. RFC MUL-2414 adds the `github_enabled` master switch:
 // when it is explicitly false the hook must NOT be installed even if
-// `co_authored_by_enabled` is true. The function also defaults to true
-// whenever settings are absent or malformed so existing workspaces keep
-// their historical behavior.
+// `co_authored_by_enabled` is true. This fork defaults to OFF whenever
+// `co_authored_by_enabled` is absent or malformed (see furtherref/multica#31).
 func TestWorkspaceCoAuthoredByEnabled(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -30,10 +29,10 @@ func TestWorkspaceCoAuthoredByEnabled(t *testing.T) {
 		settings string
 		want     bool
 	}{
-		{"unknown workspace defaults on", false, "", true},
-		{"registered workspace, nil settings defaults on", true, "", true},
-		{"empty object defaults on", true, "{}", true},
-		{"co_authored_by absent defaults on", true, `{"github_enabled":true}`, true},
+		{"unknown workspace defaults off", false, "", false},
+		{"registered workspace, nil settings defaults off", true, "", false},
+		{"empty object defaults off", true, "{}", false},
+		{"co_authored_by absent defaults off", true, `{"github_enabled":true}`, false},
 		{"co_authored_by true", true, `{"co_authored_by_enabled":true}`, true},
 		{"co_authored_by false", true, `{"co_authored_by_enabled":false}`, false},
 		{
@@ -48,7 +47,7 @@ func TestWorkspaceCoAuthoredByEnabled(t *testing.T) {
 			`{"github_enabled":true,"co_authored_by_enabled":false}`,
 			false,
 		},
-		{"malformed settings defaults on", true, `not json`, true},
+		{"malformed settings defaults off", true, `not json`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -273,8 +272,14 @@ func TestRefreshTrackedWorkspaceSettingsAppliesToggle(t *testing.T) {
 	settings := `{"co_authored_by_enabled":false}`
 	d, cache := newCoAuthoredByStateDaemon(t, workspaceID, &settings)
 
+	// This fork defaults the trailer to OFF (furtherref/multica#31), so the
+	// tracked workspace must start explicitly enabled for the toggle-off
+	// refresh below to prove anything.
+	d.mu.Lock()
+	d.workspaces[workspaceID].settings = json.RawMessage(`{"co_authored_by_enabled":true}`)
+	d.mu.Unlock()
 	if !d.workspaceCoAuthoredByEnabled(workspaceID) {
-		t.Fatal("precondition: workspace should start with the default (enabled) verdict")
+		t.Fatal("precondition: workspace should start with the trailer enabled")
 	}
 
 	d.refreshTrackedWorkspaceSettings(context.Background())

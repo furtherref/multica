@@ -19,7 +19,9 @@ func TestProjectTerminalIssueStatusKeysFallsBackToCanonicalKeys(t *testing.T) {
 	})
 
 	got := h.projectTerminalIssueStatusKeys(context.Background(), parseUUID(testWorkspaceID))
-	want := []string{issuestatus.Done, issuestatus.Cancelled}
+	// The fork's archive status (#39) is terminal too and has no catalog row,
+	// so the canonical fallback carries it alongside done/cancelled.
+	want := []string{issuestatus.Done, issuestatus.Cancelled, issuestatus.Archive}
 	if !slices.Equal(got, want) {
 		t.Fatalf("project terminal keys = %v, want canonical fallback %v", got, want)
 	}

@@ -31,6 +31,7 @@ const FAILURE_REASON_BADGE: Record<string, string> = {
   runtime_cli_timeout: "Runtime CLI timeout",
   environment_prepare_failed: "Environment setup failed",
   runtime_access_denied: RUNTIME_ACCESS_DENIED_BADGE,
+  budget_exceeded: "Budget reached",
 
   "agent_error.provider_auth_or_access": "Auth failed",
   "agent_error.provider_quota_limit": "Quota exhausted",

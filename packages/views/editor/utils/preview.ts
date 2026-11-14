@@ -5,7 +5,9 @@
  *   1. Add a new branch returning a new PreviewKind literal.
  *   2. Add the corresponding renderer in attachment-preview-modal.tsx's dispatch.
  *   3. If the renderer needs the file body as text, also extend isTextPreviewable
- *      in server/internal/handler/file.go so the proxy endpoint accepts it.
+ *      in server/internal/handler/file.go so the proxy endpoint accepts it, and
+ *      add the type to the case table both sides test (preview.test.ts and
+ *      TestIsTextPreviewable in file_test.go).
  *   4. If the renderer fetches a binary, decide whether to use download_url
  *      (CloudFront, no auth on the client side) or a new authenticated proxy.
  */
@@ -19,7 +21,16 @@ export type PreviewKind =
   | "audio"
   | "markdown"
   | "html"
-  | "text";
+  // TSV — a sortable table. CSV opens in OnlyOffice instead (OFFICE_EXTS).
+  | "table"
+  // JSON / JSON Lines / YAML — a collapsible tree, with the source one toggle
+  // away.
+  | "structured"
+  | "text"
+  | "office";
+
+/** How a `structured` file's body parses. */
+export type StructuredFormat = "json" | "jsonl" | "yaml";
 
 const EXT_LANGUAGE_MAP: Record<string, string> = {
   // Markdown
@@ -40,6 +51,8 @@ const EXT_LANGUAGE_MAP: Record<string, string> = {
   less: "less",
   // Config / data
   json: "json",
+  jsonl: "json",
+  ndjson: "json",
   yml: "yaml",
   yaml: "yaml",
   toml: "ini",
@@ -96,8 +109,8 @@ const BASENAME_LANGUAGE_MAP: Record<string, string> = {
 // TODO(follow-up): extract to a JSON single-source-of-truth + generator
 // (mirror reserved-slugs pattern in server/internal/handler/reserved_slugs.json).
 const TEXT_EXTENSIONS = new Set<string>([
-  "md", "markdown", "txt", "log", "csv", "tsv",
-  "html", "htm", "json", "xml",
+  "md", "markdown", "txt", "log", "tsv",
+  "html", "htm", "json", "jsonl", "ndjson", "xml",
   "yml", "yaml", "toml", "ini", "conf",
   "dockerfile", "makefile", "gitignore",
   "sh", "bash", "zsh",
@@ -112,6 +125,7 @@ const TEXT_EXTENSIONS = new Set<string>([
 
 const TEXT_CONTENT_TYPES = new Set<string>([
   "application/json",
+  "application/x-ndjson",
   "application/javascript",
   "application/xml",
   "application/x-yaml",
@@ -128,6 +142,28 @@ const TEXT_BASENAMES = new Set<string>([
   ".gitignore",
 ]);
 
+const TABLE_CONTENT_TYPES = new Set<string>([
+  "text/csv",
+  "text/tab-separated-values",
+]);
+
+const STRUCTURED_EXT_FORMATS: Record<string, StructuredFormat> = {
+  json: "json",
+  jsonl: "jsonl",
+  ndjson: "jsonl",
+  yml: "yaml",
+  yaml: "yaml",
+};
+
+const STRUCTURED_CONTENT_TYPE_FORMATS: Record<string, StructuredFormat> = {
+  "application/json": "json",
+  "application/x-ndjson": "jsonl",
+  "application/yaml": "yaml",
+  "application/x-yaml": "yaml",
+  "text/yaml": "yaml",
+  "text/x-yaml": "yaml",
+};
+
 // Extension fallbacks for media kinds — used when contentType is empty
 // (URL-only preview source, no server-side metadata available).
 const VIDEO_EXTS = new Set<string>([
@@ -139,6 +175,27 @@ const AUDIO_EXTS = new Set<string>([
 // Image detection lives in @multica/core/attachments/image-sequence — the
 // gallery sequence builder needs the same answer and is shared with mobile,
 // which cannot import from packages/views.
+
+// Office documents handled by the embedded OnlyOffice viewer. CSV is included
+// here (design decision) — it must resolve to "office", not "table" or "text".
+const OFFICE_EXTS = new Set<string>([
+  "doc", "docx", "odt", "rtf",
+  "xls", "xlsx", "ods", "csv",
+  "ppt", "pptx", "odp",
+]);
+const OFFICE_CONTENT_TYPES = new Set<string>([
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.oasis.opendocument.text",
+  "application/rtf",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "text/csv",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.oasis.opendocument.presentation",
+]);
 
 function extOf(filename: string): string {
   const base = filename.toLowerCase().split(/[\\/]/).pop() ?? "";
@@ -186,6 +243,13 @@ export function getPreviewKind(
   // that isTextLike would otherwise catch.
   if (isImageAttachment(contentType, filename)) return "image";
 
+  // Office documents (Word/Excel/PPT + ODF + CSV) → OnlyOffice viewer.
+  // Must come before the text branch so .csv (often sniffed text/plain)
+  // resolves to "office" rather than "text".
+  if (OFFICE_CONTENT_TYPES.has(ct) || (ext && OFFICE_EXTS.has(ext))) {
+    return "office";
+  }
+
   // Markdown — covers both the well-typed case and the common
   // server-side sniffer fallback (text/plain for .md).
   if (ct === "text/markdown" || ext === "md" || ext === "markdown") {
@@ -194,9 +258,35 @@ export function getPreviewKind(
   if (ct === "text/html" || ext === "html" || ext === "htm") {
     return "html";
   }
+  if (TABLE_CONTENT_TYPES.has(ct) || ext === "csv" || ext === "tsv") {
+    return "table";
+  }
+  if (structuredFormat(contentType, filename)) return "structured";
 
   if (isTextLike(contentType, filename)) return "text";
   return null;
+}
+
+/**
+ * The parser a `structured` file needs, or null when it is not one. The
+ * extension wins over the content type: a sniffer labels most of these
+ * `text/plain`, and a `.jsonl` uploaded as `application/json` is still lines.
+ */
+export function structuredFormat(
+  contentType: string,
+  filename: string,
+): StructuredFormat | null {
+  const ext = extOf(filename);
+  if (ext && STRUCTURED_EXT_FORMATS[ext]) return STRUCTURED_EXT_FORMATS[ext];
+  return STRUCTURED_CONTENT_TYPE_FORMATS[normalizeContentType(contentType)] ?? null;
+}
+
+/** The cell separator of a `table` file: tab for TSV, comma otherwise. */
+export function tableDelimiter(contentType: string, filename: string): "," | "\t" {
+  return extOf(filename) === "tsv" ||
+    normalizeContentType(contentType) === "text/tab-separated-values"
+    ? "\t"
+    : ",";
 }
 
 /** Short type label for metadata lines — the extension, upper-cased (`PNG`). */
@@ -224,6 +314,16 @@ export function canOpenPreview(
   hasRecord: boolean,
 ): kind is PreviewKind {
   return kind !== null && (hasRecord || URL_PREVIEWABLE_KINDS.has(kind));
+}
+
+/**
+ * Whether a file reads better with long lines wrapped. Prose and logs do —
+ * their lines are paragraphs and messages; code keeps its lines intact so
+ * indentation stays readable, and scrolls sideways instead.
+ */
+export function wrapsByDefault(filename: string): boolean {
+  const language = extensionToLanguage(filename);
+  return language === undefined || language === "plaintext";
 }
 
 // Pick the hljs language token for a file. Returns undefined when the file

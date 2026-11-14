@@ -2,20 +2,22 @@ import { forwardRef, useEffect, useRef, useState, useImperativeHandle } from "re
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { AgentTask, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
+import type { AgentTask, Attachment, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
 import { issueKeys } from "@multica/core/issues/queries";
 import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
+import { useCommentCollapseStore } from "@multica/core/issues/stores";
 import {
   DEFAULT_SUB_ISSUE_ROW_PROPERTIES,
   useSubIssueDisplayStore,
 } from "@multica/core/issues/stores/sub-issue-display-store";
+import enAgents from "../../locales/en/agents.json";
 import enCommon from "../../locales/en/common.json";
 import enIssues from "../../locales/en/issues.json";
 
-const TEST_RESOURCES = { en: { common: enCommon, issues: enIssues } };
+const TEST_RESOURCES = { en: { agents: enAgents, common: enCommon, issues: enIssues } };
 
 const mockViewport = vi.hoisted(() => ({ isMobile: false }));
 
@@ -169,7 +171,15 @@ vi.mock("../../editor", async () => ({
   // preview-sequence-context.test.tsx against the real provider.
   PreviewSequenceProvider: ({ children }: { children: React.ReactNode }) =>
     children,
+  usePreviewSequence: () => ({ openAt: () => false }),
   collectPreviewSequence: () => [],
+  // Comment attachments render as their filename — the viewer and file cards
+  // have their own suites.
+  AttachmentDownloadProvider: ({ children }: { children: React.ReactNode }) =>
+    children,
+  Attachment: ({ attachment }: { attachment: { filename?: string } }) => (
+    <span data-testid="comment-attachment">{attachment.filename}</span>
+  ),
   isPreviewable: () => false,
   ReadonlyContent: ({ content }: { content: string }) => {
     readonlyContentRenders.push(content);
@@ -380,14 +390,28 @@ vi.mock("@multica/core/issues/stores", async () => ({
     },
   ),
   selectRecentIssues: () => () => [],
-  useCommentCollapseStore: (selector?: any) => {
-    const state = {
-      collapsedByIssue: {},
-      isCollapsed: () => false,
-      toggle: () => {},
-    };
-    return selector ? selector(state) : state;
-  },
+  // Reactive in-memory stand-in: a quick-jump to a reply reopens a thread the
+  // reader collapsed, so the card has to re-render when `toggle` runs.
+  useCommentCollapseStore: (await vi.importActual<typeof import("zustand")>("zustand")).create<{
+    collapsedByIssue: Record<string, string[]>;
+    isCollapsed: (issueId: string, commentId: string) => boolean;
+    toggle: (issueId: string, commentId: string) => void;
+  }>()((set, get) => ({
+    collapsedByIssue: {},
+    isCollapsed: (issueId, commentId) => get().collapsedByIssue[issueId]?.includes(commentId) ?? false,
+    toggle: (issueId, commentId) =>
+      set((s) => {
+        const current = s.collapsedByIssue[issueId] ?? [];
+        return {
+          collapsedByIssue: {
+            ...s.collapsedByIssue,
+            [issueId]: current.includes(commentId)
+              ? current.filter((c) => c !== commentId)
+              : [...current, commentId],
+          },
+        };
+      }),
+  })),
   useCommentDraftStore: Object.assign(
     (selector?: any) => {
       const state = {
@@ -423,17 +447,13 @@ vi.mock("@multica/core/issues/stores", async () => ({
       }),
     },
   ),
-  useTaskSupplementDraftStore: (await import("zustand")).create(() => ({
-    drafts: {}, open: vi.fn(), setContent: vi.fn(), setRequestId: vi.fn(),
-    markEnded: vi.fn(), clear: vi.fn(),
-  })),
   useCommentComposerStore: Object.assign(
     (selector?: any) => {
-      const state = { sticky: true, toggleSticky: () => {} };
+      const state = { sticky: true, runningAgentReply: "steer", toggleSticky: () => {} };
       return selector ? selector(state) : state;
     },
     {
-      getState: () => ({ sticky: true, toggleSticky: () => {} }),
+      getState: () => ({ sticky: true, runningAgentReply: "steer", toggleSticky: () => {} }),
     },
   ),
 }));
@@ -481,7 +501,9 @@ vi.mock("react-virtuoso", () => ({
 }));
 
 // jsdom's HTMLElement.prototype.scrollIntoView is a no-op stub; replace it
-// with a spy so the deep-link effect's call can be observed.
+// with a spy so a stray scrollIntoView call from any component doesn't throw.
+// The deep-link effect itself drives scrollTop, not scrollIntoView, so tests
+// assert the highlight ring rather than this spy.
 beforeEach(() => {
   scrollIntoViewSpy.mockClear();
   scrollToIndexSpy.mockClear();
@@ -493,6 +515,7 @@ beforeEach(() => {
   // The resolved-expand store is module-global (not per-mount like the old
   // useState); reset so one test's expansions can't leak into the next.
   useResolvedExpandStore.setState({ expandedByIssue: {} });
+  useCommentCollapseStore.setState({ collapsedByIssue: {} });
 });
 
 // Mock modals
@@ -603,7 +626,12 @@ import { IssueDetail, groupSubIssuesByStage } from "./issue-detail";
 function createTestQueryClient() {
   return new QueryClient({
     defaultOptions: {
-      queries: { retry: false, gcTime: 0 },
+      queries: {
+        retry: false,
+        gcTime: 0,
+        staleTime: Infinity,
+        refetchOnWindowFocus: false,
+      },
       mutations: { retry: false },
     },
   });
@@ -645,7 +673,7 @@ function renderIssueDetailWithStatusCatalog(
 function renderIssueDetailWithHighlight(
   highlightCommentId: string,
   issueId = "issue-1",
-  options: { seedTimeline?: boolean } = {},
+  options: { seedTimeline?: boolean; seedTimelineData?: TimelineEntry[] } = {},
 ) {
   const queryClient = createTestQueryClient();
   if (options.seedTimeline) {
@@ -654,7 +682,10 @@ function renderIssueDetailWithHighlight(
     // the issue itself has finished loading, so the effect that scrolls to
     // the comment fires once with `loading=true` (skeleton still rendered,
     // no comment DOM) and must re-fire when `loading` flips to false.
-    queryClient.setQueryData(["issues", "timeline", issueId], mockTimeline);
+    queryClient.setQueryData(
+      ["issues", "timeline", issueId],
+      options.seedTimelineData ?? mockTimeline,
+    );
   }
   const result = render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
@@ -715,6 +746,44 @@ describe("IssueDetail (shared)", () => {
     // Reset project mock — individual tests override per case. Default fixture
     // has project_id: null so getProject is not invoked.
     mockApiObj.getProject.mockReset();
+  });
+
+  it("counts comment files as deliverables, a re-upload once as v2, never the description's (MUL-7649)", async () => {
+    const file = (id: string, over: Partial<Attachment>): Attachment => ({
+      id,
+      workspace_id: "ws-1",
+      issue_id: "issue-1",
+      comment_id: null,
+      chat_session_id: null,
+      chat_message_id: null,
+      uploader_type: "agent",
+      uploader_id: "agent-1",
+      filename: "report.md",
+      url: `https://cdn.example.test/${id}`,
+      download_url: `https://cdn.example.test/${id}`,
+      markdown_url: `https://cdn.example.test/${id}`,
+      content_type: "text/markdown",
+      size_bytes: 2048,
+      created_at: "2026-01-16T00:00:00Z",
+      ...over,
+    });
+    const brief = file("brief", { filename: "brief.pdf", content_type: "application/pdf", uploader_type: "member" });
+    const v1 = file("report-v1", { comment_id: "comment-1" });
+    const v2 = file("report-v2", { comment_id: "comment-2", created_at: "2026-01-17T00:00:00Z" });
+    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, description: "!file[brief.pdf](https://cdn.example.test/brief)" });
+    mockApiObj.listAttachments.mockResolvedValue([brief, v1, v2]);
+    mockApiObj.listTimeline.mockResolvedValue([
+      { ...mockTimeline[0]!, attachments: [v1] },
+      { ...mockTimeline[1]!, attachments: [v2] },
+    ]);
+
+    renderIssueDetail();
+
+    const header = await screen.findByRole("button", { name: /^Deliverables/ });
+    expect(header).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "report.md, version 2" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View all 1 deliverable" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "brief.pdf" })).toBeNull();
   });
 
   it("opens source-context creation from both a root comment and a reply", async () => {
@@ -1088,6 +1157,74 @@ describe("IssueDetail (shared)", () => {
 
     expect(screen.queryByTestId("panel-group")).not.toBeInTheDocument();
     expect(screen.queryByText("Properties")).not.toBeInTheDocument();
+  });
+
+  // The peek's close button lives in the host's trailing controls, so every
+  // state the peek can show must carry them (review of #8886).
+  function renderPeek(issueId = "issue-1") {
+    const queryClient = createTestQueryClient();
+    return render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail
+            issueId={issueId}
+            variant="peek"
+            onDelete={() => {}}
+            leadingAction={<span data-testid="peek-nav" />}
+            trailingActions={<button type="button">Close preview</button>}
+          />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+  }
+
+  it("keeps the peek's host controls while the issue is loading", () => {
+    mockApiObj.getIssue.mockReturnValue(new Promise(() => {}));
+    renderPeek();
+    expect(screen.getByTestId("peek-nav")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close preview" })).toBeInTheDocument();
+  });
+
+  it("keeps the peek's host controls when the issue cannot be loaded", async () => {
+    mockApiObj.getIssue.mockRejectedValue(new Error("Not found"));
+    renderPeek("nonexistent-id");
+    await waitFor(() => {
+      expect(
+        screen.getByText("This issue does not exist or has been deleted in this workspace."),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: "Close preview" })).toBeInTheDocument();
+  });
+
+  it("renders the peek variant as one column with property pills and host actions", async () => {
+    const queryClient = createTestQueryClient();
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail
+            issueId="issue-1"
+            variant="peek"
+            leadingAction={<span data-testid="peek-nav" />}
+            trailingActions={<button type="button">Close preview</button>}
+          />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+    });
+
+    // No resizable sidebar: the properties become pills under the title.
+    expect(screen.queryByTestId("panel-group")).not.toBeInTheDocument();
+    expect(screen.queryByText("Properties")).not.toBeInTheDocument();
+    expect(screen.getByTestId("project-picker")).toBeInTheDocument();
+    expect(screen.getByText("High")).toBeInTheDocument();
+    // The host's controls replace the sidebar toggle.
+    expect(screen.getByTestId("peek-nav")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close preview" })).toBeInTheDocument();
+    // The header leaf names the issue by identifier only — the title is right below.
+    expect(screen.getByRole("link", { name: mockIssue.identifier })).toBeInTheDocument();
   });
 
   it("pins the comment composer to the scroll viewport on a wide screen", async () => {
@@ -1538,6 +1675,70 @@ describe("IssueDetail (shared)", () => {
     expect(container.querySelectorAll(`[data-run-id="${task.id}"]`)).toHaveLength(1);
   });
 
+  describe("a run's failure notice (MUL-7692)", () => {
+    const failedRun = (overrides: Partial<AgentTask> = {}): AgentTask => ({
+      id: "4a2e8d1c-7f9b-4e2a-9c1d-123456789abc", agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
+      status: "failed", failure_reason: "cancelled", error: "task cancelled by server", priority: 0,
+      created_at: "2026-01-18T00:00:00Z", dispatched_at: "2026-01-18T00:00:01Z", started_at: "2026-01-18T00:00:02Z",
+      completed_at: "2026-01-18T00:12:58Z", result: null, ...overrides,
+    });
+    const notice = (task: AgentTask, parent_id: string | null): TimelineEntry => ({
+      type: "comment", id: "failure-notice", actor_type: "agent", actor_id: "agent-1", content: "task cancelled by server",
+      parent_id, created_at: "2026-01-18T00:12:58Z", updated_at: "2026-01-18T00:12:58Z", comment_type: "system",
+      source_task_id: task.id,
+    });
+    const expectStatedOnce = (slot: HTMLElement) => {
+      expect(within(slot).getByText("Cancelled by the system")).toBeInTheDocument();
+      expect(within(slot).queryByText("task cancelled by server")).not.toBeInTheDocument();
+      expect(within(slot).queryByText("Failed")).not.toBeInTheDocument();
+      // Once in the timeline. The sidebar's execution log lists the latest
+      // runs with their own row actions, which is a separate surface.
+      const timelineRetries = screen
+        .getAllByRole("button", { name: "Retry run" })
+        .filter((button) => !button.closest(".\\@container\\/execution-log"));
+      expect(timelineRetries).toHaveLength(1);
+    };
+
+    it("renders the run block in the notice's thread slot and retries that run", async () => {
+      const root = mockTimeline[0]!;
+      const trigger = { ...root, id: "user-reply", parent_id: root.id, content: "Please try this task" };
+      const task = failedRun({ trigger_comment_id: trigger.id, delivered_comment_ids: [trigger.id] });
+      mockApiObj.listTimeline.mockResolvedValue([root, trigger, notice(task, trigger.id)]);
+      mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+      const { container } = renderIssueDetail();
+
+      await waitFor(() => expect(container.querySelector("#comment-failure-notice [data-run-id]")).not.toBeNull());
+      const slot = container.querySelector("#comment-failure-notice") as HTMLElement;
+      expect(slot.getAttribute("data-run-comment-id")).toBe(task.id);
+      expectStatedOnce(slot);
+      fireEvent.click(within(slot).getByRole("button", { name: "Retry run" }));
+      await waitFor(() => expect(mockApiObj.rerunIssue).toHaveBeenCalledWith("issue-1", task.id));
+    });
+
+    it("renders a top-level notice as the run block", async () => {
+      const task = failedRun();
+      mockApiObj.listTimeline.mockResolvedValue([...mockTimeline, notice(task, null)]);
+      mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+      const { container } = renderIssueDetail();
+
+      await waitFor(() => expect(container.querySelector(`[data-run-comment-id="${task.id}"]`)).not.toBeNull());
+      expectStatedOnce(container.querySelector("#comment-failure-notice") as HTMLElement);
+    });
+
+    it("keeps a replied-to notice as its thread, without the raw body", async () => {
+      const task = failedRun();
+      const reply: TimelineEntry = { ...mockTimeline[0]!, id: "reply-to-notice", parent_id: "failure-notice",
+        content: "Retrying after the deploy", created_at: "2026-01-18T00:20:00Z", updated_at: "2026-01-18T00:20:00Z" };
+      mockApiObj.listTimeline.mockResolvedValue([...mockTimeline, notice(task, null), reply]);
+      mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+      const { container } = renderIssueDetail();
+
+      await screen.findByText("Retrying after the deploy");
+      await waitFor(() => expect(container.querySelector(`#comment-failure-notice [data-run-id="${task.id}"]`)).not.toBeNull());
+      expectStatedOnce(container.querySelector("#comment-failure-notice") as HTMLElement);
+    });
+  });
+
   // Details is creator + immutable timestamps, so it ranks below the
   // execution log, which is what people actually open the sidebar for.
   it("orders the Details section after the execution log", async () => {
@@ -1850,7 +2051,7 @@ describe("IssueDetail (shared)", () => {
 
   // MUL-7429: an automatic status change says why, and the per-issue switch
   // shows on the timeline.
-  it("explains PR auto-complete activity", async () => {
+  it("explains PR merge automation activity", async () => {
     mockApiObj.listTimeline.mockResolvedValue([
       {
         type: "activity",
@@ -1877,9 +2078,11 @@ describe("IssueDetail (shared)", () => {
     await waitFor(() => {
       expect(screen.getByText(/after every linked PR merged \(#12, #19\)/i)).toBeInTheDocument();
     });
-    expect(screen.getByText(/turned off PR auto-complete for this issue/i)).toBeInTheDocument();
+    expect(screen.getByText(/set this issue to keep its status when PRs merge/i)).toBeInTheDocument();
   });
 
+  // MUL-7680: the child-done system rule's comment is the woken agent's
+  // instruction; people read one timeline line that can reveal it.
   it("renders activity rows with unknown status values without crashing", async () => {
     mockApiObj.listTimeline.mockResolvedValue([
       {
@@ -2260,6 +2463,27 @@ describe("IssueDetail (shared)", () => {
       });
     });
 
+    it("refetches the timeline when a highlighted inbox comment is missing from a fresh cache", async () => {
+      renderIssueDetailWithHighlight("comment-2", "issue-1", {
+        seedTimeline: true,
+        seedTimelineData: [mockTimeline[0]!],
+      });
+
+      expect(screen.queryByText("I can help with this")).not.toBeInTheDocument();
+
+      await waitFor(() => {
+        expect(screen.getByText("I can help with this")).toBeInTheDocument();
+      });
+      // The deep-link effect drives the timeline container's scrollTop directly
+      // (no native scrollIntoView), so assert the mechanism-independent landing
+      // signal: the refetched target comment gets the highlight background.
+      await waitFor(() => {
+        expect(
+          hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+        ).toBe(true);
+      });
+    });
+
     it("auto-expands a folded resolved thread when deep-link target is a reply inside it", async () => {
       // Seed a timeline where comment-3 is resolved (so it renders as a
       // resolved-bar by default) and has a reply, reply-1, whose id is the
@@ -2349,6 +2573,178 @@ describe("IssueDetail (shared)", () => {
       ).toBeInTheDocument();
     });
     expect(screen.getByRole("button", { name: "I can help with this" })).toBeInTheDocument();
+  });
+
+  describe("quick-jump rail replies", () => {
+    const highlightTint = "bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]";
+
+    it("unfolds a resolved thread and lands on the reply picked from the rail", async () => {
+      mockApiObj.listTimeline.mockResolvedValue([
+        ...mockTimeline,
+        {
+          type: "comment",
+          id: "comment-3",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "Resolved root",
+          parent_id: null,
+          created_at: "2026-01-18T00:00:00Z",
+          updated_at: "2026-01-18T00:00:00Z",
+          comment_type: "comment",
+          resolved_at: "2026-01-19T00:00:00Z",
+        } as TimelineEntry,
+        {
+          type: "comment",
+          id: "reply-1",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "Reply inside resolved thread",
+          parent_id: "comment-3",
+          created_at: "2026-01-18T01:00:00Z",
+          updated_at: "2026-01-18T01:00:00Z",
+          comment_type: "comment",
+        } as TimelineEntry,
+      ]);
+
+      renderIssueDetail();
+
+      const nav = await screen.findByRole("navigation", { name: "Jump to comment thread" });
+      expect(document.getElementById("comment-reply-1")).toBeNull();
+      fireEvent.click(within(nav).getByRole("button", { name: /: Reply inside resolved thread$/ }));
+
+      await waitFor(() => {
+        expect(document.getElementById("comment-reply-1")?.className).toContain(highlightTint);
+      });
+      expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has("comment-3")).toBe(true);
+    });
+
+    // "Show in comments" for a file shares the rail's path, so a file posted
+    // in a reply is reachable whatever hides that reply (MUL-7649).
+    it("reopens a collapsed thread when a file's reply is located from the overview", async () => {
+      useCommentCollapseStore.setState({ collapsedByIssue: { "issue-1": ["comment-1"] } });
+      const csv: Attachment = {
+        id: "csv",
+        workspace_id: "ws-1",
+        issue_id: "issue-1",
+        comment_id: "reply-2",
+        chat_session_id: null,
+        chat_message_id: null,
+        uploader_type: "agent",
+        uploader_id: "agent-1",
+        filename: "latency.csv",
+        url: "https://cdn.example.test/csv",
+        download_url: "https://cdn.example.test/csv",
+        markdown_url: "https://cdn.example.test/csv",
+        content_type: "text/csv",
+        size_bytes: 2048,
+        created_at: "2026-01-16T01:00:00Z",
+      };
+      mockApiObj.listTimeline.mockResolvedValue([
+        ...mockTimeline,
+        {
+          type: "comment",
+          id: "reply-2",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "Latency numbers attached",
+          parent_id: "comment-1",
+          created_at: "2026-01-16T01:00:00Z",
+          updated_at: "2026-01-16T01:00:00Z",
+          comment_type: "comment",
+          attachments: [csv],
+        } as TimelineEntry,
+      ]);
+
+      renderIssueDetail();
+
+      fireEvent.click(await screen.findByRole("button", { name: "View all 1 deliverable" }));
+      const overview = await screen.findByRole("dialog", { name: /deliverables$/ });
+      expect(document.getElementById("comment-reply-2")).toBeNull();
+      fireEvent.click(within(overview).getByRole("button", { name: "Show in comments" }));
+
+      await waitFor(() => {
+        expect(document.getElementById("comment-reply-2")?.className).toContain(highlightTint);
+      });
+      expect(useCommentCollapseStore.getState().isCollapsed("issue-1", "comment-1")).toBe(false);
+    });
+
+    it("unfolds a resolved thread when a file on its root is located from the overview", async () => {
+      const pdf: Attachment = {
+        id: "pdf",
+        workspace_id: "ws-1",
+        issue_id: "issue-1",
+        comment_id: "comment-3",
+        chat_session_id: null,
+        chat_message_id: null,
+        uploader_type: "member",
+        uploader_id: "user-1",
+        filename: "spec.pdf",
+        url: "https://cdn.example.test/pdf",
+        download_url: "https://cdn.example.test/pdf",
+        markdown_url: "https://cdn.example.test/pdf",
+        content_type: "application/pdf",
+        size_bytes: 2048,
+        created_at: "2026-01-18T00:00:00Z",
+      };
+      mockApiObj.listTimeline.mockResolvedValue([
+        ...mockTimeline,
+        {
+          type: "comment",
+          id: "comment-3",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "Spec attached",
+          parent_id: null,
+          created_at: "2026-01-18T00:00:00Z",
+          updated_at: "2026-01-18T00:00:00Z",
+          comment_type: "comment",
+          resolved_at: "2026-01-19T00:00:00Z",
+          attachments: [pdf],
+        } as TimelineEntry,
+      ]);
+
+      renderIssueDetail();
+
+      fireEvent.click(await screen.findByRole("button", { name: "View all 1 deliverable" }));
+      const overview = await screen.findByRole("dialog", { name: /deliverables$/ });
+      fireEvent.click(within(overview).getByRole("button", { name: "Show in comments" }));
+
+      await waitFor(() => {
+        expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has("comment-3")).toBe(true);
+      });
+      await waitFor(() => {
+        expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-3"))).toBe(true);
+      });
+    });
+
+    it("reopens a thread the reader collapsed before landing on its reply", async () => {
+      useCommentCollapseStore.setState({ collapsedByIssue: { "issue-1": ["comment-1"] } });
+      mockApiObj.listTimeline.mockResolvedValue([
+        ...mockTimeline,
+        {
+          type: "comment",
+          id: "reply-2",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "Pushed a fix",
+          parent_id: "comment-1",
+          created_at: "2026-01-16T01:00:00Z",
+          updated_at: "2026-01-16T01:00:00Z",
+          comment_type: "comment",
+        } as TimelineEntry,
+      ]);
+
+      renderIssueDetail();
+
+      const nav = await screen.findByRole("navigation", { name: "Jump to comment thread" });
+      expect(document.getElementById("comment-reply-2")).toBeNull();
+      fireEvent.click(within(nav).getByRole("button", { name: /: Pushed a fix$/ }));
+
+      await waitFor(() => {
+        expect(document.getElementById("comment-reply-2")?.className).toContain(highlightTint);
+      });
+      expect(useCommentCollapseStore.getState().isCollapsed("issue-1", "comment-1")).toBe(false);
+    });
   });
 
   it("sends empty description when editor is cleared", async () => {

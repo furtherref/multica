@@ -7,8 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -133,7 +136,7 @@ func TestRecordHeartbeatLeaseThrottlesDBScheduling(t *testing.T) {
 	fake := &fakeLivenessStore{available: true, aliveOK: true}
 	scheduler := &recordingHeartbeatScheduler{}
 	h := &Handler{LivenessStore: fake, HeartbeatScheduler: scheduler}
-	lease := daemonws.NewRuntimeLease("workspace-1", "online", time.Now().Add(-2*runtimeHeartbeatDBFlushInterval), true)
+	lease := daemonws.NewRuntimeLease("workspace-1", "", "online", time.Now().Add(-2*runtimeHeartbeatDBFlushInterval), true)
 
 	if err := h.recordHeartbeatLease(context.Background(), runtimeID, lease); err != nil {
 		t.Fatalf("first recordHeartbeatLease: %v", err)
@@ -161,7 +164,7 @@ func TestRecordHeartbeatLeaseScheduleFailureKeepsStaleWatermark(t *testing.T) {
 	scheduler := &recordingHeartbeatScheduler{err: injected}
 	h := &Handler{LivenessStore: fake, HeartbeatScheduler: scheduler}
 	stale := time.Now().Add(-2 * runtimeHeartbeatDBFlushInterval)
-	lease := daemonws.NewRuntimeLease("workspace-1", "online", stale, true)
+	lease := daemonws.NewRuntimeLease("workspace-1", "", "online", stale, true)
 
 	if err := h.recordHeartbeatLease(context.Background(), runtimeID, lease); !errors.Is(err, injected) {
 		t.Fatalf("recordHeartbeatLease error = %v, want injected failure", err)
@@ -182,7 +185,7 @@ func TestRecordHeartbeatLeaseOfflineTransitionIsSynchronous(t *testing.T) {
 	h := *testHandler
 	h.LivenessStore = fake
 	h.HeartbeatScheduler = scheduler
-	lease := daemonws.NewRuntimeLease(testWorkspaceID, "offline", time.Now(), true)
+	lease := daemonws.NewRuntimeLease(testWorkspaceID, "", "offline", time.Now(), true)
 
 	if err := h.recordHeartbeatLease(context.Background(), runtimeID, lease); err != nil {
 		t.Fatalf("recordHeartbeatLease: %v", err)
@@ -461,5 +464,178 @@ func TestRecordHeartbeat_SweeperRaceRecoversOnline(t *testing.T) {
 	}
 	if time.Since(lastSeen) > 30*time.Second {
 		t.Fatalf("last_seen_at not refreshed: %s ago", time.Since(lastSeen))
+	}
+}
+
+// TestRecordHeartbeat_SuspendedOwnerDoesNotResurrectRuntime pins the
+// suspension race: a heartbeat that passed auth BEFORE the owner was
+// suspended (in-flight request, or the WS handler's already-loaded runtime
+// row) must not write the runtime back online after suspension force-offlined
+// it. recordHeartbeat re-checks the owner's account status before scheduling
+// the liveness write.
+func TestRecordHeartbeat_SuspendedOwnerDoesNotResurrectRuntime(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	owner, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Suspended Heartbeat Owner",
+		Email: "suspended-heartbeat-owner@multica.ai",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, uuidToString(owner.ID))
+	})
+
+	runtimeID := createRuntimeLocalSkillTestRuntime(t, uuidToString(owner.ID))
+	// The runtime row the in-flight heartbeat holds predates the suspension:
+	// load it while the owner is still active…
+	rt := loadRuntime(t, runtimeID)
+
+	// …then suspend the owner and force the runtime offline, as the admin
+	// endpoint's transaction does.
+	if _, err := testHandler.Queries.SetUserAccountStatus(ctx, db.SetUserAccountStatusParams{
+		ID:            owner.ID,
+		AccountStatus: auth.AccountStatusSuspended,
+	}); err != nil {
+		t.Fatalf("SetUserAccountStatus: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE agent_runtime SET status = 'offline' WHERE id = $1`, runtimeID); err != nil {
+		t.Fatalf("force offline: %v", err)
+	}
+
+	prevGuard := testHandler.AccountGuard
+	testHandler.AccountGuard = &auth.AccountGuard{Queries: testHandler.Queries}
+	t.Cleanup(func() { testHandler.AccountGuard = prevGuard })
+
+	origStore := testHandler.LivenessStore
+	testHandler.LivenessStore = NewNoopLivenessStore()
+	t.Cleanup(func() { testHandler.LivenessStore = origStore })
+
+	// rt.Status is the stale pre-suspension "online" snapshot; the write it
+	// schedules would resurrect the row without the owner-status re-check.
+	if err := testHandler.recordHeartbeat(ctx, rt); err != nil {
+		t.Fatalf("recordHeartbeat: %v", err)
+	}
+
+	status, _, _ := readRuntimeRow(t, runtimeID)
+	if status != "offline" {
+		t.Fatalf("runtime status = %q, want offline (suspended owner's heartbeat must not resurrect it)", status)
+	}
+}
+
+// TestMarkAgentRuntimeOnlineRefusesSuspendedOwner pins the write-side TOCTOU
+// closure: even when the app-level owner check raced ahead of the suspension
+// commit, the UPDATE itself refuses to flip a suspended owner's runtime back
+// online (zero rows → pgx.ErrNoRows), and the scheduler passes that through
+// as the runtime-gone signal instead of resurrecting the row.
+func TestMarkAgentRuntimeOnlineRefusesSuspendedOwner(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	owner, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Suspended Mark Online Owner",
+		Email: "suspended-mark-online-owner@multica.ai",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, uuidToString(owner.ID))
+	})
+	runtimeID := createRuntimeLocalSkillTestRuntime(t, uuidToString(owner.ID))
+	rt := loadRuntime(t, runtimeID)
+
+	if _, err := testHandler.Queries.SetUserAccountStatus(ctx, db.SetUserAccountStatusParams{
+		ID:            owner.ID,
+		AccountStatus: auth.AccountStatusSuspended,
+	}); err != nil {
+		t.Fatalf("SetUserAccountStatus: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE agent_runtime SET status = 'offline' WHERE id = $1`, runtimeID); err != nil {
+		t.Fatalf("force offline: %v", err)
+	}
+
+	if _, err := testHandler.Queries.MarkAgentRuntimeOnline(ctx, rt.ID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("MarkAgentRuntimeOnline err = %v, want pgx.ErrNoRows (flip refused)", err)
+	}
+	status, _, _ := readRuntimeRow(t, runtimeID)
+	if status != "offline" {
+		t.Fatalf("runtime status = %q, want offline", status)
+	}
+
+	// The scheduler surfaces the refused flip as pgx.ErrNoRows, the same
+	// signal a deleted row produces: the heartbeat path answers it by
+	// invalidating the daemon's connection, which is exactly what a
+	// suspension wants (the suspend endpoint severs daemon sockets too). The
+	// row itself must stay offline.
+	sched := NewPassthroughHeartbeatScheduler(testHandler.Queries)
+	if err := sched.Schedule(ctx, rt.ID, rt.WorkspaceID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("Schedule err = %v, want pgx.ErrNoRows (refused flip must not resurrect the row)", err)
+	}
+	if status, _, _ := readRuntimeRow(t, runtimeID); status != "offline" {
+		t.Fatalf("runtime status after Schedule = %q, want offline", status)
+	}
+
+	// Restore the owner: the flip works again.
+	if _, err := testHandler.Queries.SetUserAccountStatus(ctx, db.SetUserAccountStatusParams{
+		ID:            owner.ID,
+		AccountStatus: auth.AccountStatusActive,
+	}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if _, err := testHandler.Queries.MarkAgentRuntimeOnline(ctx, rt.ID); err != nil {
+		t.Fatalf("MarkAgentRuntimeOnline after restore: %v", err)
+	}
+	status, _, _ = readRuntimeRow(t, runtimeID)
+	if status != "online" {
+		t.Fatalf("runtime status = %q, want online after restore", status)
+	}
+}
+
+// TestRuntimeOwnerSuspendedGuard covers the shared per-request guard the
+// claim paths use to neutralize stale mdt_ cache entries.
+func TestRuntimeOwnerSuspendedGuard(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	owner, err := testHandler.Queries.CreateUser(ctx, db.CreateUserParams{
+		Name:  "Claim Guard Owner",
+		Email: "claim-guard-owner@multica.ai",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, uuidToString(owner.ID))
+	})
+	runtimeID := createRuntimeLocalSkillTestRuntime(t, uuidToString(owner.ID))
+	rt := loadRuntime(t, runtimeID)
+
+	prevGuard := testHandler.AccountGuard
+	testHandler.AccountGuard = &auth.AccountGuard{Queries: testHandler.Queries}
+	t.Cleanup(func() { testHandler.AccountGuard = prevGuard })
+
+	if testHandler.runtimeOwnerSuspended(ctx, rt) {
+		t.Fatal("active owner must not be reported suspended")
+	}
+	if _, err := testHandler.Queries.SetUserAccountStatus(ctx, db.SetUserAccountStatusParams{
+		ID:            owner.ID,
+		AccountStatus: auth.AccountStatusSuspended,
+	}); err != nil {
+		t.Fatalf("SetUserAccountStatus: %v", err)
+	}
+	if !testHandler.runtimeOwnerSuspended(ctx, rt) {
+		t.Fatal("suspended owner must be reported suspended")
+	}
+	if testHandler.runtimeOwnerSuspended(ctx, db.AgentRuntime{}) {
+		t.Fatal("ownerless runtime must never be reported suspended")
 	}
 }

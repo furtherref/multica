@@ -75,6 +75,12 @@ type UserResponse struct {
 	ProfileDescription      string          `json:"profile_description"`
 	CreatedAt               string          `json:"created_at"`
 	UpdatedAt               string          `json:"updated_at"`
+	// IsSystemAdmin reflects the serving deployment's ADMIN_EMAILS allowlist,
+	// not a stored user attribute. userToResponse sets it because the frontend
+	// auth store replaces its user object with login and PATCH /api/me
+	// responses, not only GetMe — any current-user response missing the flag
+	// hides the system-admin UI until the next /api/me fetch.
+	IsSystemAdmin bool `json:"is_system_admin,omitempty"`
 }
 
 // MaxProfileDescriptionLen caps the user-supplied profile_description body.
@@ -104,6 +110,7 @@ func (h *Handler) userToResponse(u db.User) UserResponse {
 		ProfileDescription:      u.ProfileDescription,
 		CreatedAt:               timestampToString(u.CreatedAt),
 		UpdatedAt:               timestampToString(u.UpdatedAt),
+		IsSystemAdmin:           h.isSystemAdmin(u.Email),
 	}
 }
 
@@ -160,8 +167,8 @@ func isSixDigitCode(code string) bool {
 }
 
 func (h *Handler) issueJWT(user db.User) (string, error) {
-	if auth.IsTemporarilyDisabledUser(uuidToString(user.ID), user.Email) {
-		return "", auth.ErrTemporarilyDisabledUser
+	if err := auth.UserMayAuthenticate(user.AccountStatus); err != nil {
+		return "", err
 	}
 	// `sid` identifies this login for as long as it lasts: sliding renewal
 	// copies it forward, so it stays put while `exp` moves. The CSRF token is
@@ -188,17 +195,15 @@ func (h *Handler) issueJWT(user db.User) (string, error) {
 // event fires on that edge, covering both the verification-code and Google
 // OAuth entry points.
 func (h *Handler) findOrCreateUser(ctx context.Context, email string) (user db.User, isNew bool, err error) {
-	if auth.IsTemporarilyDisabledUserEmail(email) {
-		return db.User{}, false, auth.ErrTemporarilyDisabledUser
-	}
-
 	user, err = h.Queries.GetUserByEmail(ctx, email)
 	isNew = isNotFound(err)
 	if err != nil && !isNew {
 		return db.User{}, false, err
 	}
-	if !isNew && auth.IsTemporarilyDisabledUser(uuidToString(user.ID), user.Email) {
-		return db.User{}, false, auth.ErrTemporarilyDisabledUser
+	if !isNew {
+		if err := auth.UserMayAuthenticate(user.AccountStatus); err != nil {
+			return db.User{}, false, err
+		}
 	}
 
 	if err := h.checkSignupAllowed(ctx, email, isNew); err != nil {
@@ -316,11 +321,6 @@ func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "email is required")
 		return
 	}
-	if auth.IsTemporarilyDisabledUserEmail(email) {
-		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
-		return
-	}
-
 	// Check signup restrictions before sending magic link
 	existingUser, err := h.Queries.GetUserByEmail(r.Context(), email)
 	if err != nil {
@@ -342,9 +342,9 @@ func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// User already exists → always allowed to login
-		if auth.IsTemporarilyDisabledUser(uuidToString(existingUser.ID), existingUser.Email) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		// User already exists → always allowed to login, unless suspended.
+		if err := auth.UserMayAuthenticate(existingUser.AccountStatus); err != nil {
+			writeErrorCode(w, http.StatusForbidden, auth.AccountSuspendedCode, auth.AccountSuspendedMessage)
 			return
 		}
 		isNewUser := false
@@ -410,10 +410,6 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "email and code are required")
 		return
 	}
-	if auth.IsTemporarilyDisabledUserEmail(email) {
-		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
-		return
-	}
 
 	dbCode, err := h.Queries.GetLatestVerificationCode(r.Context(), email)
 	if err != nil {
@@ -435,8 +431,8 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 
 	user, isNew, err := h.findOrCreateUser(r.Context(), email)
 	if err != nil {
-		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		if errors.Is(err, auth.ErrAccountSuspended) {
+			writeErrorCode(w, http.StatusForbidden, auth.AccountSuspendedCode, auth.AccountSuspendedMessage)
 			return
 		}
 		var signupErr SignupError
@@ -454,8 +450,8 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 
 	tokenString, err := h.issueJWT(user)
 	if err != nil {
-		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		if errors.Is(err, auth.ErrAccountSuspended) {
+			writeErrorCode(w, http.StatusForbidden, auth.AccountSuspendedCode, auth.AccountSuspendedMessage)
 			return
 		}
 		slog.Warn("login failed", append(logger.RequestAttrs(r), "error", err, "email", req.Email)...)
@@ -531,8 +527,10 @@ type googleUserInfo struct {
 
 func writeGoogleLoginActionableError(w http.ResponseWriter, err error) bool {
 	switch {
-	case errors.Is(err, auth.ErrTemporarilyDisabledUser):
-		writeErrorCode(w, http.StatusForbidden, googleLoginCodeAccountDisabled, auth.TemporarilyDisabledUserError)
+	case errors.Is(err, auth.ErrAccountSuspended):
+		// The fork replaced upstream's temporary email denylist with the
+		// user.account_status column; the Google flow maps that refusal here.
+		writeErrorCode(w, http.StatusForbidden, auth.AccountSuspendedCode, auth.AccountSuspendedMessage)
 	case errors.Is(err, ErrSignupProhibited):
 		writeErrorCode(w, http.StatusForbidden, googleLoginCodeSignupProhibited, ErrSignupProhibited.Error())
 	case errors.Is(err, ErrEmailNotAllowed):
@@ -671,11 +669,6 @@ func (h *Handler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if auth.IsTemporarilyDisabledUserEmail(email) {
-		writeErrorCode(w, http.StatusForbidden, googleLoginCodeAccountDisabled, auth.TemporarilyDisabledUserError)
-		return
-	}
-
 	user, isNew, err := h.findOrCreateUser(r.Context(), email)
 	if err != nil {
 		if writeGoogleLoginActionableError(w, err) {
@@ -761,8 +754,8 @@ func (h *Handler) IssueCliToken(w http.ResponseWriter, r *http.Request) {
 
 	tokenString, err := h.issueJWT(user)
 	if err != nil {
-		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		if errors.Is(err, auth.ErrAccountSuspended) {
+			writeErrorCode(w, http.StatusForbidden, auth.AccountSuspendedCode, auth.AccountSuspendedMessage)
 			return
 		}
 		slog.Warn("cli-token: failed to issue JWT", append(logger.RequestAttrs(r), "error", err, "user_id", userID)...)

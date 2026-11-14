@@ -23,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/mention"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
@@ -525,9 +526,9 @@ func (s *TaskService) attributionForIssueTask(ctx context.Context, issue db.Issu
 			return attribution.Result{Source: attribution.SourceUnattributed}
 		}
 		// A member/agent trigger comment resolves the human (direct_human / delegation
-		// / comment_source). A SYSTEM-authored comment — today the Stage-completion
-		// child-done comment (issue_child_done.go), which wakes the parent assignee
-		// and threads no actor — carries no human and is not part of any delegation
+		// / comment_source). A SYSTEM-authored comment — historically the
+		// Stage-completion child-done comment, which woke the parent assignee
+		// and threaded no actor — carries no human and is not part of any delegation
 		// chain. Classifying it would degrade straight to owner_fallback (the agent's
 		// own owner), which is wrong for a Stage cascade: the woken run should be
 		// accountable to whoever caused the PARENT issue to exist. So for a system
@@ -1285,6 +1286,9 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		slog.Warn("task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
 		return db.AgentTaskQueue{}, err
 	}
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -1456,6 +1460,9 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 		slog.Warn("mention task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 		return db.AgentTaskQueue{}, err
 	}
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -1588,6 +1595,9 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	}
 	if !agent.RuntimeID.Valid {
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
+	}
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
+		return db.AgentTaskQueue{}, err
 	}
 
 	payload := QuickCreateContext{
@@ -1752,6 +1762,12 @@ func (s *TaskService) RetrySourceContextQuickCreate(ctx context.Context, workspa
 	if err := CheckIssueCreateCapacity(ctx, s.Queries, s.Entitlements, workspaceID); err != nil {
 		return nil, fmt.Errorf("preflight quick-create issue capacity: %w", err)
 	}
+	// Before the transaction, on s.Queries: a refusal rolls the tx below back,
+	// which would discard the notice the check writes (see checkRuntimeCostBudget).
+	// The error is returned as-is so the handler maps it to budget_exceeded.
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
+		return nil, err
+	}
 	overlay := s.buildRuntimeMCPOverlay(ctx, requesterID, agent)
 
 	tx, err := s.TxStarter.Begin(ctx)
@@ -1842,6 +1858,29 @@ type PreparedChatTaskEnqueue struct {
 	attrSource       pgtype.Text
 	attrEvidenceKind pgtype.Text
 	runtimeOverlay   runtimeMCPOverlayData
+}
+
+// MemberMayInvokeAgent reports whether userID may trigger runs for agentID.
+//
+// CanMemberInvokeAgent keyed by id rather than by row: channel inbound has the
+// installation's agent id and no reason to load the agent itself. It asks this
+// before storing a sender's message, so a member the web chat would refuse
+// cannot reach the agent through a bot either.
+//
+// An agent that no longer exists admits nobody — that is a verdict, not a
+// failure. Every other query failure comes back as an error, so an unreachable
+// database is never read as a denial: the caller releases its dedup claim and
+// the platform's redelivery is still the message's chance. CanMemberInvokeAgent
+// is the fail-closed wrapper the scheduled triggers use instead.
+func (s *TaskService) MemberMayInvokeAgent(ctx context.Context, agentID, userID pgtype.UUID) (bool, error) {
+	agent, err := s.Queries.GetAgent(ctx, agentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("load agent: %w", err)
+	}
+	return memberMayInvokeAgent(ctx, s.Queries, agent, userID, agent.WorkspaceID)
 }
 
 // PrepareChatTaskEnqueue performs reads and optional external integration work
@@ -2002,6 +2041,9 @@ func (s *TaskService) enqueueChatTaskTx(
 	}
 	if !agent.RuntimeID.Valid {
 		return db.AgentTaskQueue{}, ErrChatTaskAgentNoRuntime
+	}
+	if err := s.checkRuntimeCostBudget(ctx, qtx, agent, time.Now()); err != nil {
+		return db.AgentTaskQueue{}, err
 	}
 
 	binding, bindingErr := qtx.LockChannelChatSessionBindingForContext(ctx, chatSession.ID)
@@ -2350,6 +2392,12 @@ func (s *TaskService) SendDirectChatMessage(
 		if !carrier.RuntimeID.Valid {
 			return ErrChatTaskAgentNoRuntime
 		}
+		// Direct chat creates its task here rather than through
+		// enqueueChatTaskTx, so it needs its own budget gate; without it the
+		// handler's budget_exceeded mapping for this call would be unreachable.
+		if err := s.checkRuntimeCostBudget(ctx, qtx, carrier, time.Now()); err != nil {
+			return err
+		}
 
 		// The database status of every newly-created task is "queued" until a
 		// daemon claims it. Product queue semantics are positional instead: this
@@ -2584,11 +2632,15 @@ func (s *TaskService) OpenMikaOnboardingChat(ctx context.Context, session db.Cha
 // affected agent's status, and broadcasts task:cancelled events so frontends
 // clear their live cards.
 //
-// Callers are explicit issue-lifecycle cleanup paths only — DeleteIssue and
-// BatchDeleteIssues, where the owning issue row is going away so its tasks
-// must not be left orphaned. A plain status flip, `cancelled` included, no
-// longer routes here (MUL-4465): cancelling an issue is not an implicit "stop
-// all runs" switch. Do not re-add a status-driven caller.
+// Callers are deliberately limited to three cases: delete cleanup (DeleteIssue
+// and BatchDeleteIssues, where the owning issue row is going away so its tasks
+// must not be left orphaned), the archive transition (fork status #39 —
+// retiring an issue cancels its in-flight work), and the archive->active
+// restore sweep (stragglers that raced past the archive-time cancel must not
+// wake up now that the issue is active again). A plain status flip,
+// `cancelled` included, does not route here (MUL-4465): cancelling an issue is
+// not an implicit "stop all runs" switch. Do not re-add a status-driven caller
+// beyond these two archive-lifecycle exceptions.
 //
 // Before #1587 this path was "cancel rows and return", which left each affected
 // agent stuck at status="working" indefinitely, requiring a manual
@@ -2720,11 +2772,22 @@ func (s *TaskService) CancelTasksByTriggerComment(ctx context.Context, commentID
 // showing a run that no longer exists. Each caller already knows the workspace
 // — it is the one whose session, member or runtime is being torn down — so the
 // lookup is not needed and cannot fail.
-func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, workspaceID string, cancelled []db.AgentTaskQueue) {
+func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, workspaceID string, cancelled []db.AgentTaskQueue, knownChatCreators ...map[string]string) {
+	var creators map[string]string
+	if len(knownChatCreators) > 0 {
+		creators = knownChatCreators[0]
+	}
 	for _, t := range cancelled {
 		s.captureTaskCancelled(ctx, t)
 		s.ReconcileAgentStatus(ctx, t.AgentID)
-		s.publishTaskEvent(protocol.EventTaskCancelled, workspaceID, t)
+		e := taskEvent(protocol.EventTaskCancelled, workspaceID, t)
+		if t.ChatSessionID.Valid {
+			e.RecipientUserID = creators[util.UUIDToString(t.ChatSessionID)]
+			if e.RecipientUserID == "" {
+				e.RecipientUserID = s.chatTaskCreatorID(ctx, t)
+			}
+		}
+		s.Bus.Publish(e)
 	}
 	s.notifyTasksFinished(cancelled)
 }
@@ -3089,6 +3152,104 @@ func createAssistantChatMessage(ctx context.Context, qtx *db.Queries, params db.
 	return row, nil
 }
 
+// writeTerminalChatFailureOutcome persists what a dead chat turn owes its
+// transcript, on the caller's transaction. The caller MUST already hold the
+// chat session write lock (lockChatSessionForTaskWrite) and MUST have moved the
+// task out of the visible-head status set in this or an earlier transaction:
+// otherwise the successor turn could be claimed between the status flip and
+// this row, placing its user input before the failure it follows.
+//
+// Two effects, and both belong to any terminal, non-retried chat failure —
+// which is why FailTask and the deferred-promotion budget sweep share one
+// implementation rather than the sweep flipping rows to failed and stopping:
+//
+//   - The adopted onboarding kickoff is released. It would otherwise stay bound
+//     to a task that will never run again: the next turn would reach Mika with
+//     no onboarding context and no record that she had already greeted the
+//     member, and she would introduce herself a second time (MUL-5827). The
+//     query hands it to the session's next queued turn — including one the
+//     member queued while THIS turn was still running.
+//   - The assistant outcome message. Without it the conversation just stops:
+//     the user sees their own message, a spinner that never resolves, and no
+//     statement that anything failed.
+//
+// Never call this for a turn that has an auto-retry child. The retry inherits
+// the root's chat_input_task_id and the kickoff stays bound to that root, so
+// releasing here would strip the context off a turn that is about to run.
+func writeTerminalChatFailureOutcome(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue, errMsg, failureReason string) error {
+	if err := qtx.ReleaseOnboardingKickoffFromTask(ctx, chatInputOwnerID(task)); err != nil {
+		return fmt.Errorf("release onboarding kickoff: %w", err)
+	}
+	if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
+		ID:            dbid.NewV7(),
+		ChatSessionID: task.ChatSessionID,
+		Role:          "assistant",
+		Content:       redact.Text(errMsg),
+		TaskID:        task.ID,
+		FailureReason: pgtype.Text{String: failureReason, Valid: failureReason != ""},
+		ElapsedMs:     computeChatElapsedMs(task),
+	}); err != nil {
+		return fmt.Errorf("write chat failure outcome: %w", err)
+	}
+	return nil
+}
+
+// reportTerminalTaskFailure runs the post-commit half of a terminal,
+// non-retried failure: hand a delegated task's control back to its delegator,
+// write the per-failure issue comment, and resolve a quick-create requester's
+// pending state. FailTask calls it; so does the deferred-promotion budget
+// sweep, whose rows reach 'failed' through a bulk UPDATE and would otherwise
+// leave a quick-create requester waiting on an outcome nothing else will ever
+// write.
+//
+// Every step is best-effort and logs its own failure. The row is already
+// terminal, and a comment or inbox write that does not land must not be
+// mistaken for a failure to fail the task.
+func (s *TaskService) reportTerminalTaskFailure(ctx context.Context, task db.AgentTaskQueue, errMsg string) {
+	// A delegated task that has reached a terminal failure must hand control
+	// back to the task that delegated it. The recovery signal is a
+	// platform-authored comment on the source task's issue, routed explicitly to
+	// that task's agent; recoverDelegatedTaskFailure coalesces it with an
+	// existing coordinator run and deduplicates by the failed task id.
+	if _, recoveryErr := s.recoverDelegatedTaskFailure(ctx, task); recoveryErr != nil {
+		slog.Warn("delegated task failure recovery failed",
+			"task_id", util.UUIDToString(task.ID),
+			"delegated_from_task_id", util.UUIDToString(task.DelegatedFromTaskID),
+			"error", recoveryErr,
+		)
+	}
+
+	// Delegated failures keep this failed-issue comment in addition to the
+	// coordinator recovery signal, preserving visibility on both sides of a
+	// cross-issue handoff.
+	if errMsg != "" && task.IssueID.Valid {
+		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
+	}
+
+	// Quick-create tasks: push a failure inbox notification to the requester so
+	// they can either retry or fall back to the advanced form without losing
+	// their original prompt.
+	qc, ok := s.parseQuickCreateContext(task)
+	if !ok {
+		return
+	}
+	attached, attachedErr := s.sourceContextAttachedByTask(ctx, task, qc)
+	switch {
+	case attachedErr != nil:
+		slog.Error("quick-create failure: source context outcome lookup failed",
+			"task_id", util.UUIDToString(task.ID), "error", attachedErr)
+		s.notifyQuickCreateUnconfirmed(ctx, task, qc)
+	case attached:
+		// The CLI create committed before the runtime reported its own failure.
+		// The attached context is authoritative proof that the target exists, so
+		// reconcile the normal success inbox rather than inviting a duplicate
+		// retry from a misleading failure row.
+		s.notifyQuickCreateCompleted(ctx, task, qc, nil)
+	default:
+		s.notifyQuickCreateFailed(ctx, task, qc, errMsg)
+	}
+}
+
 func (s *TaskService) settleQueuedChatInput(
 	ctx context.Context,
 	qtx *db.Queries,
@@ -3448,16 +3609,19 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 
 func (s *TaskService) broadcastChatCancelFinalized(ctx context.Context, task db.AgentTaskQueue, payload protocol.ChatCancelFinalizedPayload) {
 	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
-	if workspaceID == "" {
+	recipientUserID := s.chatTaskCreatorID(ctx, task)
+	if workspaceID == "" || recipientUserID == "" {
 		return
 	}
 	s.Bus.Publish(events.Event{
-		Type:          protocol.EventChatCancelFinalized,
-		WorkspaceID:   workspaceID,
-		ActorType:     "system",
-		ActorID:       "",
-		ChatSessionID: util.UUIDToString(task.ChatSessionID),
-		Payload:       payload,
+		Type:            protocol.EventChatCancelFinalized,
+		WorkspaceID:     workspaceID,
+		ActorType:       "system",
+		ActorID:         "",
+		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		AgentID:         util.UUIDToString(task.AgentID),
+		RecipientUserID: recipientUserID,
+		Payload:         payload,
 	})
 }
 
@@ -3921,6 +4085,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	// promoted task would sit unclaimed until the empty key's TTL. Also emits
 	// the deferred→queued UI event and the enqueue analytics sample.
 	s.cancelSupersededDeferredRetries(ctx, uniqueIDs)
+	s.failDueDeferredTasksOverBudget(ctx, uniqueIDs)
 	promoted, err := s.Queries.PromoteDueDeferredTasksForRuntimes(ctx, db.PromoteDueDeferredTasksForRuntimesParams{
 		RuntimeIds:       uniqueIDs,
 		RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
@@ -4109,8 +4274,294 @@ func (s *TaskService) cancelSupersededDeferredRetries(ctx context.Context, runti
 	}
 }
 
+// failDueDeferredTasksOverBudget retires the due deferred tasks of every agent
+// whose runtime cost budget is already spent, so the promotion that follows
+// does not make them claimable.
+//
+// The budget is checked at promotion, not at creation: a fallback armed hours
+// ago is a prediction about a limit that may not have been reached yet, and the
+// only moment the answer matters is the moment the task would start spending.
+// Refused rows are failed with budget_exceeded rather than left deferred, so a
+// task nobody will ever run is visible as a terminal outcome instead of sitting
+// silently until its issue is closed. checkRuntimeCostBudget files the
+// per-period notice that explains it.
+//
+// Best-effort against a concurrent promotion, deliberately. The fail and the
+// promotion are separate statements with no transaction around them, so a row
+// that becomes due in the gap — or that another daemon's claim loop promotes
+// there — can still reach 'queued' unpriced. Joining them into one transaction
+// would cost more than it buys: the promotion's unique-violation on
+// idx_one_pending_task_per_issue_agent_v2 is tolerated today (isDuplicate-
+// PendingTaskErr, one row losing its slot must not fail the claim), and inside
+// a transaction that error would poison the fail as well. The window is one
+// tick wide, every row that reaches it passed its own enqueue-time gate, and
+// the overshoot it allows is the same bounded kind already accepted for tasks
+// in flight when a limit is crossed.
+//
+// One agent's refusal never stops the sweep: every other agent's rows still
+// promote in the same tick. A missing agent row is logged and skipped, leaving
+// that agent's rows to promote normally, and an unreadable budget or spend
+// leaves the whole runtime's rows to promote — failing someone's queued work
+// permanently over a transient read is worse than one run against a limit the
+// next tick re-checks, and every enqueue path still fails closed on the same
+// error.
+func (s *TaskService) failDueDeferredTasksOverBudget(ctx context.Context, runtimeIDs []pgtype.UUID) {
+	if len(runtimeIDs) == 0 {
+		return
+	}
+	due, err := s.Queries.ListDueDeferredTaskAgentsForRuntimes(ctx, runtimeIDs)
+	if err != nil {
+		slog.Warn("deferred promotion budget gate: list due agents failed", "error", err)
+		return
+	}
+	if len(due) == 0 {
+		return
+	}
+	// Group by the runtime the rows sit on — which the query has already pinned
+	// to the agent's own runtime — so each runtime's budget rows and spend are
+	// read once however many blocked agents share it.
+	agentsByRuntime := map[string][]pgtype.UUID{}
+	runtimeByKey := map[string]pgtype.UUID{}
+	for _, row := range due {
+		key := util.UUIDToString(row.RuntimeID)
+		agentsByRuntime[key] = append(agentsByRuntime[key], row.AgentID)
+		runtimeByKey[key] = row.RuntimeID
+	}
+	now := time.Now()
+	for key, agentIDs := range agentsByRuntime {
+		s.failDueDeferredTasksOnRuntimeOverBudget(ctx, runtimeByKey[key], agentIDs, now)
+	}
+}
+
+// failDueDeferredTasksOnRuntimeOverBudget is the per-runtime half of the sweep.
+// It reads the runtime's budget rows and its spend once and then evaluates every
+// agent against them with the same pure helpers checkRuntimeCostBudget uses, so
+// N blocked agents on one machine cost one budget lookup and one spend
+// aggregate instead of N of each.
+func (s *TaskService) failDueDeferredTasksOnRuntimeOverBudget(ctx context.Context, runtimeID pgtype.UUID, agentIDs []pgtype.UUID, now time.Time) {
+	rows, err := s.Queries.ListRuntimeCostBudgets(ctx, runtimeID)
+	if err != nil {
+		slog.Warn("deferred promotion budget gate: list budgets failed",
+			"runtime_id", util.UUIDToString(runtimeID), "error", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	type candidate struct {
+		agent      db.Agent
+		applicable []scopedBudgetRow
+	}
+	candidates := make([]candidate, 0, len(agentIDs))
+	// The spend query's scan floor covers the union of every candidate's rows,
+	// so one load answers for all of them without over-reading a period no
+	// budget on this runtime configures.
+	var pricedRows []db.RuntimeCostBudget
+	seenRow := map[string]bool{}
+	for _, agentID := range agentIDs {
+		agent, err := s.Queries.GetAgent(ctx, agentID)
+		if err != nil {
+			slog.Warn("deferred promotion budget gate: load agent failed",
+				"agent_id", util.UUIDToString(agentID), "error", err)
+			continue
+		}
+		applicable := applicableBudgetRows(rows, agent)
+		if len(applicable) == 0 {
+			continue
+		}
+		candidates = append(candidates, candidate{agent: agent, applicable: applicable})
+		for _, a := range applicable {
+			if id := util.UUIDToString(a.row.ID); !seenRow[id] {
+				seenRow[id] = true
+				pricedRows = append(pricedRows, a.row)
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	spend, err := loadRuntimeSpend(ctx, s.Queries, runtimeID, now, budgetPeriods(pricedRows))
+	if err != nil {
+		slog.Warn("deferred promotion budget gate: load spend failed",
+			"runtime_id", util.UUIDToString(runtimeID), "error", err)
+		return
+	}
+	for _, c := range candidates {
+		row, exceeded := firstReachedBudget(c.applicable, spend, now)
+		if exceeded == nil {
+			continue
+		}
+		slog.Info("deferred promotion refused: runtime cost budget reached",
+			"runtime_id", util.UUIDToString(runtimeID), "agent_id", util.UUIDToString(c.agent.ID),
+			"scope", exceeded.Scope, "period", exceeded.Period,
+			"used_ticks", exceeded.UsedTicks, "limit_ticks", exceeded.LimitTicks)
+		// Same notice the enqueue gate files, and it deduplicates itself: one
+		// inbox item per (budget row, period) however many agents this sweep
+		// refuses against the same row.
+		s.notifyRuntimeBudgetExceeded(ctx, s.Queries, row, exceeded, c.agent.OwnerID)
+		// Every retirement write lands before the loop below, so no chat row
+		// waits on another row's post-commit reporting — reportTerminalTaskFailure
+		// can do network I/O (delegated recovery, inbox fan-out) and the chat
+		// session lock it would sit behind is exactly the lock a live successor
+		// turn needs.
+		for _, task := range s.retireDueDeferredTasksOverBudget(ctx, c.agent.ID, runtimeID, exceeded) {
+			slog.Info("deferred task failed: runtime cost budget reached",
+				"task_id", util.UUIDToString(task.ID),
+				"issue_id", util.UUIDToString(task.IssueID),
+				"agent_id", util.UUIDToString(task.AgentID),
+				"runtime_id", util.UUIDToString(task.RuntimeID),
+				"scope", exceeded.Scope, "period", exceeded.Period,
+			)
+			s.captureTaskFailed(ctx, task)
+			s.reportTerminalTaskFailure(ctx, task, task.Error.String)
+			s.ReconcileAgentStatus(ctx, task.AgentID)
+			s.broadcastTaskFailedEvent(ctx, task, task.Error.String, string(taskfailure.ReasonBudgetExceeded), false)
+		}
+	}
+}
+
+// retireDueDeferredTasksOverBudget flips one blocked agent's due deferred rows
+// to 'failed' and returns every row it actually retired, so the caller can run
+// the terminal side effects FailTask would have run. The sweep does not go
+// through FailTask itself — it has already priced the budget and must not
+// re-derive a retry decision it has just refused — but a task is not
+// terminated by its status column alone.
+//
+// A deferred row is not only an issue fallback: DeferChatTaskForSealedPending-
+// Media and the retry backoff both park chat turns there, and quick-create
+// tasks are retry-eligible, so both can be sitting deferred when a limit is
+// reached. Without the follow-up work, a budget-refused chat turn ends with a
+// spinner and no assistant reply, and a quick-create requester's pending state
+// is never resolved by anything.
+//
+// The retirement is split by row kind, and the split is the correctness
+// boundary:
+//
+//   - A row with a chat session gets its own transaction: session lock, fail
+//     that single row only while it is still 'deferred', write the assistant
+//     outcome, commit. What that guarantees is exactly this — for one chat row,
+//     the status flip and its outcome message are atomic. A reader never sees
+//     the turn terminated with no reply, a crash cannot strand it that way
+//     forever, and no successor turn can be claimed in the gap and land its
+//     user input ahead of the failure it follows. The row leaves the
+//     visible-head status set inside the same transaction, so
+//     createAssistantChatMessage's reanchor still sees the next head.
+//   - Rows without a chat session keep the bulk statement, which owes no
+//     per-row write. Those rows carry no atomicity claim beyond their own
+//     UPDATE: a row promoted or claimed by a concurrent tick between the price
+//     and the statement simply is not retired this tick, which is the
+//     best-effort behaviour the design already specifies for the gate.
+//
+// Failures are logged, never propagated — the refusal itself is already
+// decided, and one unwritable row must not stop the rest of the sweep.
+func (s *TaskService) retireDueDeferredTasksOverBudget(
+	ctx context.Context,
+	agentID, runtimeID pgtype.UUID,
+	exceeded *RuntimeBudgetExceededError,
+) []db.AgentTaskQueue {
+	failureReason := pgtype.Text{String: string(taskfailure.ReasonBudgetExceeded), Valid: true}
+	// The persisted text names the cause without the amounts, which task:failed
+	// republishes to every workspace subscriber.
+	errText := pgtype.Text{String: exceeded.PublicReason(), Valid: true}
+
+	var retired []db.AgentTaskQueue
+	chatRows, err := s.Queries.ListDueDeferredChatTasksForAgentOverBudget(ctx, db.ListDueDeferredChatTasksForAgentOverBudgetParams{
+		AgentID:   agentID,
+		RuntimeID: runtimeID,
+	})
+	if err != nil {
+		// Fail open, like every other read failure in this gate: these rows are
+		// not retired, and the promotion that runs immediately after this sweep
+		// in the same tick will make them claimable — a chat row carries no
+		// issue_id, so it clears both of that query's slot fences. Retiring
+		// them through the bulk statement instead is not the alternative: it
+		// cannot write the outcome message they owe. One tick of overshoot on a
+		// transient read is the gate's stated contract, and every enqueue path
+		// still fails closed on the same error.
+		slog.Warn("deferred promotion budget gate: list due chat tasks failed",
+			"agent_id", util.UUIDToString(agentID), "error", err)
+	}
+	for _, chat := range chatRows {
+		if task, ok := s.retireDeferredChatTaskOverBudget(ctx, chat, failureReason, errText); ok {
+			retired = append(retired, task)
+		}
+	}
+
+	// terminateTasksInTx, never the bare query: every terminal write must reach
+	// SettleDeliveredDelegatedFailureRecoveries with the same qtx (see its
+	// INVARIANT), or a delegated-failure recovery comment this batch delivered
+	// is stranded unsettled with nothing left to replay it.
+	failed, err := s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.FailDueDeferredTasksForAgentOverBudget(ctx, db.FailDueDeferredTasksForAgentOverBudgetParams{
+			FailureReason: failureReason,
+			Error:         errText,
+			AgentID:       agentID,
+			RuntimeID:     runtimeID,
+		})
+	})
+	if err != nil {
+		slog.Warn("deferred promotion budget gate: fail due tasks failed",
+			"agent_id", util.UUIDToString(agentID), "error", err)
+		return retired
+	}
+	return append(retired, failed...)
+}
+
+// retireDeferredChatTaskOverBudget retires one deferred chat row and writes the
+// assistant outcome it owes, in a single transaction. Reports whether the row
+// was retired here; a row that is no longer 'deferred' is skipped, and so is
+// one whose transaction failed — both stay untouched rather than half-retired.
+func (s *TaskService) retireDeferredChatTaskOverBudget(
+	ctx context.Context,
+	task db.AgentTaskQueue,
+	failureReason, errText pgtype.Text,
+) (db.AgentTaskQueue, bool) {
+	var failed db.AgentTaskQueue
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		// chat_session -> agent_task_queue, the repo-wide lock order.
+		if err := lockChatSessionForTaskWrite(ctx, qtx, task.ID); err != nil {
+			return err
+		}
+		row, err := qtx.FailDeferredTaskOverBudget(ctx, db.FailDeferredTaskOverBudgetParams{
+			ID:            task.ID,
+			FailureReason: failureReason,
+			Error:         errText,
+		})
+		if err != nil {
+			return err
+		}
+		failed = row
+		if err := SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, row); err != nil {
+			return err
+		}
+		return writeTerminalChatFailureOutcome(ctx, qtx, row, row.Error.String, string(taskfailure.ReasonBudgetExceeded))
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The row left 'deferred' between the listing and this transaction:
+			// promoted by a concurrent claim, cancelled, or superseded. Whatever
+			// moved it owns its outcome now, and this sweep priced a state that
+			// no longer exists.
+			slog.Info("deferred promotion budget gate: chat task no longer deferred, leaving it to its new owner",
+				"task_id", util.UUIDToString(task.ID),
+				"chat_session_id", util.UUIDToString(task.ChatSessionID))
+			return db.AgentTaskQueue{}, false
+		}
+		// Same fail-open as the listing above: the row keeps its 'deferred'
+		// status and the promotion later in this tick makes it claimable, so a
+		// transient write failure costs one run against a limit the next tick
+		// re-checks rather than a turn stuck behind an unwritable transcript.
+		slog.Warn("deferred promotion budget gate: retire deferred chat task failed",
+			"task_id", util.UUIDToString(task.ID),
+			"chat_session_id", util.UUIDToString(task.ChatSessionID),
+			"error", err)
+		return db.AgentTaskQueue{}, false
+	}
+	return failed, true
+}
+
 func (s *TaskService) PromoteDueDeferredTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) error {
 	s.cancelSupersededDeferredRetries(ctx, []pgtype.UUID{runtimeID})
+	s.failDueDeferredTasksOverBudget(ctx, []pgtype.UUID{runtimeID})
 	tasks, err := s.Queries.PromoteDueDeferredTasksForRuntime(ctx, db.PromoteDueDeferredTasksForRuntimeParams{
 		RuntimeID:        runtimeID,
 		RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
@@ -4507,7 +4958,9 @@ func (s *TaskService) CompleteTaskWithTransition(ctx context.Context, taskID pgt
 			AuthorID: task.AgentID,
 			Since:    task.StartedAt,
 		})
-		if !suppressNoActionComment && !agentCommented {
+		// A scheduled wakeup check that found nothing new ends with a check-in
+		// instead of a comment (see IssueWakeupService.CheckIn).
+		if !suppressNoActionComment && !agentCommented && !HasWakeupCheckin(task) {
 			var payload protocol.TaskCompletedPayload
 			if err := json.Unmarshal(result, &payload); err == nil {
 				if payload.Output != "" {
@@ -4851,11 +5304,22 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 				retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
 			}
 			if agent, aerr := s.Queries.GetAgent(ctx, parent.AgentID); aerr != nil {
-				// Best-effort: a missing overlay is not retry-fatal — the child
-				// simply runs without the Composio overlay.
-				slog.Warn("fail task auto-retry: load agent for overlay failed",
+				// Fail closed. The agent row is what resolves the runtime whose
+				// cost budget gates this retry, so an unreadable agent means the
+				// budget was never consulted — and retrying against a limit the
+				// server could not read is exactly what the gate exists to
+				// prevent. Same class as retrySuppressedByRuntimeBudget's own
+				// error branch, and the parent still fails normally with its own
+				// reason; only the automatic retry is dropped.
+				slog.Warn("fail task auto-retry suppressed: load agent failed",
 					"task_id", util.UUIDToString(taskID),
 					"agent_id", util.UUIDToString(parent.AgentID), "error", aerr)
+				wantRetry = false
+			} else if s.retrySuppressedByRuntimeBudget(ctx, parent, agent) {
+				// Pre-computed here, outside the transaction, so the refusal
+				// notice is written on the auto-commit handle and the parent
+				// still fails normally with its own reason.
+				wantRetry = false
 			} else {
 				retryOverlay = s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent)
 			}
@@ -5032,12 +5496,15 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 					retried = &child
 				}
 			case errors.Is(cerr, pgx.ErrNoRows):
-				// The statement wrote nothing: either the owning workspace was
-				// torn down mid-flight, or a rerun took the pending slot after
-				// the unlocked check above (ON CONFLICT DO NOTHING). Neither is
-				// a reason to abort — this transaction still owns the parent's
-				// failed status, and losing that would leave the task stuck in
-				// 'running'. Record the failure and move on without a retry.
+				// The statement wrote nothing. Three ways to get here: the issue
+				// was archived while this task ran (fork status #39 —
+				// CreateRetryTask's WHERE suppresses the clone on retired work),
+				// the owning workspace was torn down mid-flight, or a rerun took
+				// the pending slot after the unlocked check above (ON CONFLICT DO
+				// NOTHING). None is a reason to abort — this transaction still
+				// owns the parent's failed status, and losing that would leave
+				// the task stuck in 'running'. Record the failure and move on
+				// without a retry.
 				slog.Info("fail task auto-retry not created: no row written",
 					"task_id", util.UUIDToString(taskID),
 					"issue_id", util.UUIDToString(t.IssueID),
@@ -5053,33 +5520,14 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 		// held, then reanchor the next direct head. Otherwise the successor could
 		// be claimed between the status flip and this row, placing its user input
 		// before the failure it follows.
+		//
+		// Gated on retried == nil on purpose — see the helper: a retry child
+		// inherits the root's chat_input_task_id and the onboarding kickoff
+		// stays bound to that root, so releasing it here would strip the context
+		// off a turn that is about to run.
 		if t.ChatSessionID.Valid && retried == nil {
-			// This turn is dead, so anything it owned has to move on. An adopted
-			// onboarding kickoff would otherwise stay bound to a task that will
-			// never run again: the next turn would reach Mika with no onboarding
-			// context and no record that she had already greeted the member, and
-			// she would introduce herself a second time (MUL-5827). The query
-			// hands it to the session's next queued turn — including one the
-			// member queued while THIS turn was still running, which adoption at
-			// send time could not have caught.
-			//
-			// Gated on retried == nil on purpose. A retry child inherits the
-			// root's chat_input_task_id, and the kickoff stays bound to that
-			// root, so the retry still reads it — releasing here would strip
-			// the context off a turn that is about to run.
-			if err := qtx.ReleaseOnboardingKickoffFromTask(ctx, chatInputOwnerID(t)); err != nil {
-				return fmt.Errorf("release onboarding kickoff: %w", err)
-			}
-			if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
-				ID:            dbid.NewV7(),
-				ChatSessionID: t.ChatSessionID,
-				Role:          "assistant",
-				Content:       redact.Text(errMsg),
-				TaskID:        t.ID,
-				FailureReason: pgtype.Text{String: failureReason, Valid: failureReason != ""},
-				ElapsedMs:     computeChatElapsedMs(t),
-			}); err != nil {
-				return fmt.Errorf("write chat failure outcome: %w", err)
+			if err := writeTerminalChatFailureOutcome(ctx, qtx, t, errMsg, failureReason); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -5134,56 +5582,12 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 		}
 	}
 
-	// A delegated task that has reached a terminal failure must hand control
-	// back to the task that delegated it. This runs only after the existing
-	// retry decision: retryable failures keep their current policy and remain
-	// silent while a child attempt is pending. The recovery signal is a
-	// platform-authored comment on the source task's issue, routed explicitly to
-	// that task's agent; recoverDelegatedTaskFailure coalesces it with an
-	// existing coordinator run and deduplicates by the failed task id.
+	// Everything a terminal failure owes its surfaces, skipped while an
+	// auto-retry is pending: the new attempt will surface its own outcome, and
+	// we don't want to spam the issue with "task timed out" messages on every
+	// daemon hiccup.
 	if retried == nil {
-		_, recoveryErr := s.recoverDelegatedTaskFailure(ctx, task)
-		if recoveryErr != nil {
-			slog.Warn("delegated task failure recovery failed",
-				"task_id", util.UUIDToString(task.ID),
-				"delegated_from_task_id", util.UUIDToString(task.DelegatedFromTaskID),
-				"error", recoveryErr,
-			)
-		}
-	}
-
-	// Skip the per-failure system comment when we'll immediately retry —
-	// the new task will surface its own status to the user, and we don't
-	// want to spam the issue with "task timed out" messages on every
-	// daemon hiccup. Delegated failures keep this existing failed-issue comment
-	// in addition to the coordinator recovery signal, preserving visibility on
-	// both sides of a cross-issue handoff.
-	if errMsg != "" && task.IssueID.Valid && retried == nil {
-		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
-	}
-
-	// Quick-create tasks: push a failure inbox notification to the
-	// requester so they can either retry or fall back to the advanced form
-	// without losing their original prompt. Skipped when an auto-retry is
-	// pending — the new attempt will write its own outcome.
-	if retried == nil {
-		if qc, ok := s.parseQuickCreateContext(task); ok {
-			attached, attachedErr := s.sourceContextAttachedByTask(ctx, task, qc)
-			switch {
-			case attachedErr != nil:
-				slog.Error("quick-create failure: source context outcome lookup failed",
-					"task_id", util.UUIDToString(task.ID), "error", attachedErr)
-				s.notifyQuickCreateUnconfirmed(ctx, task, qc)
-			case attached:
-				// The CLI create committed before the runtime reported its own
-				// failure. The attached context is authoritative proof that the
-				// target exists, so reconcile the normal success inbox rather than
-				// inviting a duplicate retry from a misleading failure row.
-				s.notifyQuickCreateCompleted(ctx, task, qc, nil)
-			default:
-				s.notifyQuickCreateFailed(ctx, task, qc, errMsg)
-			}
-		}
+		s.reportTerminalTaskFailure(ctx, task, errMsg)
 	}
 	// Reconcile agent status
 	s.ReconcileAgentStatus(ctx, task.AgentID)
@@ -5393,6 +5797,47 @@ func hasRunnableSuccessor(ctx context.Context, q *db.Queries, task db.AgentTaskQ
 	})
 }
 
+// retrySuppressedByRuntimeBudget reports whether an automatic retry of parent
+// must be suppressed because the agent's runtime cost budget is reached. A
+// reached budget stops automatic retries for the same reason it stops a manual
+// trigger: the next attempt spends money the workspace has said it will not
+// spend. The parent keeps its own failure reason — the retry simply never
+// happens — and checkRuntimeCostBudget files the per-period notice so the owner
+// learns why.
+//
+// Always runs on s.Queries, never a caller transaction: FailTask's refusal path
+// would roll a transaction-written notice back (see checkRuntimeCostBudget).
+// Both auto-retry entry points call this after resolving the parent's agent.
+//
+// A non-budget error suppresses the retry too. It is the same class as the
+// parent-load failure the caller already treats as "no retry this time", and
+// failing closed matches the check's own contract of never spending on an
+// unreadable budget. It never propagates: neither caller may fail the parent's
+// own transition over a retry-eligibility read.
+func (s *TaskService) retrySuppressedByRuntimeBudget(ctx context.Context, parent db.AgentTaskQueue, agent db.Agent) bool {
+	err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now())
+	if err == nil {
+		return false
+	}
+	var budgetErr *RuntimeBudgetExceededError
+	if errors.As(err, &budgetErr) {
+		slog.Info("task auto-retry suppressed: runtime cost budget reached",
+			"parent_task_id", util.UUIDToString(parent.ID),
+			"agent_id", util.UUIDToString(parent.AgentID),
+			"runtime_id", util.UUIDToString(agent.RuntimeID),
+			"scope", budgetErr.Scope,
+			"period", budgetErr.Period,
+		)
+		return true
+	}
+	slog.Warn("task auto-retry suppressed: runtime cost budget check failed",
+		"parent_task_id", util.UUIDToString(parent.ID),
+		"agent_id", util.UUIDToString(parent.AgentID),
+		"error", err,
+	)
+	return true
+}
+
 // MaybeRetryFailedTask spawns a fresh queued attempt for a recently-failed
 // task when the failure was infrastructure-shaped (daemon crash, runtime
 // went offline, dispatch/run timeout) and the task hasn't exhausted its
@@ -5437,16 +5882,23 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 
 	var runtimeMCPOverlay runtimeMCPOverlayData
 	agent, agentErr := s.Queries.GetAgent(ctx, parent.AgentID)
-	if agentErr != nil {
-		// Best-effort: failing to resolve the agent for the overlay is not
-		// retry-fatal. Log and continue — the daemon will reject the claim
-		// later if the agent is genuinely gone.
-		slog.Warn("task auto-retry: load agent for overlay failed",
+	switch {
+	case agentErr != nil:
+		// Fail closed, same as FailTask's in-transaction retry. The agent row
+		// resolves the runtime whose cost budget gates this retry, so without
+		// it the budget was never consulted and a retry would spend against a
+		// limit the server could not read. Returning no child and no error
+		// keeps this in the "no retry this time" class the sweeper already
+		// handles for an unreadable budget.
+		slog.Warn("task auto-retry suppressed: load agent failed",
 			"parent_task_id", util.UUIDToString(parent.ID),
 			"agent_id", util.UUIDToString(parent.AgentID),
 			"error", agentErr,
 		)
-	} else {
+		return nil, nil
+	case s.retrySuppressedByRuntimeBudget(ctx, parent, agent):
+		return nil, nil
+	default:
 		runtimeMCPOverlay = s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent)
 	}
 	// Mirror FailTask's in-tx backoff + effective-budget persistence: defer the
@@ -5508,6 +5960,16 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		return nil, nil
 	}
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// CreateRetryTask's WHERE clause excludes tasks whose issue was
+			// archived while the parent ran (fork status #39). This is
+			// suppression, not failure: the sweeper's only caller discards the
+			// error anyway, but return nil so future callers don't misread a
+			// suppressed retry as a real auto-retry failure.
+			slog.Info("task auto-retry suppressed: issue archived",
+				"task_id", util.UUIDToString(parent.ID))
+			return nil, nil
+		}
 		slog.Warn("task auto-retry failed",
 			"parent_task_id", util.UUIDToString(parent.ID),
 			"reason", reason,
@@ -6083,8 +6545,15 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 		if workspaceID == "" {
 			workspaceID = s.ResolveTaskWorkspaceID(ctx, t)
 		}
+		if workspaceID == "" {
+			continue
+		}
 
-		s.publishTaskFailedEvent(workspaceID, t, t.Error.String, failureReason, retryPending)
+		e := taskEvent(protocol.EventTaskFailed, workspaceID, t, taskFailedFields(t.Error.String, failureReason, retryPending))
+		if t.ChatSessionID.Valid {
+			e.RecipientUserID = s.chatTaskCreatorID(ctx, t)
+		}
+		s.Bus.Publish(e)
 
 		affectedAgents[util.UUIDToString(t.AgentID)] = t.AgentID
 	}
@@ -6175,6 +6644,12 @@ const (
 	delegatedFailureRecoveryCovered delegatedFailureRecoveryDispatchOutcome = iota
 	delegatedFailureRecoveryReplayed
 	delegatedFailureRecoveryExhausted
+	// delegatedFailureRecoveryBudgetBlocked: the coordinator's runtime cost
+	// budget is spent, so no recovery task was created. Distinct from Covered,
+	// which asserts another task already carries the obligation: nothing carries
+	// it here. The recovery comment stays pending in the outbox, so the next
+	// sweep after the period resets replays it.
+	delegatedFailureRecoveryBudgetBlocked
 )
 
 // DelegatedFailureRecoverySweepResult separates successful coordinator
@@ -6184,6 +6659,10 @@ type DelegatedFailureRecoverySweepResult struct {
 	Scanned   int
 	Replayed  int
 	Exhausted int
+	// Blocked counts entries a reached runtime cost budget refused this tick.
+	// They are neither replayed nor exhausted: the obligation is still pending
+	// and a later sweep retries it.
+	Blocked int
 }
 
 type delegatedFailureRecoveryTarget struct {
@@ -6617,6 +7096,30 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		if !ruleVersionID.Valid {
 			ruleVersionID = target.source.RuleVersionID
 		}
+		// A reached budget stops the coordinator run here, before the overlay
+		// build's network I/O. Nothing is enqueued and no error is returned: a
+		// refusal is a policy outcome, not an internal failure, and the sweeper
+		// must not log it as one. checkRuntimeCostBudget already filed the
+		// per-period notice, so the owner learns why the recovery stalled.
+		if err := s.checkRuntimeCostBudget(ctx, s.Queries, target.agent, time.Now()); err != nil {
+			var budgetErr *RuntimeBudgetExceededError
+			if errors.As(err, &budgetErr) {
+				// Info, not Warn: this fires once per pending recovery comment on
+				// every sweep tick (~5 min) for as long as the period lasts, and
+				// a refusal is a policy outcome rather than something an operator
+				// must act on. RecoverPendingDelegatedFailures logs the Blocked
+				// aggregate for the tick, and the owner already has the inbox
+				// notice.
+				slog.Info("delegated failure recovery task not created: runtime cost budget reached",
+					"failed_task_id", util.UUIDToString(target.failed.ID),
+					"source_task_id", util.UUIDToString(target.source.ID),
+					"coordinator_agent_id", util.UUIDToString(target.agent.ID),
+					"recovery_comment_id", util.UUIDToString(target.comment.ID),
+				)
+				return delegatedFailureRecoveryBudgetBlocked, nil
+			}
+			return delegatedFailureRecoveryCovered, fmt.Errorf("check recovery runtime cost budget: %w", err)
+		}
 		overlay := s.buildRuntimeMCPOverlay(ctx, originator, target.agent)
 		task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 			ID:                   dbid.NewV7(),
@@ -6717,6 +7220,8 @@ func (s *TaskService) RecoverPendingDelegatedFailures(ctx context.Context, maxPe
 			result.Replayed++
 		case delegatedFailureRecoveryExhausted:
 			result.Exhausted++
+		case delegatedFailureRecoveryBudgetBlocked:
+			result.Blocked++
 		}
 	}
 	return result, errors.Join(errs...)
@@ -6770,13 +7275,17 @@ func (s *TaskService) runInTx(ctx context.Context, fn func(*db.Queries) error) e
 }
 
 // ReportProgress broadcasts a progress update via the event bus.
-func (s *TaskService) ReportProgress(ctx context.Context, taskID string, workspaceID string, summary string, step, total int) {
+func (s *TaskService) ReportProgress(_ context.Context, task db.AgentTaskQueue, workspaceID, recipientUserID, summary string, step, total int) {
+	taskID := util.UUIDToString(task.ID)
 	s.Bus.Publish(events.Event{
-		Type:        protocol.EventTaskProgress,
-		WorkspaceID: workspaceID,
-		ActorType:   "system",
-		ActorID:     "",
-		TaskID:      taskID,
+		Type:            protocol.EventTaskProgress,
+		WorkspaceID:     workspaceID,
+		ActorType:       "system",
+		ActorID:         "",
+		TaskID:          taskID,
+		AgentID:         util.UUIDToString(task.AgentID),
+		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		RecipientUserID: recipientUserID,
 		Payload: protocol.TaskProgressPayload{
 			TaskID:  taskID,
 			Summary: summary,
@@ -6881,12 +7390,12 @@ func (s *TaskService) skillsWithFiles(ctx context.Context, skills []db.Skill) ([
 // It fails closed on a workspace-skill read error for the reason in
 // LoadAgentSkills: a bundle set built from a partial read is indistinguishable
 // from a correct one.
-func (s *TaskService) LoadAgentSkillBundles(ctx context.Context, agentID pgtype.UUID, agentSystemKey string, legacyRedirects bool) ([]AgentSkillData, []AgentSkillRefData, error) {
+func (s *TaskService) LoadAgentSkillBundles(ctx context.Context, agentID pgtype.UUID, agentSystemKey string) ([]AgentSkillData, []AgentSkillRefData, error) {
 	skills, err := s.LoadAgentSkills(ctx, agentID)
 	if err != nil {
 		return nil, nil, err
 	}
-	skills = append(skills, s.BuiltinSkills(agentSystemKey, legacyRedirects)...)
+	skills = append(skills, s.BuiltinSkills(agentSystemKey)...)
 	bundles, refs := BuildAgentSkillBundles(skills)
 	return bundles, refs, nil
 }
@@ -7213,11 +7722,16 @@ func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTa
 		return
 	}
 	s.Bus.Publish(events.Event{
-		Type:        protocol.EventTaskDispatch,
-		WorkspaceID: workspaceID,
-		ActorType:   "system",
-		ActorID:     "",
-		Payload:     payload,
+		Type:            protocol.EventTaskDispatch,
+		WorkspaceID:     workspaceID,
+		ActorType:       "system",
+		ActorID:         "",
+		TaskID:          util.UUIDToString(task.ID),
+		AgentID:         util.UUIDToString(task.AgentID),
+		IssueID:         util.UUIDToString(task.IssueID),
+		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		RecipientUserID: s.chatTaskCreatorID(ctx, task),
+		Payload:         payload,
 	})
 }
 
@@ -7238,6 +7752,8 @@ func taskEvent(eventType, workspaceID string, task db.AgentTaskQueue, extra ...m
 		ActorType:   "system",
 		ActorID:     "",
 		TaskID:      util.UUIDToString(task.ID),
+		AgentID:     util.UUIDToString(task.AgentID),
+		IssueID:     util.UUIDToString(task.IssueID),
 		Payload:     payload,
 	}
 	if task.ChatSessionID.Valid {
@@ -7253,16 +7769,16 @@ func taskEvent(eventType, workspaceID string, task db.AgentTaskQueue, extra ...m
 	return e
 }
 
-func (s *TaskService) publishTaskEvent(eventType, workspaceID string, task db.AgentTaskQueue, extra ...map[string]any) {
+func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, task db.AgentTaskQueue, extra ...map[string]any) {
+	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
 	if workspaceID == "" {
 		return
 	}
-	s.Bus.Publish(taskEvent(eventType, workspaceID, task, extra...))
-}
-
-func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, task db.AgentTaskQueue, extra ...map[string]any) {
-	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
-	s.publishTaskEvent(eventType, workspaceID, task, extra...)
+	e := taskEvent(eventType, workspaceID, task, extra...)
+	if task.ChatSessionID.Valid {
+		e.RecipientUserID = s.chatTaskCreatorID(ctx, task)
+	}
+	s.Bus.Publish(e)
 }
 
 // taskFailedFields adds the terminal failure context required by channel
@@ -7281,13 +7797,8 @@ func taskFailedFields(errMsg, failureReason string, retryPending bool) map[strin
 	return fields
 }
 
-func (s *TaskService) publishTaskFailedEvent(workspaceID string, task db.AgentTaskQueue, errMsg, failureReason string, retryPending bool) {
-	s.publishTaskEvent(protocol.EventTaskFailed, workspaceID, task, taskFailedFields(errMsg, failureReason, retryPending))
-}
-
 func (s *TaskService) broadcastTaskFailedEvent(ctx context.Context, task db.AgentTaskQueue, errMsg, failureReason string, retryPending bool) {
-	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
-	s.publishTaskFailedEvent(workspaceID, task, errMsg, failureReason, retryPending)
+	s.broadcastTaskEvent(ctx, protocol.EventTaskFailed, task, taskFailedFields(errMsg, failureReason, retryPending))
 }
 
 // ResolveTaskWorkspaceID determines the workspace ID for a task, best-effort.
@@ -7324,6 +7835,15 @@ func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentT
 // keeps a task carrying several links working during a partial outage while
 // still refusing to call an unknown state "not found".
 func (s *TaskService) ResolveTaskWorkspaceIDChecked(ctx context.Context, task db.AgentTaskQueue) (string, error) {
+	workspaceID, _, err := s.ResolveTaskRealtimeScope(ctx, task)
+	return workspaceID, err
+}
+
+// ResolveTaskRealtimeScope is ResolveTaskWorkspaceIDChecked plus, for a direct
+// Chat task, the trusted session creator used by private realtime routing
+// (fork #95). The recipient is empty for every other task kind. It shares the
+// same walk, so a daemon request resolves both from one chat-session read.
+func (s *TaskService) ResolveTaskRealtimeScope(ctx context.Context, task db.AgentTaskQueue) (string, string, error) {
 	// isNotFound is the "genuinely absent" signal; every other error means the
 	// lookup itself did not complete. pgx.ErrNoRows is the only error the
 	// queries below use to say "this row does not exist".
@@ -7337,14 +7857,14 @@ func (s *TaskService) ResolveTaskWorkspaceIDChecked(ctx context.Context, task db
 	if task.IssueID.Valid {
 		issue, err := s.Queries.GetIssue(ctx, task.IssueID)
 		if err == nil {
-			return util.UUIDToString(issue.WorkspaceID), nil
+			return util.UUIDToString(issue.WorkspaceID), "", nil
 		}
 		note(err)
 	}
 	if task.ChatSessionID.Valid {
 		cs, err := s.Queries.GetChatSession(ctx, task.ChatSessionID)
 		if err == nil {
-			return util.UUIDToString(cs.WorkspaceID), nil
+			return util.UUIDToString(cs.WorkspaceID), util.UUIDToString(cs.CreatorID), nil
 		}
 		note(err)
 	}
@@ -7353,7 +7873,7 @@ func (s *TaskService) ResolveTaskWorkspaceIDChecked(ctx context.Context, task db
 		if err == nil {
 			ap, apErr := s.Queries.GetAutopilot(ctx, run.AutopilotID)
 			if apErr == nil {
-				return util.UUIDToString(ap.WorkspaceID), nil
+				return util.UUIDToString(ap.WorkspaceID), "", nil
 			}
 			note(apErr)
 		}
@@ -7365,17 +7885,18 @@ func (s *TaskService) ResolveTaskWorkspaceIDChecked(ctx context.Context, task db
 	// for the daemon) and silently dropped task:dispatch / task:completed
 	// broadcasts, which is why quick-create tasks appeared stuck queued.
 	if qc, ok := s.parseQuickCreateContext(task); ok {
-		return qc.WorkspaceID, nil
+		return qc.WorkspaceID, "", nil
 	}
 	if lookupErr != nil {
-		return "", fmt.Errorf("resolve task workspace: %w", lookupErr)
+		return "", "", fmt.Errorf("resolve task workspace: %w", lookupErr)
 	}
-	return "", nil
+	return "", "", nil
 }
 
 func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQueue, msg *db.ChatMessage, quickActionsPending bool) {
 	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
-	if workspaceID == "" {
+	recipientUserID := s.chatTaskCreatorID(ctx, task)
+	if workspaceID == "" || recipientUserID == "" {
 		return
 	}
 	payload := protocol.ChatDonePayload{
@@ -7398,13 +7919,26 @@ func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQu
 		}
 	}
 	s.Bus.Publish(events.Event{
-		Type:          protocol.EventChatDone,
-		WorkspaceID:   workspaceID,
-		ActorType:     "system",
-		ActorID:       "",
-		ChatSessionID: util.UUIDToString(task.ChatSessionID),
-		Payload:       payload,
+		Type:            protocol.EventChatDone,
+		WorkspaceID:     workspaceID,
+		ActorType:       "system",
+		ActorID:         "",
+		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
+		AgentID:         util.UUIDToString(task.AgentID),
+		RecipientUserID: recipientUserID,
+		Payload:         payload,
 	})
+}
+
+func (s *TaskService) chatTaskCreatorID(ctx context.Context, task db.AgentTaskQueue) string {
+	if !task.ChatSessionID.Valid {
+		return ""
+	}
+	session, err := s.Queries.GetChatSession(ctx, task.ChatSessionID)
+	if err != nil {
+		return ""
+	}
+	return util.UUIDToString(session.CreatorID)
 }
 
 // broadcastIssueUpdated publishes the issue:updated event the frontend's
@@ -7493,6 +8027,13 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 			rootComment = &root
 		}
 	}
+	// Canonicalize agent/member/squad mention labels so the visible label
+	// matches the UUID's resolved entity. The HTTP-handler CreateComment
+	// path runs the same pass; agent task result / failure comments must
+	// share it or LLM-authored output containing
+	// `[@A](mention://agent/<B-uuid>)` would persist the same label/UUID
+	// mismatch this defense exists to prevent.
+	content = mention.CanonicalizeMentions(ctx, s.Queries, issue.WorkspaceID, content)
 	created, err := s.Queries.CreateComment(ctx, db.CreateCommentParams{
 		ID:           dbid.NewV7(),
 		IssueID:      issueID,
@@ -7907,7 +8448,7 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 		slog.Error("quick-create completion: inbox write failed", "task_id", util.UUIDToString(task.ID), "error", err)
 		return
 	}
-	s.publishQuickCreateInbox(item, qc.WorkspaceID, util.UUIDToString(task.AgentID), issue.Status)
+	s.publishQuickCreateInbox(ctx, item, qc.WorkspaceID, util.UUIDToString(task.AgentID), issue.Status)
 }
 
 // Inbox types for the two non-success quick-create outcomes. They are distinct
@@ -8008,16 +8549,25 @@ func (s *TaskService) writeQuickCreateOutcomeInbox(ctx context.Context, task db.
 		slog.Error("quick-create failure: inbox write failed", "task_id", util.UUIDToString(task.ID), "error", err)
 		return
 	}
-	s.publishQuickCreateInbox(item, qc.WorkspaceID, util.UUIDToString(task.AgentID), "")
+	s.publishQuickCreateInbox(ctx, item, qc.WorkspaceID, util.UUIDToString(task.AgentID), "")
 }
 
 // publishQuickCreateInbox emits the WS event so the requester's inbox list
 // updates immediately. Mirrors the payload shape used by the other inbox
 // listeners (notification_listeners.go).
-func (s *TaskService) publishQuickCreateInbox(item db.InboxItem, workspaceID, agentID, issueStatus string) {
+func (s *TaskService) publishQuickCreateInbox(ctx context.Context, item db.InboxItem, workspaceID, agentID, issueStatus string) {
+	workspaceSlug := ""
+	if s.Queries != nil {
+		if ws, err := s.Queries.GetWorkspace(ctx, item.WorkspaceID); err == nil {
+			workspaceSlug = ws.Slug
+		} else {
+			slog.Warn("quick-create inbox: workspace slug lookup failed", "workspace_id", workspaceID, "error", err)
+		}
+	}
 	resp := map[string]any{
 		"id":             util.UUIDToString(item.ID),
 		"workspace_id":   util.UUIDToString(item.WorkspaceID),
+		"workspace_slug": workspaceSlug,
 		"recipient_type": item.RecipientType,
 		"recipient_id":   util.UUIDToString(item.RecipientID),
 		"type":           item.Type,

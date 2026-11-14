@@ -20,6 +20,7 @@ import { commonIssueFields } from "@multica/core/issues/batch";
 import { useBatchUpdateIssues, useBatchDeleteIssues } from "@multica/core/issues/mutations";
 import { useModalStore } from "@multica/core/modals";
 import { StatusPicker, PriorityPicker, AssigneePicker } from "./pickers";
+import { requiresIssueStatusConfirmation } from "../actions/status-confirmation";
 import { useT } from "../../i18n";
 import { cn } from "@multica/ui/lib/utils";
 import {
@@ -110,17 +111,23 @@ export function BatchActionToolbar({
     }
   };
 
-  // Batch status changes apply directly — no run-confirm modal (MUL-4155).
-  // done/cancelled can never start a run, and a backlog → active promotion now
-  // starts its run the same way a single-issue status change or the CLI does,
-  // without an extra confirmation step (product decision on MUL-4155). The
-  // status change was previously routed through the pre-trigger modal, which for
-  // the common done/cancelled case only rendered a misleading "现在开始处理？ →
-  // 不会开始处理" box. Agent/squad assignment still confirms via
-  // handleBatchAssignee — that is the only batch action that should preview a
-  // run fan-out.
+  // Status changes mirror the single-issue path (use-issue-actions): only the
+  // destructive cancelled/archive transitions prompt (issue-status-confirm);
+  // every other status applies directly, matching upstream's MUL-4155 removal
+  // of the run-confirm modal for status changes (done/cancelled can never
+  // start a run). Run previews are reserved for agent/squad assignment
+  // (handleBatchAssignee), matching single-issue, so a plain status move never
+  // opens the run-confirm modal.
   const handleBatchStatus = (updates: Partial<UpdateIssueRequest>) => {
     if (!updates.status) return;
+    if (requiresIssueStatusConfirmation(updates.status)) {
+      openModal("issue-status-confirm", {
+        status: updates.status,
+        count,
+        onConfirm: () => handleBatchUpdate(updates),
+      });
+      return;
+    }
     void handleBatchUpdate(updates);
   };
 

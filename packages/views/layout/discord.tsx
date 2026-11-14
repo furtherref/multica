@@ -1,5 +1,13 @@
-/** Community invite link. Shared by the help launcher and the sidebar card. */
-export const DISCORD_URL = "https://discord.gg/W8gYBn226t";
+/**
+ * Fork-owned community invite link. Set this to the fork's own Discord invite to
+ * light up every Discord entry point (help launcher, sidebar card, …). While it
+ * is empty the fork ships no Discord affordances — we never point users at the
+ * upstream community. Shared by the help launcher and the sidebar card.
+ */
+export const DISCORD_URL = "";
+
+/** True once a fork-owned Discord invite is configured above. */
+export const DISCORD_ENABLED = DISCORD_URL.length > 0;
 
 // lucide-react ships no Discord brand glyph, so render the official mark
 // inline. Sized via className to match the surrounding icons.

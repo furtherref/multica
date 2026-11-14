@@ -435,6 +435,50 @@ func TestS3StorageKeyFromURL_LegacyBucketOnlyHostStillRoundTrips(t *testing.T) {
 	}
 }
 
+func TestS3StorageCdnDomainUsesPublicEndpointHost(t *testing.T) {
+	s := &S3Storage{
+		bucket:      "multica",
+		endpointURL: "https://oss.example.com",
+	}
+
+	if got := s.CdnDomain(); got != "oss.example.com" {
+		t.Fatalf("CdnDomain() = %q, want public endpoint host", got)
+	}
+}
+
+func TestS3StorageCdnDomainPrefersExplicitCdnDomain(t *testing.T) {
+	s := &S3Storage{
+		bucket:      "multica",
+		cdnDomain:   "cdn.example.com",
+		endpointURL: "https://oss.example.com",
+	}
+
+	if got := s.CdnDomain(); got != "cdn.example.com" {
+		t.Fatalf("CdnDomain() = %q, want explicit CDN domain", got)
+	}
+}
+
+func TestS3StorageCdnDomainDoesNotExposePrivateEndpointHost(t *testing.T) {
+	cases := []string{
+		"http://rustfs:9000",
+		"https://localhost:9000",
+		"https://10.0.0.8:9000",
+		"https://minio.internal",
+	}
+
+	for _, endpointURL := range cases {
+		t.Run(endpointURL, func(t *testing.T) {
+			s := &S3Storage{
+				bucket:      "multica",
+				endpointURL: endpointURL,
+			}
+			if got := s.CdnDomain(); got != "" {
+				t.Fatalf("CdnDomain() = %q, want empty for private endpoint", got)
+			}
+		})
+	}
+}
+
 func TestLooksLikeS3Hostname(t *testing.T) {
 	cases := []struct {
 		bucket string

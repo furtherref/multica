@@ -1843,6 +1843,14 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 			)
 		}
 
+		// Flush any buffered turn-level diff so abnormal exit paths (timeout,
+		// cancellation, abort) still record the latest snapshot. Run AFTER
+		// readerDone so any turn/diff/updated still in the stdout pipe at the
+		// moment the wait loop exited is buffered first. Normal turn endings
+		// already flushed during turn/completed, thread/status idle, or
+		// final_answer; a second call here is a safe no-op for them.
+		c.flushTurnDiff(c.turnID)
+
 		if waitLatency, firstTurnID, outcome, classification, ok := firstItemWait.snapshot(); ok {
 			if waitLatency < 0 {
 				waitLatency = 0
@@ -2020,6 +2028,9 @@ func (c *codexClient) startOrResumeThread(ctx context.Context, opts ExecOptions,
 			"cwd":                   opts.Cwd,
 			"model":                 nilIfEmpty(opts.Model),
 			"developerInstructions": nil,
+			// Only omit history from the response, not the resumed model context.
+			// We need the thread ID, not an unbounded single-line turns payload.
+			"excludeTurns": true,
 		}
 		// Explicit override of the persisted reasoning effort: without
 		// this, a Codex resume silently reuses whatever level the prior
@@ -2241,7 +2252,10 @@ func codexFirstTurnNoProgressTimeout(semanticInactivityTimeout, configured time.
 }
 
 func isCodexFirstTurnProgressActivity(activity string) bool {
-	return activity != "" && activity != "status:running" && activity != "error:retry"
+	return activity != "" &&
+		activity != "status:running" &&
+		activity != "status:reconnecting" &&
+		activity != "error:retry"
 }
 
 func buildCodexTimeoutDiagnosticError(diag codexTimeoutDiagnostic, stderrTail string) string {
@@ -2438,6 +2452,10 @@ type codexClient struct {
 
 	turnErrorMu sync.Mutex
 	turnError   string // captured from turn/completed status=failed or terminal error notifications
+
+	fileChangeDeltaMu sync.Mutex
+	fileChangeDeltas  map[string]string
+	lastTurnDiffs     map[string]string
 }
 
 type codexAgentMessageStream struct {
@@ -3024,8 +3042,10 @@ func (c *codexClient) handleNotification(raw map[string]json.RawMessage) {
 	// Raw v2 notifications
 	if c.notificationProtocol != "legacy" {
 		if c.notificationProtocol == "unknown" &&
-			(method == "turn/started" || method == "turn/completed" ||
-				method == "thread/started" || method == "error" || strings.HasPrefix(method, "item/")) {
+			(strings.HasPrefix(method, "turn/") ||
+				strings.HasPrefix(method, "thread/") ||
+				strings.HasPrefix(method, "item/") ||
+				method == "error") {
 			c.notificationProtocol = "raw"
 		}
 
@@ -3431,6 +3451,13 @@ func (c *codexClient) handleEvent(msg map[string]any) {
 		callID, _ := msg["call_id"].(string)
 		stdout, _ := msg["stdout"].(string)
 		stderr, _ := msg["stderr"].(string)
+		if strings.TrimSpace(stdout) == "" {
+			// Older codex builds put the patch body on `output` rather than
+			// `stdout`; keep it so the result is not reduced to a headline.
+			if legacy, ok := msg["output"].(string); ok {
+				stdout = legacy
+			}
+		}
 		status, _ := msg["status"].(string)
 		if status == "" {
 			// `status` postdates `success`; fall back so older builds still
@@ -3491,6 +3518,17 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 			c.onMessage(Message{Type: MessageStatus, Status: "running", SessionID: c.getThreadID()})
 		}
 
+	case "turn/diff/updated":
+		if c.onSemanticActivity != nil {
+			c.onSemanticActivity("turn/diff/updated")
+		}
+		turnID, _ := params["turnId"].(string)
+		if turnID == "" {
+			turnID = c.turnID
+		}
+		diff, _ := params["diff"].(string)
+		c.emitTurnDiffUpdated(turnID, diff)
+
 	case "turn/completed":
 		turnID := extractNestedString(params, "turn", "id")
 		status := extractNestedString(params, "turn", "status")
@@ -3523,6 +3561,9 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 		// item/completed snapshot. Flush the aggregate of every complete delta
 		// notification before publishing the terminal boundary.
 		c.flushAgentMessageDeltas()
+		// Flush any buffered turn-level diff before signaling done so the
+		// final aggregate diff lands on the timeline as a single entry.
+		c.flushTurnDiff(turnID)
 
 		if c.onTurnDone != nil {
 			c.onTurnDone(aborted)
@@ -3546,7 +3587,16 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 					c.onSemanticActivity("error:terminal")
 				}
 			}
-			if !willRetry {
+			if willRetry {
+				// Surface the reconnect attempt as a transient activity so the
+				// UI can show "Reconnecting…" instead of a frozen last-stage
+				// label during the upstream blip. Broadcast in place by the
+				// daemon (never persisted to the transcript) and superseded by
+				// the next real message.
+				if c.onMessage != nil {
+					c.onMessage(Message{Type: MessageStatus, Status: "reconnecting"})
+				}
+			} else {
 				c.setTurnError(errMsg)
 			}
 		}
@@ -3745,6 +3795,7 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 		}
 
 	case method == "item/started" && itemType == "fileChange":
+		c.clearFileChangeDelta(itemID)
 		if c.onMessage != nil {
 			c.onMessage(Message{
 				Type:   MessageToolUse,
@@ -3754,15 +3805,29 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 			})
 		}
 
+	case method == "item/fileChange/outputDelta" && itemType == "fileChange":
+		delta, _ := params["delta"].(string)
+		c.appendFileChangeDelta(itemID, delta)
+
 	case method == "item/completed" && itemType == "fileChange":
 		status, _ := item["status"].(string)
 		changes := codexNormalizeRawChanges(item["changes"])
+		// The streamed fileChange outputDelta carries the actual patch body;
+		// keep it as the detail underneath upstream's status headline.
+		output := c.popFileChangeDelta(itemID)
+		if output == "" {
+			if aggregatedOutput, ok := item["aggregatedOutput"].(string); ok {
+				output = aggregatedOutput
+			} else if inlineOutput, ok := item["output"].(string); ok {
+				output = inlineOutput
+			}
+		}
 		if c.onMessage != nil {
 			c.onMessage(Message{
 				Type:   MessageToolResult,
 				Tool:   "patch_apply",
 				CallID: itemID,
-				Output: codexPatchResultOutput(codexNormalizePatchStatus(status), changes, "", ""),
+				Output: codexPatchResultOutput(codexNormalizePatchStatus(status), changes, output, ""),
 			})
 		}
 
@@ -3793,9 +3858,21 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 		if text != "" && c.onAgentMessage != nil {
 			c.onAgentMessage(text)
 		}
-		c.completeAgentMessage(itemID, text)
 		phase, _ := item["phase"].(string)
-		if phase == "final_answer" {
+		isFinalAnswer := phase == "final_answer"
+		if isFinalAnswer {
+			// Flush the buffered diff before completing the final-answer text:
+			// turn/diff/updated arrived earlier, so the transcript must show
+			// the patch_apply row above the final answer. The coalesced deltas
+			// go out first so an already-started answer is not split around
+			// the diff. The turn itself stays open until turn/completed.
+			if stream := c.agentMessageStreams[itemID]; stream != nil {
+				c.flushAgentMessageStream(stream)
+			}
+			c.flushTurnDiff(c.turnID)
+		}
+		c.completeAgentMessage(itemID, text)
+		if isFinalAnswer {
 			// The gate exists so a subagent or a replayed history turn cannot
 			// end OUR turn early, and the thread guard at the top of this
 			// function already keeps foreign threads out. A final answer that
@@ -3874,6 +3951,103 @@ func describeCodexItemProgressActivity(method, itemType, itemID string) string {
 		return fmt.Sprintf("%s:%s", method, itemType)
 	}
 	return fmt.Sprintf("%s:%s:%s", method, itemType, itemID)
+}
+
+func (c *codexClient) clearFileChangeDelta(itemID string) {
+	if itemID == "" {
+		return
+	}
+	c.fileChangeDeltaMu.Lock()
+	defer c.fileChangeDeltaMu.Unlock()
+	if c.fileChangeDeltas == nil {
+		c.fileChangeDeltas = make(map[string]string)
+		return
+	}
+	delete(c.fileChangeDeltas, itemID)
+}
+
+func (c *codexClient) appendFileChangeDelta(itemID, delta string) {
+	if itemID == "" || delta == "" {
+		return
+	}
+	c.fileChangeDeltaMu.Lock()
+	defer c.fileChangeDeltaMu.Unlock()
+	if c.fileChangeDeltas == nil {
+		c.fileChangeDeltas = make(map[string]string)
+	}
+	c.fileChangeDeltas[itemID] += delta
+}
+
+func (c *codexClient) popFileChangeDelta(itemID string) string {
+	if itemID == "" {
+		return ""
+	}
+	c.fileChangeDeltaMu.Lock()
+	defer c.fileChangeDeltaMu.Unlock()
+	if c.fileChangeDeltas == nil {
+		return ""
+	}
+	output := c.fileChangeDeltas[itemID]
+	delete(c.fileChangeDeltas, itemID)
+	return output
+}
+
+// emitTurnDiffUpdated buffers the latest aggregate diff for a turn. The diff
+// is held until the turn finishes (via turn/completed, thread/status idle,
+// final_answer agentMessage, or an abnormal exit such as timeout/cancel) and
+// is emitted by flushTurnDiff. Codex can send several turn/diff/updated
+// notifications per turn as the agent edits and revises files; appending
+// each snapshot to the append-only task timeline would leave stale rows for
+// edit-then-revert sequences. Buffering emits only the final state.
+func (c *codexClient) emitTurnDiffUpdated(turnID, diff string) {
+	key := turnID
+	if key == "" {
+		key = "_unknown"
+	}
+
+	c.fileChangeDeltaMu.Lock()
+	if c.lastTurnDiffs == nil {
+		c.lastTurnDiffs = make(map[string]string)
+	}
+	c.lastTurnDiffs[key] = diff
+	c.fileChangeDeltaMu.Unlock()
+}
+
+// flushTurnDiff emits the buffered diff for a completed turn, if any. Empty
+// diffs (turns that end with no net file changes) are dropped so no stale
+// patch_apply row appears on the timeline.
+func (c *codexClient) flushTurnDiff(turnID string) {
+	key := turnID
+	if key == "" {
+		key = "_unknown"
+	}
+
+	c.fileChangeDeltaMu.Lock()
+	diff, ok := c.lastTurnDiffs[key]
+	if ok {
+		delete(c.lastTurnDiffs, key)
+	}
+	c.fileChangeDeltaMu.Unlock()
+
+	if !ok || diff == "" {
+		return
+	}
+
+	if c.onMessage != nil {
+		c.onMessage(Message{
+			Type:   MessageToolResult,
+			Tool:   "patch_apply",
+			CallID: codexTurnDiffCallID(turnID),
+			Output: diff,
+		})
+	}
+}
+
+func codexTurnDiffCallID(turnID string) string {
+	if turnID == "" {
+		return "turn-diff"
+	}
+	return turnID + ":diff"
 }
 
 // extractUsageFromMap extracts token usage from a map that may contain

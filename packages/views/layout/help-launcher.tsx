@@ -24,13 +24,13 @@ import { DISCORD_URL, DiscordIcon } from "./discord";
 import { useT } from "../i18n";
 import { docsLocalePrefix } from "../common/docs-locale";
 
-const DOCS_URL = "https://multica.ai/docs";
-const CHANGELOG_URL = "https://multica.ai/changelog";
+const DOCS_URL = "https://multica.furtherref.com/docs";
+const CHANGELOG_URL = "https://multica.furtherref.com/changelog";
 // Absolute, including on self-hosted deployments: the installers we ship are
 // the same binaries either way, and the desktop client can point at a
 // self-hosted backend once installed. A self-host-relative /download would
 // only serve a copy of this page that still has to reach our release assets.
-const DOWNLOAD_URL = "https://multica.ai/download";
+const DOWNLOAD_URL = "https://multica.furtherref.com/download";
 
 export function HelpLauncher() {
   const { t, i18n } = useT("layout");
@@ -104,15 +104,17 @@ export function HelpLauncher() {
           {t(($) => $.help.changelog)}
           <ArrowUpRight className="size-3 translate-y-px text-faint-foreground" />
         </DropdownMenuItem>
-        <DropdownMenuItem
-          render={
-            <a href={DISCORD_URL} target="_blank" rel="noopener noreferrer" />
-          }
-        >
-          <DiscordIcon className="h-3.5 w-3.5" />
-          {t(($) => $.help.discord)}
-          <ArrowUpRight className="size-3 translate-y-px text-faint-foreground" />
-        </DropdownMenuItem>
+        {DISCORD_URL && (
+          <DropdownMenuItem
+            render={
+              <a href={DISCORD_URL} target="_blank" rel="noopener noreferrer" />
+            }
+          >
+            <DiscordIcon className="h-3.5 w-3.5" />
+            {t(($) => $.help.discord)}
+            <ArrowUpRight className="size-3 translate-y-px text-faint-foreground" />
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem
           onClick={() => useModalStore.getState().open("feedback")}
         >

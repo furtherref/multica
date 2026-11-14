@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -37,9 +39,15 @@ type copilotEventState struct {
 	// previous turn's complete text.
 	pendingDelta strings.Builder
 	sessionID    string
-	activeModel  string
-	finalStatus  string
-	finalError   string
+	// activeModel is the daemon's current best guess at which model produced
+	// the events seen so far: opts.Model, or copilotPlaceholderModel until
+	// session.start.selectedModel, assistant.message.model,
+	// assistant.usage.model, or tool.execution_complete.model reveals the
+	// real one. setModel keeps it current and re-keys any usage already
+	// recorded under the placeholder onto the newly revealed model.
+	activeModel string
+	finalStatus string
+	finalError  string
 
 	// Token usage arrives on up to three different events, so each source is
 	// accumulated separately and resolved once at the end by resolveUsage.
@@ -49,13 +57,20 @@ type copilotEventState struct {
 	//	assistant.message  outputTokens only — legacy, older CLIs
 	//
 	// They must never be summed together: all three describe the same tokens.
-	callUsage     map[string]TokenUsage
-	msgUsage      map[string]TokenUsage
-	shutdownUsage map[string]TokenUsage
+	callUsage        map[string]TokenUsage
+	msgUsage         map[string]TokenUsage
+	shutdownUsage    map[string]TokenUsage
+	sessionFileUsage map[string]TokenUsage
 	// resumed marks a run that continued an existing Copilot session, which is
 	// what disqualifies the session.shutdown totals — see resolveUsage.
 	resumed bool
 }
+
+// copilotPlaceholderModel seeds activeModel when opts.Model is empty and no
+// event has yet revealed the real model. No price table maps this literal, so
+// setModel re-keys any usage recorded under it once the real model is known
+// instead of leaving it permanently unpriceable.
+const copilotPlaceholderModel = "copilot"
 
 // resolveUsage picks the single best usage source this run produced, most
 // complete first.
@@ -78,6 +93,9 @@ func (st *copilotEventState) resolveUsage() map[string]TokenUsage {
 	}
 	if hasTokens(st.callUsage) {
 		return st.callUsage
+	}
+	if hasTokens(st.sessionFileUsage) {
+		return st.sessionFileUsage
 	}
 	if hasTokens(st.msgUsage) {
 		return st.msgUsage
@@ -139,14 +157,52 @@ func (st *copilotEventState) finalOutput() string {
 }
 
 func newCopilotEventState(seedModel string, resumed bool) *copilotEventState {
-	return &copilotEventState{
-		activeModel:   seedModel,
-		finalStatus:   "completed",
-		callUsage:     make(map[string]TokenUsage),
-		msgUsage:      make(map[string]TokenUsage),
-		shutdownUsage: make(map[string]TokenUsage),
-		resumed:       resumed,
+	if seedModel == "" {
+		seedModel = copilotPlaceholderModel
 	}
+	return &copilotEventState{
+		activeModel:      seedModel,
+		finalStatus:      "completed",
+		callUsage:        make(map[string]TokenUsage),
+		msgUsage:         make(map[string]TokenUsage),
+		shutdownUsage:    make(map[string]TokenUsage),
+		sessionFileUsage: make(map[string]TokenUsage),
+		resumed:          resumed,
+	}
+}
+
+// setModel records a model id observed on the event stream. A Copilot -p run
+// uses a single model for its whole session, so once the placeholder resolves
+// to a real id, any usage already recorded under it is re-keyed onto that same
+// real model instead of staying stuck under a literal no price table maps.
+func (st *copilotEventState) setModel(model string) {
+	if model == "" || model == st.activeModel {
+		return
+	}
+	previous := st.activeModel
+	st.activeModel = model
+	if previous != copilotPlaceholderModel {
+		return
+	}
+	rekeyUsage(st.callUsage, previous, model)
+	rekeyUsage(st.msgUsage, previous, model)
+	rekeyUsage(st.shutdownUsage, previous, model)
+}
+
+// rekeyUsage moves the usage recorded under `from` onto `to`, merging with
+// whatever `to` already holds. No-op if `from` has no entry.
+func rekeyUsage(usage map[string]TokenUsage, from, to string) {
+	u, ok := usage[from]
+	if !ok {
+		return
+	}
+	delete(usage, from)
+	merged := usage[to]
+	merged.InputTokens += u.InputTokens
+	merged.OutputTokens += u.OutputTokens
+	merged.CacheReadTokens += u.CacheReadTokens
+	merged.CacheWriteTokens += u.CacheWriteTokens
+	usage[to] = merged
 }
 
 // handleCopilotEvent processes a single parsed copilotEvent, updates state,
@@ -160,7 +216,7 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 		var ss copilotSessionStart
 		if err := json.Unmarshal(evt.Data, &ss); err == nil {
 			if ss.SelectedModel != "" {
-				st.activeModel = ss.SelectedModel
+				st.setModel(ss.SelectedModel)
 			}
 			// Capture sessionId from session.start as well: the synthetic
 			// "result" event may never arrive (timeout, cancel, crash, or a
@@ -199,15 +255,16 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 		// leaving its deltas buffered would let them be stitched onto the NEXT
 		// turn's partial text if the process then died mid-stream.
 		st.pendingDelta.Reset()
-		// The message names the model that produced it. Without this the first
-		// turn's tokens land under the seed model — the literal string
-		// "copilot" when no model was configured — which no price table maps,
-		// so a run that DID report tokens still estimated $0.00.
-		if msg.Model != "" {
-			st.activeModel = msg.Model
-		}
 		if msg.ReasoningText != "" {
 			msgs = append(msgs, Message{Type: MessageThinking, Content: msg.ReasoningText})
+		}
+		// The message names the model that produced it. Resolve it BEFORE
+		// counting tokens so they attribute directly instead of staying under
+		// the seed placeholder — the literal string "copilot" when no model
+		// was configured, which no price table maps, so a run that DID report
+		// tokens would otherwise still estimate $0.00.
+		if msg.Model != "" {
+			st.setModel(msg.Model)
 		}
 		if msg.OutputTokens > 0 {
 			addUsage(st.msgUsage, st.activeModel, 0, msg.OutputTokens, 0, 0)
@@ -238,7 +295,7 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 		if model == "" || model == "unknown" {
 			model = st.activeModel
 		} else {
-			st.activeModel = model
+			st.setModel(model)
 		}
 		addUsage(st.callUsage, model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens)
 
@@ -274,7 +331,7 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 			return nil
 		}
 		if tc.Model != "" {
-			st.activeModel = tc.Model
+			st.setModel(tc.Model)
 		}
 		resultContent := ""
 		if tc.Success && tc.Result != nil {
@@ -348,14 +405,83 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	runCtx, cancel := runContext(ctx, timeout)
 
 	args := buildCopilotArgs(prompt, opts, b.cfg.Logger)
+
+	// If the caller provided an MCP config, write it to a temp file and pass
+	// --additional-mcp-config @<path>. Unlike Claude's --mcp-config, the flag
+	// augments (rather than replaces) the servers in the host's
+	// ~/.copilot/mcp-config.json — Copilot CLI has no strict-mode equivalent,
+	// so a saved empty set behaves like "no managed config".
+	var mcpConfigPath string
+	var mcpFileCleanup func() // non-nil while this function owns the temp file
+	if len(opts.McpConfig) > 0 {
+		path, err := writeMcpConfigToTemp(opts.McpConfig)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		mcpConfigPath = path
+		mcpFileCleanup = func() { cleanupMcpConfigTemp(mcpConfigPath) }
+		args = append(args, "--additional-mcp-config", "@"+mcpConfigPath)
+	}
+	// Clean up the temp file if we return before the goroutine takes ownership.
+	defer func() {
+		if mcpFileCleanup != nil {
+			mcpFileCleanup()
+		}
+	}()
+
 	cmd, _, _ := b.cfg.commandAt(execName).execVia(runCtx, chooseCopilotInvocation, lookedUp, args, b.cfg.Logger)
 	hideAgentWindow(cmd)
 	b.cfg.logAgentCommand(cmd, newAgentCommandLogArgs(args))
 	cmd.WaitDelay = 10 * time.Second
+	// Let completed requests flush telemetry before the forced-kill backstop.
+	// The worker owns group-wide cancellation and joins it before reading usage.
+	cmd.Cancel = func() error { return nil }
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
+	telemetryEnv, telemetryPath, telemetryErr := prepareCopilotOTelUsage(cmd.Env)
+	if telemetryErr != nil {
+		b.cfg.Logger.Warn("Copilot request telemetry unavailable", "error", telemetryErr)
+	} else if telemetryPath == "" {
+		b.cfg.Logger.Debug("Copilot request telemetry skipped", "reason", copilotOTelSkipReason(cmd.Env))
+	} else {
+		cmd.Env = telemetryEnv
+	}
+	telemetryOwnedByWorker := false
+	defer func() {
+		if !telemetryOwnedByWorker && telemetryPath != "" {
+			_ = os.Remove(telemetryPath)
+		}
+	}()
+
+	if err := validateCopilotTaskEnvironment(b.cfg.Env, cmd.Env); err != nil {
+		cancel()
+		return nil, err
+	}
+	// Capture the session's counters before the CLI can append to them: a
+	// resumed run's own usage is the growth over this baseline.
+	var resumeUsageBaseline copilotSessionUsageRead
+	var resumeUsageUnlock func()
+	if opts.ResumeSessionID != "" {
+		resumeUsageUnlock, err = acquireCopilotResumeUsageLock(runCtx, cmd.Env, opts.ResumeSessionID)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("acquire Copilot resume usage lock: %w", err)
+		}
+		resumeUsageBaseline, err = readCopilotSessionUsageSnapshot(cmd.Env, opts.ResumeSessionID)
+		if err != nil {
+			b.cfg.Logger.Warn("Copilot resume usage baseline unavailable", "error", err)
+		}
+	}
+	// Release the session lock if startup fails before the result goroutine
+	// takes ownership of it.
+	defer func() {
+		if resumeUsageUnlock != nil {
+			resumeUsageUnlock()
+		}
+	}()
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -374,21 +500,42 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
+	ownedResumeUsageUnlock := resumeUsageUnlock
 
 	go func() {
 		defer cancel()
+		if telemetryPath != "" {
+			defer os.Remove(telemetryPath)
+		}
 		defer close(msgCh)
 		defer close(resCh)
+		if ownedResumeUsageUnlock != nil {
+			defer ownedResumeUsageUnlock()
+		}
+		if mcpConfigPath != "" {
+			defer cleanupMcpConfigTemp(mcpConfigPath)
+		}
 
 		startTime := time.Now()
-		seedModel := opts.Model
-		if seedModel == "" {
-			seedModel = "copilot"
-		}
-		st := newCopilotEventState(seedModel, opts.ResumeSessionID != "")
+		// An empty opts.Model seeds the placeholder state: usage buffers under
+		// it until the stream reveals the real model (see copilotEventState).
+		st := newCopilotEventState(opts.Model, opts.ResumeSessionID != "")
 
+		procDone := make(chan struct{})
+		cancelDone := make(chan struct{})
 		go func() {
-			<-runCtx.Done()
+			defer close(cancelDone)
+			select {
+			case <-procDone:
+				return
+			case <-runCtx.Done():
+			}
+			signalProcessGroup(cmd, syscall.SIGTERM)
+			// Check the entire group, not just the leader: a tool or MCP child
+			// can ignore SIGTERM after Copilot itself has already exited.
+			if !waitProcessGroupGone(cmd, 2*time.Second) {
+				signalProcessGroup(cmd, syscall.SIGKILL)
+			}
 			_ = stdout.Close()
 		}()
 
@@ -415,6 +562,8 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		}
 
 		exitErr := cmd.Wait()
+		close(procDone)
+		<-cancelDone
 		releaseProcessGroup(cmd)
 		duration := time.Since(startTime)
 
@@ -434,7 +583,32 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 
 		b.cfg.Logger.Info("copilot finished", "pid", cmd.Process.Pid, "status", st.finalStatus, "duration", duration.Round(time.Millisecond).String())
 
+		// The session file only matters when the stream left no complete
+		// source for resolveUsage, so skip the read (and its log line) when
+		// stdout already carried per-call usage or a usable shutdown total.
+		needsFileRecovery := st.sessionID != "" &&
+			!hasTokens(st.callUsage) &&
+			(st.resumed || !hasTokens(st.shutdownUsage))
+		if needsFileRecovery {
+			st.sessionFileUsage = b.recoverCopilotSessionUsage(cmd.Env, opts, st, resumeUsageBaseline)
+		}
+
 		usage := st.resolveUsage()
+		// A clean session snapshot or stdout total stays authoritative. When
+		// neither is usable (notably cancellation or a stale resume baseline),
+		// recover this process's completed model calls from its private export.
+		// This also works when the process died before stdout revealed a session ID.
+		if telemetryPath != "" && !hasTokens(st.callUsage) &&
+			!hasTokens(st.sessionFileUsage) && (st.resumed || !hasTokens(st.shutdownUsage)) {
+			requestUsage, err := readCopilotOTelUsage(telemetryPath)
+			if err != nil {
+				b.cfg.Logger.Warn("Copilot request telemetry requires attention", "error", err)
+			}
+			if hasTokens(requestUsage) {
+				usage = requestUsage
+				b.cfg.Logger.Info("Copilot usage recovered from request telemetry", "models", len(usage))
+			}
+		}
 		// A run that produced output but no tokens is a silent billing hole:
 		// the daemon skips reporting empty usage, so nothing surfaces anywhere
 		// downstream. This is the current state on Copilot CLI 1.0.77 (see
@@ -456,8 +630,62 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 			Usage:      usage,
 		}
 	}()
+	// The goroutine owns the temp file from here on.
+	mcpFileCleanup = nil
+	telemetryOwnedByWorker = true
+	// The goroutine also owns the resumed session lock through the final
+	// snapshot read.
+	resumeUsageUnlock = nil
 
 	return &Session{Messages: msgCh, Result: resCh}, nil
+}
+
+// recoverCopilotSessionUsage reads this run's usage back out of the CLI's
+// session file. A fresh session reports the file's cumulative counters; a
+// resumed session reports their growth over the baseline captured before
+// launch. Every failure mode degrades to "nothing recovered": under-reporting
+// beats double-billing, so any doubt about which turns the counters cover
+// leaves sessionFileUsage empty.
+func (b *copilotBackend) recoverCopilotSessionUsage(
+	env []string,
+	opts ExecOptions,
+	st *copilotEventState,
+	baseline copilotSessionUsageRead,
+) map[string]TokenUsage {
+	if st.resumed && st.sessionID != opts.ResumeSessionID {
+		// The counters in the reported session's file may include turns
+		// from before this run; the fresh-session rule cannot apply and the
+		// baseline belongs to a different session.
+		b.cfg.Logger.Warn("Copilot session usage recovery skipped",
+			"error", "resumed session id does not match the reported session id",
+			"resume_session", opts.ResumeSessionID,
+			"session", st.sessionID)
+		return nil
+	}
+	final, err := readCopilotSessionUsageSnapshot(env, st.sessionID)
+	if err != nil {
+		b.cfg.Logger.Warn("Copilot session usage snapshot unavailable", "error", err)
+		return nil
+	}
+	if !final.Found {
+		b.cfg.Logger.Debug("Copilot session usage snapshot not found", "session", st.sessionID)
+		return nil
+	}
+	var recovered map[string]TokenUsage
+	if st.resumed {
+		recovered, err = diffCopilotUsageSnapshots(baseline, final, st.activeModel)
+		if err != nil {
+			b.cfg.Logger.Warn("Copilot session usage recovery skipped", "error", err)
+			return nil
+		}
+	} else {
+		recovered = freshCopilotUsageSnapshot(final.Snapshot, st.activeModel)
+	}
+	if !hasTokens(recovered) {
+		return nil
+	}
+	b.cfg.Logger.Info("Copilot usage recovered from session snapshot", "models", len(recovered))
+	return recovered
 }
 
 // ── Copilot CLI JSONL event types ──
@@ -499,8 +727,12 @@ type copilotSessionStart struct {
 // field that survives onto the `--output-format json` stream — see the
 // suppression note on copilotUsageData.
 type copilotAssistantMessage struct {
-	MessageID     string               `json:"messageId"`
-	Model         string               `json:"model"`
+	MessageID string `json:"messageId"`
+	// Model is stamped on the message event by newer CLI builds (observed
+	// on v1.0.70; absent on v1.0.28). On a default-model no-tool run it is
+	// the only model signal in the whole stream — such runs emit no
+	// session.start event at all.
+	Model         string               `json:"model,omitempty"`
 	Content       string               `json:"content"`
 	ToolRequests  []copilotToolRequest `json:"toolRequests"`
 	OutputTokens  int64                `json:"outputTokens"`
@@ -621,12 +853,16 @@ var copilotBlockedArgs = map[string]blockedArgMode{
 	"--no-ask-user":     blockedStandalone,
 	"--resume":          blockedWithValue,  // managed via ExecOptions.ResumeSessionID
 	"--acp":             blockedStandalone, // prevent switching to ACP mode
+	// Both aliases are owned by the per-agent thinking_level picker so a
+	// custom-arg duplicate can't fight the injected value.
+	"--effort":           blockedWithValue,
+	"--reasoning-effort": blockedWithValue,
 }
 
 // buildCopilotArgs assembles the argv for a one-shot copilot invocation.
 //
 //	copilot -p "<prompt>" --output-format json --allow-all --no-ask-user
-//	        [--resume <session-id>] [--model <model>]
+//	        [--model <model>] [--reasoning-effort <level>] [--resume <session-id>]
 func buildCopilotArgs(prompt string, opts ExecOptions, logger *slog.Logger) []string {
 	args := []string{
 		"-p", prompt,
@@ -636,6 +872,12 @@ func buildCopilotArgs(prompt string, opts ExecOptions, logger *slog.Logger) []st
 	}
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
+	}
+	if opts.ThinkingLevel != "" {
+		// `--reasoning-effort` rather than the shorter `--effort` alias:
+		// it's the original public spelling, so older CLI versions that
+		// predate the alias still accept it.
+		args = append(args, "--reasoning-effort", opts.ThinkingLevel)
 	}
 	if opts.ResumeSessionID != "" {
 		args = append(args, "--resume", opts.ResumeSessionID)

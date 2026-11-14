@@ -6,6 +6,8 @@ import { chatKeys } from "@multica/core/chat/queries";
 import type { Attachment, TaskMessagePayload } from "@multica/core/types";
 import type { ReactElement } from "react";
 import enChat from "../../locales/en/chat.json";
+import zhHansAgents from "../../locales/zh-Hans/agents.json";
+import zhHansChat from "../../locales/zh-Hans/chat.json";
 
 // The live timeline is a real list row rather than Virtuoso chrome (MUL-4922),
 // so it shares one identity with the persisted assistant row and keeps its
@@ -397,6 +399,86 @@ describe("ChatMessageList live timeline (MUL-3960 regression)", () => {
   });
 });
 
+describe("ChatMessageList tool rows (#8835 regression)", () => {
+  // An HTTP-proxy MCP tool (treg's `call`) passes `query` as an object of URL
+  // parameters. The row summary returned it as-is, React threw on an object
+  // child, and expanding the settled fold took down the whole chat.
+  it("expands a settled fold whose tool input carries non-string summary fields", async () => {
+    const qc = new QueryClient();
+    qc.setQueryData(chatKeys.taskMessages(TASK_ID), [
+      taskMsg(0, "tool_use", {
+        tool: "mcp__treg__call",
+        input: {
+          endpoint_id: "zerobounce.people.email.verify",
+          query: { email: "a@example.com" },
+        },
+      }),
+      taskMsg(1, "tool_result", {
+        tool: "mcp__treg__call",
+        output: "{\"status\": 200, \"body\": {\"email_status\": \"Verified\"}}",
+      }),
+      taskMsg(2, "tool_use", { tool: "Read", input: { path: { dir: "/tmp" } } }),
+    ]);
+
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={qc}>
+          <ChatMessageList
+            messages={[{
+              id: "settled-answer",
+              chat_session_id: "session-1",
+              role: "assistant",
+              content: "The email is verified.",
+              task_id: TASK_ID,
+              created_at: "2026-09-25T00:00:00Z",
+            }]}
+            pendingTask={null}
+            availability="online"
+          />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(await screen.findByText("3 steps"));
+
+    expect(screen.getByText("mcp__treg__call")).toBeInTheDocument();
+    expect(screen.getByText("zerobounce.people.email.verify")).toBeInTheDocument();
+    expect(screen.getByText("Read")).toBeInTheDocument();
+  });
+
+  it("localizes the multi-file patch summary", async () => {
+    const qc = new QueryClient();
+    qc.setQueryData(chatKeys.taskMessages(TASK_ID), [
+      taskMsg(0, "tool_use", {
+        tool: "apply_patch",
+        input: {
+          changes: [
+            { path: "src/a.go", kind: "update", diff: "@@\n+x" },
+            { path: "src/b.go", kind: "add", content: "y" },
+          ],
+        },
+      }),
+    ]);
+
+    render(
+      <I18nProvider
+        locale="zh-Hans"
+        resources={{ "zh-Hans": { chat: zhHansChat, agents: zhHansAgents } }}
+      >
+        <QueryClientProvider client={qc}>
+          <ChatMessageList
+            messages={[]}
+            pendingTask={{ task_id: TASK_ID, status: "running" }}
+            availability="online"
+          />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByText("src/a.go，另有 1 个文件")).toBeInTheDocument();
+  });
+});
+
 describe("ChatMessageList footer spacing", () => {
   it("keeps the bottom inset when no task is pending", () => {
     const { container } = render(
@@ -742,6 +824,19 @@ describe("ChatMessageList failure copy (MUL-5370 regression)", () => {
       await screen.findByText(
         enChat.message_list.failure.environment_prepare_failed,
       ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(FALLBACK)).not.toBeInTheDocument();
+  });
+
+  it("renders dedicated copy for a turn retired by a reached cost budget", async () => {
+    // A chat turn can sit deferred (sealed pending media, retry backoff), and
+    // the promotion-time budget gate fails it with this reason and writes the
+    // assistant outcome itself. Without an entry of its own the reader is told
+    // only "something went wrong", when the one actionable fact is that the
+    // runtime's cost budget is spent until the period resets.
+    renderFailure("budget_exceeded");
+    expect(
+      await screen.findByText(enChat.message_list.failure.budget_exceeded),
     ).toBeInTheDocument();
     expect(screen.queryByText(FALLBACK)).not.toBeInTheDocument();
   });

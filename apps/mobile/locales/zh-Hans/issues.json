@@ -20,7 +20,8 @@
     "in_progress": "in_progress",
     "in_review": "in_review",
     "done": "done",
-    "blocked": "blocked"
+    "blocked": "blocked",
+    "archive": "archive"
   },
   "category": {
     "unstarted": "unstarted",

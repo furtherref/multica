@@ -62,7 +62,8 @@
     "source_runtime_unknown": "From a runtime",
     "source_clawhub": "From ClawHub",
     "source_skills_sh": "From Skills.sh",
-    "source_github": "From GitHub"
+    "source_github": "From GitHub",
+    "source_upload": "Uploaded"
   },
   "actions": {
     "row_menu": "Actions",
@@ -120,11 +121,17 @@
     "sort_by": "Sort by",
     "direction_asc": "Ascending",
     "direction_desc": "Descending",
-    "section_columns": "Columns"
+    "section_columns": "Columns",
+    "manage_labels": "Manage labels...",
+    "manage_labels_title": "Skill labels"
   },
   "detail": {
     "all_skills": "All skills",
     "read_only": "Read-only",
+    "download_aria": "Download skill as zip",
+    "download_tooltip": "Download as .zip",
+    "download_tooltip_dirty": "Save changes before downloading",
+    "download_collision_error": "Download blocked: some support files have conflicting paths. Please fix the file paths before exporting.",
     "delete_aria": "Delete skill",
     "delete_tooltip": "Delete skill",
     "supporting_data_warning": "Some workspace data failed to load. Creator attribution, runtime names, or edit permissions may appear incomplete until the next refresh.",
@@ -270,6 +277,10 @@
       "runtime": {
         "title": "Copy from runtime",
         "desc": "Promote a skill installed on your local runtime."
+      },
+      "upload": {
+        "title": "Upload file",
+        "desc": "Import a skill from a local folder or zip archive containing SKILL.md."
       }
     },
     "manual": {
@@ -315,6 +326,42 @@
       "fallback_error": "Import failed",
       "cancel": "Cancel",
       "toast_imported": "Skill imported"
+    },
+    "upload": {
+      "drop_zone": "Drop a .zip file here",
+      "drop_zone_active": "Drop here",
+      "or": "or",
+      "browse_zip": "Choose .zip file",
+      "browse_folder": "Choose folder",
+      "parsing": "Parsing…",
+      "parsed_name": "Name",
+      "parsed_description": "Description",
+      "parsed_files": "{{count}} supporting files",
+      "no_description": "No description",
+      "change_file": "Change file",
+      "error_skill_md_not_found_zip": "SKILL.md not found in the archive.",
+      "error_skill_md_not_found_folder": "SKILL.md not found in the selected folder.",
+      "error_skill_md_too_large": "SKILL.md exceeds 1 MiB size limit.",
+      "error_skill_md_ambiguous_folder": "Multiple SKILL.md files found at the same level. Please select a folder containing only one skill.",
+      "error_drop_zip_only": "Please drop a .zip file, or use the folder picker below.",
+      "truncated_warning": "Some files were skipped because they exceed size or count limits. Import is disabled for incomplete bundles.",
+      "binary_skipped_warning": "{{count}} binary file(s) were skipped (images, PDFs, etc.). Only text files are imported.",
+      "error_name_conflict": "A skill with this name already exists. Try a different name and submit again.",
+      "fallback_error": "Failed to create skill.",
+      "cancel": "Cancel",
+      "submit": "Create skill",
+      "submitting": "Creating…",
+      "toast_created": "Skill uploaded",
+      "select_all": "Select all ({{count}})",
+      "bulk_import_button": "Import {{count}} skills",
+      "bulk_progress": "Importing {{completed}} / {{total}}…",
+      "bulk_cancel": "Cancel",
+      "bulk_complete_hint": "Import complete.",
+      "bulk_cancelled_hint": "Import cancelled.",
+      "bulk_done": "Done",
+      "bulk_summary_imported": "Imported",
+      "bulk_summary_skipped": "Skipped",
+      "bulk_summary_failed": "Failed"
     }
   },
   "runtime_import": {

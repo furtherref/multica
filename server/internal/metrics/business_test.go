@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/pricing"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
@@ -262,7 +263,7 @@ func TestBusinessMetricsPrefersProviderReportedCost(t *testing.T) {
 	// table. The provider says the turn cost $16 — the long-context tier.
 	const actualUSD = 16.0
 	m.RecordLLMUsage("issue", "local", "grok", "grok-4.5",
-		1_000_000, 1_000_000, 0, 0, int64(actualUSD*CostUSDTicksPerUSD))
+		1_000_000, 1_000_000, 0, 0, int64(actualUSD*pricing.CostUSDTicksPerUSD))
 
 	input := testutil.ToFloat64(m.llmCostUSD.WithLabelValues("xai", "grok-4.5", "input", "local", "issue"))
 	output := testutil.ToFloat64(m.llmCostUSD.WithLabelValues("xai", "grok-4.5", "output", "local", "issue"))
@@ -297,6 +298,25 @@ func TestBusinessMetricsFallsBackToRateTableWithoutProviderCost(t *testing.T) {
 	}
 }
 
+// TestBusinessMetricsPricesCopilotByProvider pins the metrics path to the
+// same provider-qualified table the budget and dashboard use: a Copilot
+// GPT-5.6 turn must land under the `copilot` provider at GitHub's rate, not
+// under `openai` at the direct API rate for the same-looking model id.
+func TestBusinessMetricsPricesCopilotByProvider(t *testing.T) {
+	m := NewBusinessMetrics()
+
+	m.RecordLLMUsage("issue", "local", "copilot", "gpt-5.6-terra", 1_000_000, 1_000_000, 0, 0, 0)
+
+	input := testutil.ToFloat64(m.llmCostUSD.WithLabelValues("copilot", "gpt-5.6-terra", "input", "local", "issue"))
+	output := testutil.ToFloat64(m.llmCostUSD.WithLabelValues("copilot", "gpt-5.6-terra", "output", "local", "issue"))
+	if math.Abs(input-2) > 1e-9 || math.Abs(output-12) > 1e-9 {
+		t.Fatalf("copilot cost = (%v, %v), want (2, 12) from the Copilot rate table", input, output)
+	}
+	if got := testutil.ToFloat64(m.llmCostUSD.WithLabelValues("openai", "gpt-5.6-terra", "input", "local", "issue")); got != 0 {
+		t.Fatalf("openai cost = %v, want 0 (Copilot usage must not be billed at the API rate)", got)
+	}
+}
+
 func TestBusinessMetricsCostOnlyUsage(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -311,7 +331,7 @@ func TestBusinessMetricsCostOnlyUsage(t *testing.T) {
 			m := NewBusinessMetrics()
 			const actualUSD = 0.01
 			m.RecordLLMUsage("issue", "local", "grok", tc.model,
-				0, 0, 0, 0, int64(actualUSD*CostUSDTicksPerUSD))
+				0, 0, 0, 0, int64(actualUSD*pricing.CostUSDTicksPerUSD))
 
 			// Inspect collectors without creating zero-token series in the test.
 			if got := testutil.CollectAndCount(m.llmTokens); got != 0 {
@@ -407,7 +427,7 @@ func TestBusinessMetricsRecordsProviderCostForUnpricedModel(t *testing.T) {
 
 	const actualUSD = 1.23456789
 	m.RecordLLMUsage("issue", "local", "grok", "grok-composer-2.5-fast",
-		500, 100, 0, 0, int64(actualUSD*CostUSDTicksPerUSD))
+		500, 100, 0, 0, int64(actualUSD*pricing.CostUSDTicksPerUSD))
 
 	// No rates means no way to split by token type, so the whole charge lands
 	// in one bucket — but it must be the whole charge.

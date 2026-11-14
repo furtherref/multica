@@ -152,6 +152,14 @@ func init() {
 	// agent list
 	agentListCmd.Flags().String("output", "table", "Output format: table or json")
 	agentListCmd.Flags().Bool("include-archived", false, "Include archived agents")
+	// --all opts out of the squad-leader scoping. When this CLI is invoked
+	// from inside a daemon-managed agent task that is a squad-leader run
+	// on a squad-assigned issue, `agent list` defaults to listing only that
+	// squad's members + the leader — `--all` returns the workspace-wide list
+	// instead (matching the pre-fix behavior). Has no effect outside a
+	// leader task. See server/internal/handler/agent.go ListAgents +
+	// taskSquadMemberSet for the matching server-side scope.
+	agentListCmd.Flags().Bool("all", false, "Return the full workspace agent list even inside a squad-leader task (default scopes to the squad's roster)")
 
 	// agent get
 	agentGetCmd.Flags().String("output", "json", "Output format: table or json")
@@ -219,6 +227,8 @@ func init() {
 
 	// agent tasks
 	agentTasksCmd.Flags().String("output", "table", "Output format: table or json")
+	agentTasksCmd.Flags().Int("limit", 200, "Maximum runs per page (1-200)")
+	agentTasksCmd.Flags().String("before", "", "Cursor from the previous page")
 
 	// agent avatar
 	agentAvatarCmd.Flags().String("file", "", "Path to the avatar image file (required)")
@@ -286,9 +296,10 @@ func newAPIClient(cmd *cobra.Command) (*cli.APIClient, error) {
 	return client, nil
 }
 
+// The fork's cloud deployment serves the API and the app from one host.
 const (
-	defaultCloudServerURL = "https://api.multica.ai"
-	defaultCloudAppURL    = "https://multica.ai"
+	defaultCloudServerURL = "https://multica.furtherref.com"
+	defaultCloudAppURL    = "https://multica.furtherref.com"
 )
 
 func tryResolveServerURL(cmd *cobra.Command) string {
@@ -532,6 +543,13 @@ func runAgentList(cmd *cobra.Command, _ []string) error {
 	params.Set("workspace_id", client.WorkspaceID)
 	if v, _ := cmd.Flags().GetBool("include-archived"); v {
 		params.Set("include_archived", "true")
+	}
+	// Squad-leader scoping: inside a daemon-managed agent task, the server
+	// narrows the list to the issue's squad iff the task is a leader task.
+	// Outside such a task the param is a no-op, so always passing it is
+	// safe. `--all` opts out.
+	if allFlag, _ := cmd.Flags().GetBool("all"); !allFlag && inAgentExecutionContext() {
+		params.Set("scope", "task_squad")
 	}
 	path := "/api/agents"
 	if len(params) > 0 {
@@ -883,17 +901,31 @@ func runAgentTasks(cmd *cobra.Command, args []string) error {
 	}
 
 	output, _ := cmd.Flags().GetString("output")
-	path := "/api/agents/" + args[0] + "/tasks"
-	if output == "json" {
-		path += "?include_usage=true"
+	params := url.Values{}
+	limit, _ := cmd.Flags().GetInt("limit")
+	if limit < 1 {
+		return fmt.Errorf("limit must be a positive integer")
 	}
+	params.Set("limit", fmt.Sprint(limit))
+	before, _ := cmd.Flags().GetString("before")
+	if before != "" {
+		params.Set("before", before)
+	}
+	if output == "json" {
+		params.Set("include_usage", "true")
+	}
+	path := "/api/agents/" + args[0] + "/tasks?" + params.Encode()
 
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
 	var tasks []map[string]any
-	if err := client.GetJSON(ctx, path, &tasks); err != nil {
+	responseHeaders, err := client.GetJSONWithHeaders(ctx, path, &tasks)
+	if err != nil {
 		return fmt.Errorf("list agent runs: %w", err)
+	}
+	if cursor := responseHeaders.Get("X-Agent-Tasks-Next-Cursor"); cursor != "" {
+		fmt.Fprintf(cmd.ErrOrStderr(), "More runs available; use --before %q to fetch the next page.\n", cursor)
 	}
 
 	if output == "json" {

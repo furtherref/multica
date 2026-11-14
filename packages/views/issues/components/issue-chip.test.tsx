@@ -1,14 +1,11 @@
+import type { ReactNode } from "react";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { IssueChip } from "./issue-chip";
 
-vi.mock("@tanstack/react-query", () => ({
-  useQuery: vi.fn(),
-}));
-
 vi.mock("@multica/core/hooks", () => ({
-  useWorkspaceId: () => "workspace-1",
+  useWorkspaceId: () => "ws-test",
 }));
 
 vi.mock("@multica/core/issue-statuses/hooks", () => ({
@@ -20,9 +17,13 @@ vi.mock("@multica/core/issue-statuses/hooks", () => ({
 }));
 
 vi.mock("@multica/core/issues/queries", () => ({
-  issueListOptions: () => ({ queryKey: ["issues"] }),
-  issueDetailOptions: (_workspaceId: string, issueId: string) => ({
-    queryKey: ["issue", issueId],
+  issueListOptions: () => ({
+    queryKey: ["issues", "ws-test", "list"],
+    queryFn: async () => [],
+  }),
+  issueDetailOptions: (_wsId: string, id: string) => ({
+    queryKey: ["issues", "ws-test", "detail", id],
+    queryFn: async () => null,
   }),
 }));
 
@@ -48,36 +49,86 @@ vi.mock("./status-icon", () => ({
   ),
 }));
 
-const mockUseQuery = vi.mocked(useQuery);
+vi.mock("@multica/ui/components/ui/tooltip", () => ({
+  Tooltip: ({ children }: any) => <>{children}</>,
+  TooltipTrigger: ({ children, render }: any) => (
+    <span data-testid="tooltip-trigger">{render ?? children}</span>
+  ),
+  TooltipContent: ({ children }: any) => <div data-testid="tooltip-content">{children}</div>,
+}));
+
+function makeClient() {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+}
+
+function renderChip(ui: ReactNode, client: QueryClient = makeClient()) {
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
+
+function seedIssue(
+  client: QueryClient,
+  issue: {
+    id: string;
+    identifier: string;
+    title: string;
+    status: string;
+    status_category?: string;
+  },
+) {
+  client.setQueryData(["issues", "ws-test", "list"], [issue]);
+}
 
 describe("IssueChip", () => {
-  beforeEach(() => {
-    mockUseQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
-      if (options.queryKey?.[0] === "issues") {
-        return {
-          data: [
-            {
-              id: "issue-1",
-              identifier: "MUL-3405",
-              title: "A very long issue title that should stay inside a narrow chat bubble",
-              status: "todo",
-            },
-            {
-              id: "issue-2",
-              identifier: "MUL-6956",
-              title: "Custom status color in Chat",
-              status: "awaiting_response",
-              status_category: "started",
-            },
-          ],
-        } as ReturnType<typeof useQuery>;
-      }
-      return { data: undefined } as ReturnType<typeof useQuery>;
+  it("renders fallback text without tooltip content when the issue is unresolved", () => {
+    renderChip(<IssueChip issueId="missing-issue" fallbackLabel="MUL-404" />);
+
+    expect(screen.getByText("MUL-404")).toBeInTheDocument();
+    expect(screen.queryByTestId("tooltip-content")).not.toBeInTheDocument();
+  });
+
+  it("renders tooltip content for resolved issues", () => {
+    const client = makeClient();
+    seedIssue(client, {
+      id: "issue-1",
+      identifier: "MUL-1",
+      title: "A very long issue title that should be available in the tooltip",
+      status: "todo",
     });
+
+    renderChip(<IssueChip issueId="issue-1" />, client);
+
+    expect(screen.getByText("MUL-1")).toBeInTheDocument();
+    expect(
+      screen.getAllByText("A very long issue title that should be available in the tooltip"),
+    ).toHaveLength(2);
+    expect(screen.getByTestId("tooltip-content")).toHaveTextContent(
+      "A very long issue title that should be available in the tooltip",
+    );
+  });
+
+  it("uses the title span as the tooltip trigger content for resolved issues", () => {
+    const client = makeClient();
+    seedIssue(client, {
+      id: "issue-2",
+      identifier: "MUL-2",
+      title: "Tooltip trigger should reuse the title span",
+      status: "todo",
+    });
+
+    renderChip(<IssueChip issueId="issue-2" />, client);
+
+    const titleInTrigger = screen.getByTestId("tooltip-trigger").querySelector(
+      ".text-foreground",
+    ) as HTMLElement | null;
+
+    expect(screen.getByTestId("tooltip-trigger")).toContainElement(titleInTrigger);
+    expect(titleInTrigger).toHaveClass("min-w-0", "truncate");
   });
 
   it("truncates unresolved fallback labels inside the chip width", () => {
-    render(
+    renderChip(
       <IssueChip
         issueId="missing-issue"
         fallbackLabel="MUL-999999999999999999999999999999999"
@@ -89,7 +140,16 @@ describe("IssueChip", () => {
   });
 
   it("paints a custom status with its catalog color instead of the category token", () => {
-    render(<IssueChip issueId="issue-2" />);
+    const client = makeClient();
+    seedIssue(client, {
+      id: "issue-4",
+      identifier: "MUL-6956",
+      title: "Custom status color in Chat",
+      status: "awaiting_response",
+      status_category: "started",
+    });
+
+    renderChip(<IssueChip issueId="issue-4" />, client);
 
     expect(screen.getByTestId("status-icon")).toHaveAttribute(
       "data-status",

@@ -25,7 +25,7 @@
  * Syntax-highlight wrappers from editors (<pre>/<code>/<span>/<div>) are not
  * enough by themselves, because those should still paste as Markdown source.
  */
-import { Extension } from "@tiptap/core";
+import { Extension, type JSONContent } from "@tiptap/core";
 import { Plugin, PluginKey, type Transaction } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import {
@@ -352,6 +352,26 @@ function classifyPaste({
   return "markdown";
 }
 
+function ensureEditableListItems(node: JSONContent): JSONContent {
+  const content = node.content?.map(ensureEditableListItems);
+
+  if (node.type === "listItem") {
+    // listItem's content model is "paragraph block*" — it must start with a
+    // paragraph. An empty markdown list item parses with no content at all,
+    // and one immediately followed by a deeper-indented item can parse as a
+    // listItem whose only child is a nested list (no leading paragraph); both
+    // shapes are invalid against the schema and throw when inserted.
+    if (!content || content.length === 0) {
+      return { ...node, content: [{ type: "paragraph" }] };
+    }
+    if (content[0]?.type !== "paragraph") {
+      return { ...node, content: [{ type: "paragraph" }, ...content] };
+    }
+  }
+
+  return content ? { ...node, content } : node;
+}
+
 function canJoinOrderedLists(
   left: ProseMirrorNode,
   right: ProseMirrorNode,
@@ -477,7 +497,7 @@ export function createMarkdownPasteExtension() {
               // Everything else (VS Code, text editors, .md files, terminals,
               // web pages): parse text/plain as Markdown.
               const preprocessed = escapeRawHtmlTagsOutsideCode(text);
-              const json = editor.markdown.parse(preprocessed);
+              const json = ensureEditableListItems(editor.markdown.parse(preprocessed));
               const node = editor.schema.nodeFromJSON(json);
 
               // Safety net: if parsing still produces an empty doc despite

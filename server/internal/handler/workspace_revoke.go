@@ -211,6 +211,16 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 		return empty, err
 	}
 
+	// runtime_cost_budget has no FK either. A departed member's per-user caps
+	// would otherwise keep refusing runs for a user id nobody can see in the
+	// budget editor, and a re-invite would silently inherit the old limits.
+	if err := qtx.DeleteRuntimeCostBudgetsForWorkspaceUser(ctx, db.DeleteRuntimeCostBudgetsForWorkspaceUserParams{
+		WorkspaceID: workspaceID,
+		UserID:      userID,
+	}); err != nil {
+		return empty, err
+	}
+
 	// Member row deletion lives inside the same tx so a successful revoke is
 	// never followed by a failed member-delete (which would leave the user
 	// still a member with a dead runtime), and a failed revoke never leaves
@@ -256,9 +266,9 @@ func (h *Handler) publishRevocation(ctx context.Context, result revocationResult
 		return
 	}
 
-	for _, hash := range result.RevokedTokenHashes {
-		h.DaemonTokenCache.Invalidate(ctx, hash)
-	}
+	// No daemon-token cache to invalidate: the mdt_ auth path is
+	// deliberately uncached (see middleware.DaemonAuth), so the tx's token
+	// deletion is already authoritative on the daemon's next request.
 
 	// Per-task cancellation: TaskService handles status reconciliation and
 	// per-task event broadcast. Run this before the agent:archived burst so

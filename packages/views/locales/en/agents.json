@@ -475,8 +475,6 @@
       "workspace_notes_placeholder": "Add context this agent should always have.\n\n# Example\nOur main repository is github.com/acme/platform.\nWrite issues in English even when we chat in Chinese.\nWe do not deploy on Fridays."
     },
     "env": {
-      "intro_readonly": "Injected into the agent process at launch. Only workspace owners and admins can read or edit values; every reveal and edit is recorded in the workspace audit log.",
-      "empty_readonly": "No environment variables configured.",
       "intro_prefix": "Injected into the agent process at launch (e.g. ",
       "intro_separator": ", ",
       "intro_suffix": ").",
@@ -500,6 +498,7 @@
       "not_revealed_title_other": "{{count}} variables configured",
       "not_revealed_empty": "No environment variables configured.",
       "not_revealed_hint": "Values stay masked until you reveal them. Every reveal and edit is recorded in the workspace audit log.",
+      "no_permission_hint": "Only the agent owner or a workspace owner/admin can reveal and edit these values.",
       "reveal_action": "Reveal & edit",
       "revealing": "Revealing…",
       "reveal_failed_toast": "Failed to load env values",
@@ -834,6 +833,11 @@
     "copy_all": "Copy all",
     "copy_filtered": "Copy filtered",
     "copied": "Copied",
+    "load_pending": "Loading the full transcript. Current content may be incomplete.",
+    "load_incomplete": "Could not load the full transcript. Current content may be incomplete.",
+    "retry": "Retry",
+    "diff_unified": "Unified",
+    "diff_split": "Split",
     "waiting_events": "Waiting for events...",
     "no_data": "No execution data recorded.",
     "sort_chronological": "Oldest first",
@@ -850,6 +854,7 @@
     "status_cancelled": "Cancelled",
     "status_waiting": "Waiting",
     "trigger_initial": "Initial run",
+    "trigger_text": "Trigger",
     "trigger_comment": "From a comment",
     "trigger_autopilot": "Autopilot",
     "trigger_retry": "Retry",
@@ -910,7 +915,8 @@
     "tool_kind_command": "Commands",
     "tool_kind_write": "Edits",
     "tool_kind_read": "Reads",
-    "tool_kind_misc": "Other"
+    "tool_kind_misc": "Other",
+    "trigger_wakeup": "Wakeup"
   },
   "task_failure": {
     "cancelled_by_system": "Cancelled by the system",
@@ -929,6 +935,7 @@
       "environment_prepare_failed": "Couldn't prepare the execution environment",
       "runtime_access_denied": "This agent can't run on its private runtime, so it couldn't reply. Make the runtime public, or rebind/copy the agent to a runtime its owner can use.",
       "invalid_task_identity": "Run identity mismatch",
+      "budget_exceeded": "Runtime cost budget reached",
       "agent_error_provider_auth_or_access": "Provider auth failed",
       "agent_error_provider_quota_limit": "Provider quota exhausted",
       "agent_error_provider_capacity_or_rate_limit": "Rate limited by provider",

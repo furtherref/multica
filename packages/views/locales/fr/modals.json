@@ -19,6 +19,16 @@
     "toast_deleted": "Tâche supprimée",
     "toast_delete_failed": "Échec de la suppression de la tâche"
   },
+  "issue_status_confirm": {
+    "title": "Modifier le statut de la tâche ?",
+    "description_cancelled": "Cette tâche sera marquée comme annulée. Vous pouvez annuler maintenant pour conserver le statut actuel.",
+    "description_archive": "Cette tâche sera archivée. Vous pouvez annuler maintenant pour conserver le statut actuel.",
+    "description_cancelled_batch": "{{count}} tâches sélectionnées seront marquées comme annulées. Vous pouvez annuler maintenant pour conserver leurs statuts actuels.",
+    "description_archive_batch": "{{count}} tâches sélectionnées seront archivées. Vous pouvez annuler maintenant pour conserver leurs statuts actuels.",
+    "cancel": "Annuler",
+    "confirm": "Confirmer",
+    "confirming": "Confirmation..."
+  },
   "feedback": {
     "title": "Faire un retour",
     "placeholder": "Parlez-nous de votre expérience, des bugs rencontrés ou des fonctionnalités que vous aimeriez voir…",
@@ -151,6 +161,7 @@
     "description_placeholder": "Ajouter une description...",
     "more_options_aria": "Plus d'options",
     "title_required": "Saisissez un titre pour créer",
+    "project_required": "Sélectionnez un projet pour créer",
     "submit": "Créer la tâche",
     "submitting": "Création...",
     "toast_created": "Tâche créée",
@@ -211,6 +222,19 @@
     "customize_fields": "Personnaliser les champs...",
     "custom_properties": "Propriétés personnalisées",
     "remove_parent": "Retirer le parent",
+    "template": {
+      "trigger": "Appliquer un modèle de tâche",
+      "title": "Sélectionner un modèle",
+      "description": "Le modèle sélectionné remplit le titre et le contenu de la tâche.",
+      "empty_title": "Aucun modèle de tâche pour l'instant",
+      "empty_description": "Créez-en un depuis la page Modèles de tâche, sous Configurer.",
+      "manage": "Ouvrir les modèles de tâche",
+      "apply_failed": "Échec de l'application du modèle de tâche",
+      "confirm_title": "Remplacer le titre et le contenu actuels ?",
+      "confirm_description": "L'application d'un modèle remplace le titre et le contenu actuels de la tâche. Les autres champs restent inchangés.",
+      "confirm_cancel": "Annuler",
+      "confirm_apply": "Remplacer"
+    },
     "set_parent_picker": {
       "title": "Définir la tâche parente",
       "description": "Recherchez une tâche à définir comme parent de la nouvelle tâche"

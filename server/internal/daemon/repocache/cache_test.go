@@ -2227,6 +2227,578 @@ func TestGetRemoteDefaultBranchAmbiguousOriginReturnsEmpty(t *testing.T) {
 	}
 }
 
+// createSubmoduleSuperproject builds a superproject repo containing a single
+// submodule at src/shared-ui and returns the superproject path and the
+// submodule source path. Both are local git repos whose filesystem paths
+// double as remote URLs (git accepts local paths as remotes). The submodule
+// carries a lib.txt file so callers can assert the working tree was populated.
+func createSubmoduleSuperproject(t *testing.T) (superDir, subDir string) {
+	t.Helper()
+	subDir = createTestRepoAt(t, t.TempDir())
+	if err := os.WriteFile(filepath.Join(subDir, "lib.txt"), []byte("lib-v1\n"), 0o644); err != nil {
+		t.Fatalf("write submodule file: %v", err)
+	}
+	runGitAuthored(t, subDir, "add", ".")
+	runGitAuthored(t, subDir, "commit", "-m", "submodule content")
+
+	superDir = createTestRepoAt(t, t.TempDir())
+	// `git submodule add` of a local path is a file-transport submodule
+	// operation; git blocks it under the default protocol.file.allow=user,
+	// so the fixture must opt in explicitly. Production submodule URLs are
+	// http/ssh and don't need this on the add side.
+	runGitAuthored(t, superDir, "-c", "protocol.file.allow=always", "submodule", "add", subDir, "src/shared-ui")
+	runGitAuthored(t, superDir, "commit", "-m", "add submodule")
+	return superDir, subDir
+}
+
+// TestCreateWorktreePopulatesSubmoduleFromCacheWhenRemoteGone is the
+// fail-closed guarantee for submodule support. Once Sync has mirrored a repo's
+// submodules into the daemon cache, creating a worktree must populate each
+// submodule working tree FROM THAT LOCAL MIRROR, without contacting the
+// submodule's real remote.
+//
+// We prove "without contacting the remote" by deleting the submodule source
+// after Sync. If checkout still populates the submodule, the objects came from
+// the cache. If the implementation reaches for the (now-gone) real URL —
+// exactly what `git submodule update --init` does today, and what a
+// `--reference`-only approach would still do — the checkout fails and so does
+// this test. That is the whole point: the test fails closed if submodule
+// preparation ever depends on the network.
+func TestCreateWorktreePopulatesSubmoduleFromCacheWhenRemoteGone(t *testing.T) {
+	t.Parallel()
+	superRepo, subRepo := createSubmoduleSuperproject(t)
+
+	cache := New(t.TempDir(), testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: superRepo}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	// Simulate the submodule remote being unreachable (GitLab down, or simply
+	// not wanting to pay a fresh fetch on every task). Everything checkout
+	// needs must already live in the daemon cache.
+	if err := os.RemoveAll(subRepo); err != nil {
+		t.Fatalf("remove submodule source: %v", err)
+	}
+
+	result, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     superRepo,
+		WorkDir:     t.TempDir(),
+		AgentName:   "agent",
+		TaskID:      "5ub11111-0000-0000-0000-000000000000",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorktree failed: %v", err)
+	}
+
+	// The submodule working tree must be checked out from the cache.
+	subWorktree := filepath.Join(result.Path, "src", "shared-ui")
+	data, err := os.ReadFile(filepath.Join(subWorktree, "lib.txt"))
+	if err != nil {
+		t.Fatalf("submodule working tree not populated from cache (remote was deleted): %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "lib-v1" {
+		t.Fatalf("submodule lib.txt = %q, want %q", got, "lib-v1")
+	}
+
+	// The checked-out submodule's origin must remain the REAL remote URL so the
+	// agent can fetch/push against it — the local mirror is a transport detail
+	// and must not leak into the submodule's remote config.
+	if got := gitConfigGet(t, subWorktree, "remote.origin.url"); got != subRepo {
+		t.Fatalf("submodule origin.url = %q, want real remote %q (mirror must not leak)", got, subRepo)
+	}
+}
+
+// createRepoWithFile creates a git repo carrying a single committed file and
+// returns its path. The filesystem path doubles as the repo's remote URL.
+func createRepoWithFile(t *testing.T, filename, content string) string {
+	t.Helper()
+	dir := createTestRepoAt(t, t.TempDir())
+	if err := os.WriteFile(filepath.Join(dir, filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", filename, err)
+	}
+	runGitAuthored(t, dir, "add", ".")
+	runGitAuthored(t, dir, "commit", "-m", "content")
+	return dir
+}
+
+// addSubmodule adds subURL as a submodule of repoDir at path and commits it.
+// protocol.file.allow=always is required because the fixture submodule URLs are
+// local paths (file transport), which git blocks by default for submodule ops.
+func addSubmodule(t *testing.T, repoDir, subURL, path string) {
+	t.Helper()
+	runGitAuthored(t, repoDir, "-c", "protocol.file.allow=always", "submodule", "add", subURL, path)
+	runGitAuthored(t, repoDir, "commit", "-m", "add submodule "+path)
+}
+
+// addSubmoduleOnBranch is addSubmodule but records submodule.<name>.branch, so
+// the submodule should be checked out to that branch rather than the gitlink.
+func addSubmoduleOnBranch(t *testing.T, repoDir, subURL, path, branch string) {
+	t.Helper()
+	runGitAuthored(t, repoDir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", branch, subURL, path)
+	runGitAuthored(t, repoDir, "commit", "-m", "add submodule "+path)
+}
+
+// submoduleBranch returns the current branch name of the submodule checked out
+// at subWorktree, or "" if it is in detached HEAD.
+func submoduleBranch(t *testing.T, subWorktree string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", subWorktree, "branch", "--show-current").Output()
+	if err != nil {
+		t.Fatalf("read submodule branch in %s: %v", subWorktree, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestCreateWorktreeChecksOutSubmoduleConfiguredBranch verifies that two repos
+// in one workspace can share a single submodule URL while each pins a different
+// .gitmodules branch: the mirror is shared, but each worktree checks the
+// submodule out to its own configured branch (named, not detached) with that
+// branch's content. Default `git submodule update` would leave a detached HEAD
+// at the gitlink, so landing on the named branch proves the branch logic ran.
+func TestCreateWorktreeChecksOutSubmoduleConfiguredBranch(t *testing.T) {
+	t.Parallel()
+
+	// One submodule repo with two branches carrying distinct content.
+	sub := createRepoWithFile(t, "ver.txt", "base\n")
+	def := currentBranchName(t, sub)
+	runGitAuthored(t, sub, "checkout", "-b", "v4.0.0")
+	if err := os.WriteFile(filepath.Join(sub, "ver.txt"), []byte("v4\n"), 0o644); err != nil {
+		t.Fatalf("write v4 content: %v", err)
+	}
+	runGitAuthored(t, sub, "commit", "-am", "v4 content")
+	runGitAuthored(t, sub, "checkout", def)
+	runGitAuthored(t, sub, "checkout", "-b", "develop")
+	if err := os.WriteFile(filepath.Join(sub, "ver.txt"), []byte("dev\n"), 0o644); err != nil {
+		t.Fatalf("write dev content: %v", err)
+	}
+	runGitAuthored(t, sub, "commit", "-am", "dev content")
+	runGitAuthored(t, sub, "checkout", def)
+
+	// Two superprojects sharing the SAME submodule URL but pinning different
+	// branches.
+	superA := createTestRepoAt(t, t.TempDir())
+	addSubmoduleOnBranch(t, superA, sub, "mods/sub", "v4.0.0")
+	superB := createTestRepoAt(t, t.TempDir())
+	addSubmoduleOnBranch(t, superB, sub, "mods/sub", "develop")
+
+	cacheRoot := t.TempDir()
+	cache := New(cacheRoot, testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: superA}, {URL: superB}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	// The submodule is mirrored once, shared by both repos.
+	if !isBareRepo(filepath.Join(cacheRoot, "ws-1", bareDirName(sub))) {
+		t.Fatalf("expected a shared submodule mirror for %s", sub)
+	}
+
+	resA, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1", RepoURL: superA, WorkDir: t.TempDir(),
+		AgentName: "agent", TaskID: "a0000000-0000-0000-0000-000000000000",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorktree A failed: %v", err)
+	}
+	resB, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1", RepoURL: superB, WorkDir: t.TempDir(),
+		AgentName: "agent", TaskID: "b0000000-0000-0000-0000-000000000000",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorktree B failed: %v", err)
+	}
+
+	subA := filepath.Join(resA.Path, "mods", "sub")
+	subB := filepath.Join(resB.Path, "mods", "sub")
+
+	if got := submoduleBranch(t, subA); got != "v4.0.0" {
+		t.Fatalf("repo A submodule on branch %q, want v4.0.0", got)
+	}
+	if got := submoduleBranch(t, subB); got != "develop" {
+		t.Fatalf("repo B submodule on branch %q, want develop", got)
+	}
+	if got := readTrimmed(t, filepath.Join(subA, "ver.txt")); got != "v4" {
+		t.Fatalf("repo A submodule content = %q, want v4", got)
+	}
+	if got := readTrimmed(t, filepath.Join(subB, "ver.txt")); got != "dev" {
+		t.Fatalf("repo B submodule content = %q, want dev", got)
+	}
+}
+
+// readTrimmed reads a file and returns its whitespace-trimmed contents.
+func readTrimmed(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// TestCreateWorktreeDoesNotFileCloneUnmirroredSubmodule is the security guard
+// for the mirror redirect: enabling file:// transport to clone a mirrored
+// submodule must NOT spill over to a submodule we did not mirror. A
+// non-mirrored submodule with a local/file URL has to stay blocked by git's
+// default protocol policy, even while a sibling is being initialized from a
+// local mirror in the same checkout.
+//
+// The un-mirrored submodule's real source is left REACHABLE on purpose: the
+// only thing that may keep it out of the worktree is git's protocol policy, not
+// an unreachable remote. If this regresses to a blanket protocol.file.allow on
+// a recursive update, the un-mirrored submodule gets cloned via file transport
+// and this test fails closed.
+func TestCreateWorktreeDoesNotFileCloneUnmirroredSubmodule(t *testing.T) {
+	t.Parallel()
+	good := createRepoWithFile(t, "good.txt", "good\n")
+	evil := createRepoWithFile(t, "evil.txt", "evil\n")
+
+	super := createTestRepoAt(t, t.TempDir())
+	addSubmodule(t, super, good, "mods/good")
+	addSubmodule(t, super, evil, "mods/evil")
+
+	cacheRoot := t.TempDir()
+	cache := New(cacheRoot, testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: super}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	// Drop the mirror for evil so it counts as un-mirrored, but keep its real
+	// (local, file-transport) source reachable.
+	if err := os.RemoveAll(filepath.Join(cacheRoot, "ws-1", bareDirName(evil))); err != nil {
+		t.Fatalf("remove evil mirror: %v", err)
+	}
+	// Force good to come from its mirror (offline) so pass 1 definitely runs.
+	if err := os.RemoveAll(good); err != nil {
+		t.Fatalf("remove good source: %v", err)
+	}
+
+	result, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     super,
+		WorkDir:     t.TempDir(),
+		AgentName:   "agent",
+		TaskID:      "5ec00000-0000-0000-0000-000000000000",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorktree failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(result.Path, "mods", "good", "good.txt")); err != nil {
+		t.Fatalf("mirrored submodule not populated from cache: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(result.Path, "mods", "evil", "evil.txt")); err == nil {
+		t.Fatal("un-mirrored file:// submodule was cloned via file transport — protocol.file.allow leaked beyond the mirrored path")
+	}
+}
+
+// TestCreateWorktreeInitializesNestedSubmoduleFromCache verifies the recursive
+// mirror path: a submodule that itself contains a submodule is initialized at
+// every level from the daemon cache with no network access. Both the top-level
+// and the nested submodule sources are deleted after Sync, so a populated
+// nested working tree proves both levels came from their mirrors.
+func TestCreateWorktreeInitializesNestedSubmoduleFromCache(t *testing.T) {
+	t.Parallel()
+	inner := createRepoWithFile(t, "inner.txt", "inner\n")
+	mid := createRepoWithFile(t, "mid.txt", "mid\n")
+	addSubmodule(t, mid, inner, "nested/inner")
+	super := createTestRepoAt(t, t.TempDir())
+	addSubmodule(t, super, mid, "mods/mid")
+
+	cache := New(t.TempDir(), testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: super}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	// Both real sources gone — only the mirrors remain.
+	if err := os.RemoveAll(mid); err != nil {
+		t.Fatalf("remove mid source: %v", err)
+	}
+	if err := os.RemoveAll(inner); err != nil {
+		t.Fatalf("remove inner source: %v", err)
+	}
+
+	result, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     super,
+		WorkDir:     t.TempDir(),
+		AgentName:   "agent",
+		TaskID:      "9e570000-0000-0000-0000-000000000000",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorktree failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(result.Path, "mods", "mid", "mid.txt")); err != nil {
+		t.Fatalf("top-level submodule not populated from cache: %v", err)
+	}
+	nested := filepath.Join(result.Path, "mods", "mid", "nested", "inner", "inner.txt")
+	if _, err := os.Stat(nested); err != nil {
+		t.Fatalf("nested submodule not populated from cache: %v", err)
+	}
+}
+
+// TestCreateWorktreeCleansDirtySubmoduleOnReuse verifies that reusing a worktree
+// scrubs leftovers a previous task wrote inside a submodule. The superproject's
+// own `git reset --hard` + `git clean -fd` do not descend into submodules, and
+// `submodule update --force` only restores tracked files — so without an
+// explicit recursive submodule reset/clean, an untracked file written into the
+// submodule by one task would leak into the next.
+func TestCreateWorktreeCleansDirtySubmoduleOnReuse(t *testing.T) {
+	t.Parallel()
+	superRepo, _ := createSubmoduleSuperproject(t)
+
+	cache := New(t.TempDir(), testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: superRepo}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	// Task 1: create the worktree and populate the submodule.
+	workDir := t.TempDir()
+	first, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     superRepo,
+		WorkDir:     workDir,
+		AgentName:   "agent",
+		TaskID:      "d1d1d1d1-0000-0000-0000-000000000000",
+	})
+	if err != nil {
+		t.Fatalf("first CreateWorktree failed: %v", err)
+	}
+	subWorktree := filepath.Join(first.Path, "src", "shared-ui")
+
+	// Simulate a prior task dirtying the submodule: an untracked artifact plus a
+	// modified tracked file.
+	untracked := filepath.Join(subWorktree, "untracked.txt")
+	if err := os.WriteFile(untracked, []byte("leftover\n"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subWorktree, "lib.txt"), []byte("tampered\n"), 0o644); err != nil {
+		t.Fatalf("modify tracked file: %v", err)
+	}
+
+	// Task 2: reuse the same worktree directory with a fresh checkout. A plain
+	// re-checkout keeps a dirty checkout as it is (MUL-7284, see
+	// TestCreateWorktreeKeepsDirtySubmoduleWhenCheckoutIsKept); a fresh one
+	// resets the superproject, and the submodules must be reset with it.
+	second, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     superRepo,
+		WorkDir:     workDir,
+		AgentName:   "agent",
+		TaskID:      "d2d2d2d2-0000-0000-0000-000000000000",
+		Fresh:       true,
+	})
+	if err != nil {
+		t.Fatalf("second CreateWorktree failed: %v", err)
+	}
+	if second.Path != first.Path {
+		t.Fatalf("expected worktree reuse at %s, got %s", first.Path, second.Path)
+	}
+
+	if _, err := os.Stat(untracked); !os.IsNotExist(err) {
+		t.Fatalf("untracked submodule file survived worktree reuse (err=%v)", err)
+	}
+	data, err := os.ReadFile(filepath.Join(subWorktree, "lib.txt"))
+	if err != nil {
+		t.Fatalf("read submodule lib.txt after reuse: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "lib-v1" {
+		t.Fatalf("tracked submodule file not restored on reuse: lib.txt = %q, want %q", got, "lib-v1")
+	}
+}
+
+// TestCreateWorktreeKeepsDirtySubmoduleWhenCheckoutIsKept pins the other half:
+// when the superproject checkout is kept because it holds work (MUL-7284), the
+// submodule reset must not run either — the work may live inside a submodule.
+func TestCreateWorktreeKeepsDirtySubmoduleWhenCheckoutIsKept(t *testing.T) {
+	t.Parallel()
+	superRepo, _ := createSubmoduleSuperproject(t)
+
+	cache := New(t.TempDir(), testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: superRepo}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	workDir := t.TempDir()
+	params := WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     superRepo,
+		WorkDir:     workDir,
+		AgentName:   "agent",
+		TaskID:      "e1e1e1e1-0000-0000-0000-000000000000",
+	}
+	first, err := cache.CreateWorktree(params)
+	if err != nil {
+		t.Fatalf("first CreateWorktree failed: %v", err)
+	}
+	subWorktree := filepath.Join(first.Path, "src", "shared-ui")
+	untracked := filepath.Join(subWorktree, "untracked.txt")
+	if err := os.WriteFile(untracked, []byte("work in progress\n"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+
+	params.TaskID = "e2e2e2e2-0000-0000-0000-000000000000"
+	second, err := cache.CreateWorktree(params)
+	if err != nil {
+		t.Fatalf("second CreateWorktree failed: %v", err)
+	}
+	if second.Kept == "" {
+		t.Fatalf("a checkout with submodule work must be kept, got %+v", second)
+	}
+	if _, err := os.Stat(untracked); err != nil {
+		t.Fatalf("submodule work was discarded from a kept checkout: %v", err)
+	}
+}
+
+// TestCreateWorktreeFallsBackWhenMirrorIsStale verifies a stale mirror is never
+// worse than no mirror. When the mirror exists but is missing the commit the
+// submodule is pinned to, prepareSubmodules must NOT redirect to it — doing so
+// would fail the file-transport clone and leave a half-clone the real-remote
+// pass can't recover. Instead the submodule is left for the default-policy pass
+// (the real remote, http/ssh in production) to initialize, and the checkout
+// itself still succeeds with no half-clone left behind.
+//
+// The fixture's real remote is a local path, which the default-policy pass
+// blocks, so the submodule ends up empty here — that is exactly the "no worse
+// than no cache" baseline; in production the real remote is reachable and the
+// fallback populates it.
+func TestCreateWorktreeFallsBackWhenMirrorIsStale(t *testing.T) {
+	t.Parallel()
+	superRepo, subRepo := createSubmoduleSuperproject(t)
+
+	cacheRoot := t.TempDir()
+	cache := New(cacheRoot, testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: superRepo}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	// Replace the submodule mirror with an empty bare repo: still looks like a
+	// bare repo (isBareRepo == true) but is missing the pinned commit.
+	mirror := filepath.Join(cacheRoot, "ws-1", bareDirName(subRepo))
+	if err := os.RemoveAll(mirror); err != nil {
+		t.Fatalf("remove mirror: %v", err)
+	}
+	if out, err := exec.Command("git", "init", "--bare", mirror).CombinedOutput(); err != nil {
+		t.Fatalf("init empty bare mirror: %s: %v", out, err)
+	}
+
+	result, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     superRepo,
+		WorkDir:     t.TempDir(),
+		AgentName:   "agent",
+		TaskID:      "57a1e000-0000-0000-0000-000000000000",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorktree must still succeed with a stale mirror: %v", err)
+	}
+
+	// The stale mirror must not be left as the submodule's transport: the
+	// superproject config keeps the real URL so the submodule can be initialized
+	// from the real remote.
+	if got := gitConfigGet(t, result.Path, "submodule.src/shared-ui.url"); got != subRepo {
+		t.Fatalf("submodule url = %q, want real remote %q (stale mirror must not be redirected to)", got, subRepo)
+	}
+
+	// No half-clone from the stale mirror: the submodule working tree has no
+	// .git, so a later init from the real remote starts clean.
+	if _, err := os.Stat(filepath.Join(result.Path, "src", "shared-ui", ".git")); !os.IsNotExist(err) {
+		t.Fatalf("stale-mirror checkout left a half-clone in the submodule (err=%v)", err)
+	}
+}
+
+func TestNormalizeSubmoduleURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, in, want string
+	}{
+		{"http user:password stripped", "http://user:pass@host/path.git", "http://host/path.git"},
+		{"https CI token stripped", "https://cloud-deploy:tok@gitlab.example.com/g/r.git", "https://gitlab.example.com/g/r.git"},
+		{"ssh bare username kept", "ssh://git@host/path.git", "ssh://git@host/path.git"},
+		{"http bare username kept", "http://token@host/path.git", "http://token@host/path.git"},
+		{"scp-style kept", "git@github.com:org/repo.git", "git@github.com:org/repo.git"},
+		{"clean https kept", "https://github.com/org/repo.git", "https://github.com/org/repo.git"},
+		{"local path kept", "/srv/repos/app.git", "/srv/repos/app.git"},
+	}
+	for _, tt := range tests {
+		if got := normalizeSubmoduleURL(tt.in); got != tt.want {
+			t.Errorf("%s: normalizeSubmoduleURL(%q) = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestRedactSecrets(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, in, want string
+	}{
+		{"clone failure with token", "fatal: clone of 'http://u:p@host/x.git' failed", "fatal: clone of 'http://***@host/x.git' failed"},
+		{"https userinfo", "https://cloud-deploy:s3cret@gitlab.net/r.git", "https://***@gitlab.net/r.git"},
+		{"clean url untouched", "https://github.com/org/repo.git", "https://github.com/org/repo.git"},
+		{"scp-style untouched", "git@github.com:org/repo.git", "git@github.com:org/repo.git"},
+		{"no urls", "Submodule path 'x': checked out 'deadbeef'", "Submodule path 'x': checked out 'deadbeef'"},
+		{"multiple urls", "a http://u:p@h1/x b https://x:y@h2/y", "a http://***@h1/x b https://***@h2/y"},
+	}
+	for _, tt := range tests {
+		if got := redactSecrets(tt.in); got != tt.want {
+			t.Errorf("%s: redactSecrets(%q) = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestCreateWorktreeStripsSubmoduleCredentialURL covers the case where a
+// submodule's .gitmodules URL carries an inline CI credential that is only valid
+// inside the CI environment (e.g. cloud-deploy:<token>@gitlab...). The daemon
+// runs outside that environment, so it must mirror from — and leave the
+// submodule's origin pointing at — the clean credential-free URL, never the
+// CI-only one.
+//
+// The fixture uses file://user:secret@<path>: git records it verbatim in
+// .gitmodules, and the assertion is that nothing downstream keeps the inline
+// credential. (A real http server rejecting the token vs. allowing the clean URL
+// can't be reproduced with local fixtures; this pins the credential-stripping
+// behavior end to end.)
+func TestCreateWorktreeStripsSubmoduleCredentialURL(t *testing.T) {
+	t.Parallel()
+	src := createRepoWithFile(t, "lib.txt", "lib\n")
+	credURL := "file://ci-token:s3cret@" + src
+	cleanURL := "file://" + src
+
+	super := createTestRepoAt(t, t.TempDir())
+	addSubmodule(t, super, credURL, "src/shared-ui")
+
+	cache := New(t.TempDir(), testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: super}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	result, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     super,
+		WorkDir:     t.TempDir(),
+		AgentName:   "agent",
+		TaskID:      "c1ea0000-0000-0000-0000-000000000000",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorktree failed: %v", err)
+	}
+
+	subWorktree := filepath.Join(result.Path, "src", "shared-ui")
+	if _, err := os.Stat(filepath.Join(subWorktree, "lib.txt")); err != nil {
+		t.Fatalf("submodule not populated: %v", err)
+	}
+
+	// The submodule's origin and the superproject's submodule.<name>.url must be
+	// the clean URL, never the inline credential.
+	origin := gitConfigGet(t, subWorktree, "remote.origin.url")
+	if origin != cleanURL {
+		t.Fatalf("submodule origin = %q, want clean %q (inline credential must be stripped)", origin, cleanURL)
+	}
+	cfg := gitConfigGet(t, result.Path, "submodule.src/shared-ui.url")
+	if cfg != cleanURL {
+		t.Fatalf("submodule.url = %q, want clean %q", cfg, cleanURL)
+	}
+}
+
 // TestLastUsedMissingIsUnknownNotAncient pins the distinction the GC's
 // upgrade safety depends on: a cache created before the stamp existed must
 // report "unknown", never a zero time that reads as infinitely idle.

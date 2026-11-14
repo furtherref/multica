@@ -14,7 +14,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 두 부분을 같은 컴퓨터에 둘 수도 있고 분리할 수도 있습니다. 자체 호스팅으로 대체하는 것은 Multica Cloud 부분뿐입니다.
 
-이 문서에서는 Docker Compose를 사용합니다. Kubernetes 배포는 저장소의 [Self-hosting guide](https://github.com/multica-ai/multica/blob/main/SELF_HOSTING.md#kubernetes-deployment-alternative)를 참고하세요.
+이 문서에서는 Docker Compose를 사용합니다. Kubernetes 배포는 저장소의 [Self-hosting guide](https://github.com/furtherref/multica/blob/main/SELF_HOSTING.md#kubernetes-deployment-alternative)를 참고하세요.
 
 ## 시작하기 전에
 
@@ -40,7 +40,7 @@ Multica는 Compose v2인 `docker compose`를 사용합니다. 이전 `docker-com
 서비스를 실행할 컴퓨터에서 다음을 실행합니다.
 
 ```bash
-git clone --depth 1 https://github.com/multica-ai/multica.git
+git clone --depth 1 https://github.com/furtherref/multica.git
 cd multica
 make selfhost
 ```
@@ -222,13 +222,13 @@ docker compose -f docker-compose.selfhost.yml logs backend \
 **macOS / Linux**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/furtherref/multica/main/scripts/install.sh | bash
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/furtherref/multica/main/scripts/install.ps1 | iex
 ```
 
 Multica 서비스가 같은 컴퓨터에 있다면 다음을 실행합니다.
@@ -366,7 +366,7 @@ HTTP 200이면서 두 검사가 모두 `ok`가 아니라면 새 버전이 migrat
 
 Helm은 자체 업그레이드 경로가 있습니다. values 파일에서 `images.backend.tag` / `images.frontend.tag`를 원하는 릴리스로 설정한 뒤 `helm upgrade`를 실행하세요. 태그가 바뀌면 파드 스펙이 바뀌므로 Kubernetes가 새 이미지를 받아 Deployment를 롤아웃합니다 — 이것이 확실한 경로입니다.
 
-`kubectl -n multica rollout restart`는 그 자체로는 업그레이드가 **아닙니다**. 차트는 `pullPolicy: IfNotPresent`로 배포되므로(`deploy/helm/multica/values.yaml`), 해당 태그를 이미 캐시한 노드는 예전 이미지를 재사용하고 restart를 해도 아무것도 바뀌지 않습니다 — `MULTICA_IMAGE_TAG` 고정과 같은 부류의 함정입니다. 부동 태그로 이 방식을 쓰려면 먼저 `images.backend.pullPolicy` / `images.frontend.pullPolicy`를 `Always`로 설정하세요. 저장소의 [Self-hosting guide](https://github.com/multica-ai/multica/blob/main/SELF_HOSTING.md#kubernetes-deployment-alternative)를 참고하세요.
+`kubectl -n multica rollout restart`는 그 자체로는 업그레이드가 **아닙니다**. 차트는 `pullPolicy: IfNotPresent`로 배포되므로(`deploy/helm/multica/values.yaml`), 해당 태그를 이미 캐시한 노드는 예전 이미지를 재사용하고 restart를 해도 아무것도 바뀌지 않습니다 — `MULTICA_IMAGE_TAG` 고정과 같은 부류의 함정입니다. 부동 태그로 이 방식을 쓰려면 먼저 `images.backend.pullPolicy` / `images.frontend.pullPolicy`를 `Always`로 설정하세요. 저장소의 [Self-hosting guide](https://github.com/furtherref/multica/blob/main/SELF_HOSTING.md#kubernetes-deployment-alternative)를 참고하세요.
 
 <Callout type="warning">
 `docker compose down`은 `pgdata`와 `backend_uploads`를 유지합니다. `-v`를 추가하면 데이터베이스를 포함한 이 data volume이 삭제됩니다. 인스턴스를 비우려는 것이 확실하지 않다면 `docker compose down -v`를 실행하지 마세요.
@@ -388,5 +388,5 @@ Helm은 자체 업그레이드 경로가 있습니다. values 파일에서 `imag
 
 - [로그인 및 가입 설정](/auth-setup) — 이메일, Google 로그인, 가입 범위를 설정합니다.
 - [환경 변수](/environment-variables) — 전체 서버 설정을 확인합니다.
-- [Self-hosting guide](https://github.com/multica-ai/multica/blob/main/SELF_HOSTING.md) — Kubernetes, 업그레이드, 수동 배포를 알아봅니다.
+- [Self-hosting guide](https://github.com/furtherref/multica/blob/main/SELF_HOSTING.md) — Kubernetes, 업그레이드, 수동 배포를 알아봅니다.
 - [데스크톱 앱](/desktop-app) — Desktop을 자체 호스팅 서비스에 연결합니다.

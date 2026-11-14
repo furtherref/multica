@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { screen, waitFor, fireEvent } from "@testing-library/react";
 import {
   QueryClient,
   QueryClientProvider,
@@ -58,20 +58,14 @@ vi.mock("@multica/core/api", () => ({
   },
 }));
 
-import { I18nProvider } from "@multica/core/i18n/react";
-import enCommon from "../locales/en/common.json";
-import enInvite from "../locales/en/invite.json";
 import { InvitationsPage } from "./invitations-page";
-
-const TEST_RESOURCES = { en: { common: enCommon, invite: enInvite } };
+import { renderWithI18n } from "../test/i18n";
 
 function renderWithClient(client: QueryClient = new QueryClient()) {
-  return render(
-    <I18nProvider locale="en" resources={TEST_RESOURCES}>
-      <QueryClientProvider client={client}>
-        <InvitationsPage />
-      </QueryClientProvider>
-    </I18nProvider>,
+  return renderWithI18n(
+    <QueryClientProvider client={client}>
+      <InvitationsPage />
+    </QueryClientProvider>,
   );
 }
 

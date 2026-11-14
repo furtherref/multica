@@ -124,9 +124,14 @@ func (h *Handler) requireDaemonTaskAccess(w http.ResponseWriter, r *http.Request
 // implementation; the simpler one is preserved for ergonomic call sites
 // that genuinely don't need workspace_id.
 func (h *Handler) requireDaemonTaskAccessWithWorkspace(w http.ResponseWriter, r *http.Request, taskID string) (db.AgentTaskQueue, string, bool) {
+	task, workspaceID, _, ok := h.requireDaemonTaskAccessWithRealtimeScope(w, r, taskID)
+	return task, workspaceID, ok
+}
+
+func (h *Handler) requireDaemonTaskAccessWithRealtimeScope(w http.ResponseWriter, r *http.Request, taskID string) (db.AgentTaskQueue, string, string, bool) {
 	taskUUID, ok := parseUUIDOrBadRequest(w, taskID, "task_id")
 	if !ok {
-		return db.AgentTaskQueue{}, "", false
+		return db.AgentTaskQueue{}, "", "", false
 	}
 	task, err := h.Queries.GetAgentTask(r.Context(), taskUUID)
 	if err != nil {
@@ -135,11 +140,11 @@ func (h *Handler) requireDaemonTaskAccessWithWorkspace(w http.ResponseWriter, r 
 		// error must not be reported as a deletion.
 		if isNotFound(err) {
 			writeError(w, http.StatusNotFound, "task not found")
-			return db.AgentTaskQueue{}, "", false
+			return db.AgentTaskQueue{}, "", "", false
 		}
 		slog.Warn("get agent task failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to load task")
-		return db.AgentTaskQueue{}, "", false
+		return db.AgentTaskQueue{}, "", "", false
 	}
 
 	// Same rule as the GetAgentTask branch above, one link further out: the
@@ -148,21 +153,21 @@ func (h *Handler) requireDaemonTaskAccessWithWorkspace(w http.ResponseWriter, r 
 	// issue / chat session / autopilot leaves us unable to tell whether the
 	// task is reachable, and "I don't know" must not be reported as "deleted"
 	// (MUL-7259 / GH #8272 — the branch #2127 hardened above, missed here).
-	wsID, err := h.TaskService.ResolveTaskWorkspaceIDChecked(r.Context(), task)
+	wsID, recipientUserID, err := h.TaskService.ResolveTaskRealtimeScope(r.Context(), task)
 	if err != nil {
 		slog.Warn("resolve task workspace failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to load task")
-		return db.AgentTaskQueue{}, "", false
+		return db.AgentTaskQueue{}, "", "", false
 	}
 	if wsID == "" {
 		writeError(w, http.StatusNotFound, "task not found")
-		return db.AgentTaskQueue{}, "", false
+		return db.AgentTaskQueue{}, "", "", false
 	}
 
 	if !h.requireDaemonWorkspaceAccess(w, r, wsID) {
-		return db.AgentTaskQueue{}, "", false
+		return db.AgentTaskQueue{}, "", "", false
 	}
-	return task, wsID, true
+	return task, wsID, recipientUserID, true
 }
 
 // verifyDaemonWorkspaceAccess checks workspace access without writing an HTTP error.
@@ -886,6 +891,11 @@ func (h *Handler) mergeLegacyRuntime(ctx context.Context, newRuntimeID, oldRunti
 	}); err != nil {
 		return fmt.Errorf("record legacy daemon_id: %w", err)
 	}
+	// The merged-away runtime keeps no budget scopes: limits belong to the
+	// runtime row, and nothing else deletes them (no foreign key).
+	if err := qtx.DeleteRuntimeCostBudgetsForRuntime(ctx, oldRuntimeID); err != nil {
+		return fmt.Errorf("delete old runtime budgets: %w", err)
+	}
 	if err := qtx.DeleteAgentRuntime(ctx, oldRuntimeID); err != nil {
 		return fmt.Errorf("delete old runtime: %w", err)
 	}
@@ -1253,8 +1263,37 @@ func runtimeGoneHeartbeatAck(runtimeID string) *protocol.DaemonHeartbeatAckPaylo
 // The actual DB write is delegated to h.HeartbeatScheduler so production can
 // coalesce many runtimes' bumps into one bulk UPDATE per tick. See
 // heartbeat_scheduler.go for the two implementations.
+// runtimeOwnerSuspended reports whether rt's owner is CONFIRMED suspended.
+// Used by the daemon paths a stale mdt_ cache entry could otherwise still
+// drive (heartbeat liveness, task claim): the mdt_ token carries no user
+// identity, so per-request enforcement happens against the runtime's owner
+// through the AccountGuard's cached lookup. Transient lookup failures return
+// false — auth already gated the request, and daemon behavior must not flap
+// on a Redis or DB hiccup.
+func (h *Handler) runtimeOwnerSuspended(ctx context.Context, rt db.AgentRuntime) bool {
+	if !rt.OwnerID.Valid {
+		return false
+	}
+	return h.ownerSuspended(ctx, uuidToString(rt.OwnerID))
+}
+
+// ownerSuspended is runtimeOwnerSuspended for paths that only hold the owner's
+// user id (the WebSocket heartbeat lease reads no runtime row). An empty id
+// means an ownerless runtime, which nothing can suspend.
+func (h *Handler) ownerSuspended(ctx context.Context, ownerID string) bool {
+	if ownerID == "" || h.AccountGuard == nil {
+		return false
+	}
+	return errors.Is(h.AccountGuard.Check(ctx, ownerID), auth.ErrAccountSuspended)
+}
+
 func (h *Handler) recordHeartbeat(ctx context.Context, rt db.AgentRuntime) error {
+	ownerID := ""
+	if rt.OwnerID.Valid {
+		ownerID = uuidToString(rt.OwnerID)
+	}
 	return h.recordHeartbeatState(ctx, rt.ID, uuidToString(rt.ID), heartbeatLivenessState{
+		OwnerID:         ownerID,
 		Status:          rt.Status,
 		LastSeenAt:      rt.LastSeenAt.Time,
 		LastSeenAtValid: rt.LastSeenAt.Valid,
@@ -1272,6 +1311,7 @@ func (h *Handler) recordHeartbeatLease(ctx context.Context, runtimeID string, le
 	// An invalid value suppresses the event instead of failing the heartbeat.
 	wsUUID, _ := util.ParseUUID(state.WorkspaceID)
 	return h.recordHeartbeatState(ctx, runtimeUUID, runtimeID, heartbeatLivenessState{
+		OwnerID:         state.OwnerID,
 		Status:          state.Status,
 		LastSeenAt:      state.LastSeenAt,
 		LastSeenAtValid: state.LastSeenAtValid,
@@ -1280,6 +1320,7 @@ func (h *Handler) recordHeartbeatLease(ctx context.Context, runtimeID string, le
 }
 
 type heartbeatLivenessState struct {
+	OwnerID         string
 	Status          string
 	LastSeenAt      time.Time
 	LastSeenAtValid bool
@@ -1296,6 +1337,18 @@ func (h *Handler) recordHeartbeatState(
 	markDBWriteScheduled func(time.Time),
 ) error {
 	now := time.Now()
+
+	// A heartbeat that passed auth BEFORE its owner was suspended (an
+	// in-flight HTTP request, or a WS handler holding a pre-suspension
+	// runtime row) must not resurrect a runtime the suspension transaction
+	// just force-offlined. This app-level check saves the scheduler work in
+	// the common case; the transactionally airtight closure is the
+	// suspended-owner predicate inside MarkAgentRuntimeOnline itself.
+	if h.ownerSuspended(ctx, state.OwnerID) {
+		slog.Warn("heartbeat: dropping liveness write for suspended owner",
+			"runtime_id", runtimeID, "owner_id", state.OwnerID)
+		return nil
+	}
 
 	// Decide whether the DB row needs a write *before* touching Redis, so a
 	// Touch failure can simply force needDBWrite=true without re-evaluating
@@ -1813,6 +1866,13 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		// with a NULL daemon_id (e.g. cloud runtimes) are not machine-pinned, so
 		// they stay claimable — same tolerance as the WS handler.
 		if rt.DaemonID.Valid && rt.DaemonID.String != req.DaemonID {
+			continue
+		}
+		// A stale mdt_ cache entry can authenticate for up to AuthCacheTTL
+		// after suspension deleted the token; the claim path re-checks the
+		// runtime owner per-request so a suspended user's runtimes never
+		// receive new work regardless of how the caller authenticated.
+		if h.runtimeOwnerSuspended(r.Context(), rt) {
 			continue
 		}
 		runtimeByID[uuidToString(rt.ID)] = rt
@@ -2458,13 +2518,6 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		)
 	}
 	useSkillRefs := requestHasClientCapability(r, protocol.DaemonCapabilitySkillBundlesV1)
-	// A daemon older than the multica-platform merge assembles a brief that
-	// still names the built-ins this server stopped shipping. It cannot be
-	// fixed from here — the brief lives in the daemon binary — so the missing
-	// capability buys that daemon a redirect stub under the old name instead of
-	// a dangling pointer. Capability, not version: the version string is only
-	// ever shown to humans.
-	legacySkillRedirects := !requestHasClientCapability(r, protocol.DaemonCapabilityPlatformSkillV1)
 	var customEnv map[string]string
 	if agent.CustomEnv != nil {
 		if err := json.Unmarshal(agent.CustomEnv, &customEnv); err != nil {
@@ -2550,7 +2603,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, agent.Instructions)
 	}
 	if useSkillRefs {
-		_, skillRefs, err := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.SystemKey.String, legacySkillRedirects)
+		_, skillRefs, err := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.SystemKey.String)
 		if err != nil {
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.rejectClaimSkillLoad(task, err)
 		}
@@ -2562,7 +2615,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.rejectClaimSkillLoad(task, err)
 		}
 		agentSkillCount = len(skills)
-		builtinSkills := h.TaskService.BuiltinSkills(agent.SystemKey.String, legacySkillRedirects)
+		builtinSkills := h.TaskService.BuiltinSkills(agent.SystemKey.String)
 		builtinSkillCount = len(builtinSkills)
 		skills = append(skills, builtinSkills...)
 		resp.Agent.Skills = skills
@@ -3638,6 +3691,19 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 	}
 
+	// Wakeup rules that waited for this run hand it their inputs now, after
+	// every gate passed, and only for a daemon that renders them; otherwise
+	// they keep their inputs and start their own run.
+	if requestHasClientCapability(r, protocol.DaemonCapabilityJoinedWakeupsV1) {
+		joined, err := (&service.IssueWakeupService{Tasks: h.TaskService}).JoinWaitingWakeups(r.Context(), *task)
+		if err != nil {
+			slog.Warn("daemon claim: waiting wakeups keep their inputs", "task_id", uuidToString(task.ID), "error", err)
+		} else {
+			task.Context = joined
+			resp.WakeupJoined = service.JoinedWakeupNotes(joined)
+		}
+	}
+
 	// Hydrate attribution only after every source/workspace/version gate has
 	// passed so a rejected claim cannot receive another user's profile data.
 	// The existing flat initiator fields carry the run's authorization human to
@@ -3728,6 +3794,13 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	// runtime_id (defense-in-depth against upstream routing bugs).
 	runtime, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID)
 	if !ok {
+		return
+	}
+	// Same per-request owner re-check as the batch claim: a stale mdt_ cache
+	// entry must not hand a suspended user's runtime new work.
+	if h.runtimeOwnerSuspended(r.Context(), runtime) {
+		outcome = "owner_suspended"
+		payloadBytes, _ = writeMeasuredJSON(w, http.StatusOK, map[string]any{"task": nil})
 		return
 	}
 	runtimeWorkspaceID := uuidToString(runtime.WorkspaceID)
@@ -4191,19 +4264,12 @@ func (h *Handler) ReportTaskProgress(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify ownership and resolve workspace ID.
-	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	task, workspaceID, recipientUserID, ok := h.requireDaemonTaskAccessWithRealtimeScope(w, r, taskID)
 	if !ok {
 		return
 	}
 
-	workspaceID := ""
-	if task.IssueID.Valid {
-		if issue, err := h.Queries.GetIssue(r.Context(), task.IssueID); err == nil {
-			workspaceID = uuidToString(issue.WorkspaceID)
-		}
-	}
-
-	h.TaskService.ReportProgress(r.Context(), taskID, workspaceID, req.Summary, req.Step, req.Total)
+	h.TaskService.ReportProgress(r.Context(), task, workspaceID, recipientUserID, req.Summary, req.Step, req.Total)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -4457,6 +4523,7 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		IssueID:           task.IssueID,
 		Since:             task.CreatedAt,
 		PlannedCommentIds: plannedCommentIDs,
+		AgentID:           task.AgentID,
 	})
 	if err != nil {
 		slog.Warn("reconcile comments on completion: list comments failed",
@@ -5099,7 +5166,7 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 	// endpoint fires every 500ms for every running task, and that second
 	// lookup was a whole extra query per batch on the hottest write path in
 	// the system (MUL-6523).
-	task, wsID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
+	task, wsID, recipientUserID, ok := h.requireDaemonTaskAccessWithRealtimeScope(w, r, taskID)
 	if !ok {
 		return
 	}
@@ -5217,9 +5284,48 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 			// rather than reusing the table model; the columns are the table's,
 			// in order, so the conversion is checked by the compiler and breaks
 			// loudly if the query ever stops returning the whole row.
-			h.publishTask(protocol.EventTaskMessage, workspaceID, "system", "", taskID,
+			h.publishTask(protocol.EventTaskMessage, workspaceID, "system", "", task, recipientUserID,
 				taskMessageToPayload(db.TaskMessage(m), taskID, uuidToString(task.IssueID)))
 		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// ReportTaskActivity broadcasts a transient activity hint for a running task
+// (e.g. "reconnecting") to the workspace's realtime subscribers WITHOUT
+// persisting it. Unlike ReportTaskMessages there is no DB write: the frontend
+// shows it as an in-place indicator and drops it when the next real task
+// message arrives, so a burst of upstream reconnects never pollutes the
+// append-only transcript.
+func (h *Handler) ReportTaskActivity(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "taskId")
+
+	var req struct {
+		Activity string `json:"activity"`
+		AfterSeq int    `json:"after_seq"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Activity) == "" {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
+	// Verify the caller owns this task's workspace.
+	task, workspaceID, recipientUserID, ok := h.requireDaemonTaskAccessWithRealtimeScope(w, r, taskID)
+	if !ok {
+		return
+	}
+	if workspaceID != "" {
+		h.publishTask(protocol.EventTaskActivity, workspaceID, "system", "", task, recipientUserID, protocol.TaskActivityPayload{
+			TaskID:   taskID,
+			IssueID:  uuidToString(task.IssueID),
+			Activity: req.Activity,
+			AfterSeq: req.AfterSeq,
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -5693,7 +5799,7 @@ func (h *Handler) hydrateTaskUsage(ctx context.Context, issueID pgtype.UUID, res
 
 	byTask := make(map[string][]TaskUsageData, len(resp))
 	for _, row := range rows {
-		appendTaskUsage(byTask, row.TaskID, row.Provider, row.Model,
+		appendTaskUsage(byTask, row.TaskID, row.PricingDate, row.Provider, row.Model,
 			row.InputTokens, row.OutputTokens, row.CacheReadTokens,
 			row.CacheWriteTokens, row.CostUsdTicks)
 	}
@@ -5722,7 +5828,7 @@ func (h *Handler) hydrateAgentTaskUsage(ctx context.Context, agentID pgtype.UUID
 
 	byTask := make(map[string][]TaskUsageData, len(resp))
 	for _, row := range rows {
-		appendTaskUsage(byTask, row.TaskID, row.Provider, row.Model,
+		appendTaskUsage(byTask, row.TaskID, row.PricingDate, row.Provider, row.Model,
 			row.InputTokens, row.OutputTokens, row.CacheReadTokens,
 			row.CacheWriteTokens, row.CostUsdTicks)
 	}
@@ -5733,6 +5839,7 @@ func (h *Handler) hydrateAgentTaskUsage(ctx context.Context, agentID pgtype.UUID
 func appendTaskUsage(
 	byTask map[string][]TaskUsageData,
 	taskID pgtype.UUID,
+	pricingDate pgtype.Date,
 	provider string,
 	model string,
 	inputTokens int64,
@@ -5748,6 +5855,7 @@ func appendTaskUsage(
 	}
 	id := uuidToString(taskID)
 	byTask[id] = append(byTask[id], TaskUsageData{
+		PricingDate:      pricingDate.Time.Format("2006-01-02"),
 		Provider:         provider,
 		Model:            model,
 		InputTokens:      inputTokens,

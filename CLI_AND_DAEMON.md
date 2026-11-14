@@ -7,13 +7,13 @@ The `multica` CLI connects your local machine to Multica. It handles authenticat
 ### Homebrew (macOS/Linux)
 
 ```bash
-brew install multica-ai/tap/multica
+brew install furtherref/tap/multica
 ```
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/multica-ai/multica.git
+git clone https://github.com/furtherref/multica.git
 cd multica
 make build
 cp server/bin/multica /usr/local/bin/multica
@@ -22,7 +22,7 @@ cp server/bin/multica /usr/local/bin/multica
 ### Update
 
 ```bash
-brew upgrade multica-ai/tap/multica
+brew upgrade furtherref/tap/multica
 ```
 
 For install script or manual installs, use:
@@ -44,10 +44,12 @@ export MULTICA_DAEMON_AUTO_UPDATE=true
 multica update
 ```
 
-The metadata mirror must serve `/repos/multica-ai/multica/releases/latest` and
-`/repos/multica-ai/multica/releases/tags/<tag>`. The artifact mirror must serve
+The metadata mirror must serve `/repos/furtherref/multica/releases/latest` and
+`/repos/furtherref/multica/releases/tags/<tag>`. The artifact mirror must serve
 `/<tag>/<asset-name>` and preserve the published `checksums.txt` contents.
 When these variables are unset, the GitHub defaults remain unchanged.
+
+> **Behind a shared egress IP (NAT / forward proxy)?** Release lookups call the GitHub API, which is rate-limited to **60 requests/hour per IP** for unauthenticated callers. When several daemons (or other tools) share one outbound IP — common on self-hosted servers that reach GitHub through a proxy — that budget is easily exhausted, and `multica update` *and the daemon's automatic self-update* fail with `fetch release metadata: GitHub API returned 403`. Set the `GITHUB_TOKEN` environment variable to raise the limit to **5000/hour scoped to the token** (any token that can read the public release repo works — no scopes required). The daemon reads it at startup, so **restart the daemon after setting it**.
 
 ## Quick Start
 
@@ -290,6 +292,7 @@ Daemon behavior is configured via flags or environment variables:
 | GC Hermes memory TTL (per-agent `memories/`) | — | `MULTICA_GC_HERMES_MEMORY_TTL` | `2160h` (90d; set `0` to disable) |
 | GC Hermes session TTL (per-conversation `state.db`) | — | `MULTICA_GC_HERMES_SESSION_TTL` | `336h` (14d; set `0` to disable) |
 | GC task temp legacy TTL (pre-lock `multica-task-*`) | — | `MULTICA_GC_TASK_TEMP_LEGACY_TTL` | `0` (disabled; set a duration to opt in) |
+| GitHub API token for CLI self-update (see [Update](#update)) | — | `GITHUB_TOKEN` | empty |
 
 #### Workspace garbage collection
 
@@ -579,9 +582,11 @@ Flags: `--title` (required), `--description`, `--status`, `--priority`, `--assig
 ```bash
 multica issue update <id> --title "New title" --priority urgent
 multica issue update <id> --position 4.5
+multica issue update <id> --attachment revised.png
 ```
 
 `--position` sets the raw ordering value within the board column (lower sorts first). For relative moves, `issue reorder` is easier because it works out the value for you.
+`--attachment` uploads a local file and appends its Markdown reference to the end of the issue description. Repeat the flag to attach multiple files. To replace an existing image, also use `--description-file` to remove the old reference from the description.
 
 ### Reorder Issue
 
@@ -618,6 +623,16 @@ Built-in statuses: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `block
 `cancelled`. A workspace can define custom statuses on top of these; their keys are
 shown in **Settings → Issue Statuses**, and passing an unknown value returns the full
 list.
+
+To cancel an issue because it duplicates another, mark it so the original lists it:
+
+```bash
+multica issue status <id> cancelled --duplicate-of <original>
+```
+
+`--duplicate-of` takes an issue key or full UUID and requires status `cancelled`.
+`issue update <id> --duplicate-of <original>` does the same, but cannot be combined with
+description or attachment changes. Moving the issue to any other status removes the mark.
 
 ### Comments
 

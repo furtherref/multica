@@ -147,12 +147,14 @@ func parseProjectIDParam(w http.ResponseWriter, r *http.Request) (pgtype.UUID, b
 	return u, true
 }
 
-// DashboardUsageDailyResponse is one (date, provider, model) bucket. Cost-side
+// DashboardUsageDailyResponse is one (display date, UTC pricing date, provider,
+// model) bucket. Cost-side
 // math happens on the client from a per-model pricing table; provider + model
 // stay on the wire so the client can disambiguate bare model ids that collide
 // across providers (e.g. Cursor's `auto`).
 type DashboardUsageDailyResponse struct {
 	Date             string `json:"date"`
+	PricingDate      string `json:"pricing_date"`
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`
@@ -215,6 +217,7 @@ func (h *Handler) listDashboardUsageDaily(
 	for i, row := range rows {
 		resp[i] = DashboardUsageDailyResponse{
 			Date:                     row.Date.Time.Format("2006-01-02"),
+			PricingDate:              row.PricingDate.Time.Format("2006-01-02"),
 			Provider:                 row.Provider,
 			Model:                    row.Model,
 			InputTokens:              row.InputTokens,
@@ -232,11 +235,13 @@ func (h *Handler) listDashboardUsageDaily(
 	return resp, nil
 }
 
-// DashboardUsageByAgentResponse is one (agent, provider, model) row. provider
+// DashboardUsageByAgentResponse is one (agent, UTC pricing date, provider,
+// model) row. provider
 // rides along for the same cross-provider pricing disambiguation as the daily
 // response; the client folds by agent_id and sums cost.
 type DashboardUsageByAgentResponse struct {
 	AgentID          string `json:"agent_id"`
+	PricingDate      string `json:"pricing_date"`
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`
@@ -273,8 +278,9 @@ func (h *Handler) GetDashboardUsageByAgent(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	// "By agent" has no date grouping in the SQL — tz only determines
-	// the cutoff boundary, not the bucket axis. Which is exactly why the
+	// "By agent" has no viewing-date grouping in the SQL — its UTC
+	// pricing_date cannot trim a viewer-local window. tz therefore only
+	// determines the cutoff boundary. Which is exactly why the
 	// cutoff must be the EXACT N-day one: the client trims the surplus day
 	// `parseSinceParamInTZ` hands back with `-(days-1)`, and a response
 	// carrying no date cannot be trimmed that way. On the N+1 cutoff this
@@ -296,7 +302,7 @@ func (h *Handler) GetDashboardUsageByAgent(w http.ResponseWriter, r *http.Reques
 // the client can still price it from its per-model table — without that the
 // bucket's cost is uncomputable and the leaderboard stops summing to the Cost
 // KPI, which is the whole reason these rows are folded rather than dropped.
-type providerModelKey struct{ provider, model string }
+type providerModelKey struct{ pricingDate, provider, model string }
 
 func foldRestrictedUsageByAgent(
 	rows []DashboardUsageByAgentResponse,
@@ -307,7 +313,7 @@ func foldRestrictedUsageByAgent(
 		restricted,
 		func(row DashboardUsageByAgentResponse) string { return row.AgentID },
 		func(row DashboardUsageByAgentResponse) (DashboardUsageByAgentResponse, providerModelKey) {
-			key := providerModelKey{provider: row.Provider, model: row.Model}
+			key := providerModelKey{pricingDate: row.PricingDate, provider: row.Provider, model: row.Model}
 			row.AgentID = restrictedAgentsRowID
 			return row, key
 		},
@@ -345,6 +351,7 @@ func (h *Handler) listDashboardUsageByAgent(
 	for i, row := range rows {
 		resp[i] = DashboardUsageByAgentResponse{
 			AgentID:                  uuidToString(row.AgentID),
+			PricingDate:              row.PricingDate.Time.Format("2006-01-02"),
 			Provider:                 row.Provider,
 			Model:                    row.Model,
 			InputTokens:              row.InputTokens,

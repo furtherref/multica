@@ -15,6 +15,7 @@ import { pinListOptions, useCreatePin, useDeletePin } from "@multica/core/pins";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
+import { requiresIssueStatusConfirmation } from "./status-confirmation";
 import { runConfirmIntent } from "./run-confirm-gate";
 import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
 import type { IssueSurfaceMutationOptions } from "../surface/actions-context";
@@ -93,30 +94,45 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
         openModal("issue-run-confirm", intent);
         return;
       }
-      if (surfaceActions) {
-        surfaceActions.updateIssue(issueId, updates, {
-          errorMessage: t(($) => $.detail.update_failed),
-          ...options,
-        });
-      } else {
-        updateIssue.mutate(
-          { id: issueId, ...updates },
-          {
-            onSuccess: options?.onSuccess,
-            onError: (err) => {
-              toast.error(
-                errorCode(err) === "revision_conflict"
-                  ? t(($) => $.revision.conflict)
-                  : err instanceof Error && err.message
-                  ? err.message
-                  : t(($) => $.detail.update_failed),
-              );
-              options?.onError?.(err);
+      const runUpdate = () => {
+        if (surfaceActions) {
+          surfaceActions.updateIssue(issueId, updates, {
+            errorMessage: t(($) => $.detail.update_failed),
+            ...options,
+          });
+        } else {
+          updateIssue.mutate(
+            { id: issueId, ...updates },
+            {
+              onSuccess: options?.onSuccess,
+              onError: (err) => {
+                toast.error(
+                  errorCode(err) === "revision_conflict"
+                    ? t(($) => $.revision.conflict)
+                    : err instanceof Error && err.message
+                    ? err.message
+                    : t(($) => $.detail.update_failed),
+                );
+                options?.onError?.(err);
+              },
+              onSettled: () => options?.onSettled?.(),
             },
-            onSettled: () => options?.onSettled?.(),
-          },
-        );
+          );
+        }
+      };
+
+      // Destructive status changes (cancelled/archive) confirm first and apply
+      // on confirm — a fork-only guard upstream does not have.
+      if (requiresIssueStatusConfirmation(updates.status)) {
+        openModal("issue-status-confirm", {
+          status: updates.status,
+          count: 1,
+          onConfirm: runUpdate,
+        });
+        return;
       }
+
+      runUpdate();
     },
     [issue, issueId, entryOf, surfaceActions, updateIssue, openModal, t],
   );

@@ -13,7 +13,10 @@ import {
   FAILURE_REASON_I18N_KEYS,
   cancellationActorLabel,
   cancelReasonLabel,
+  failureNeedsAction,
   failureReasonLabel,
+  isCancelledOutcome,
+  runOutcomeLabel,
 } from "./task-failure";
 
 const AGENT_RESOURCES = {
@@ -156,6 +159,18 @@ describe("failureReasonLabel", () => {
     );
   });
 
+  // A deferred fallback task that comes due against a spent runtime cost
+  // budget is failed with this reason rather than promoted. Without a label
+  // the execution log printed the wire value at the person who set the budget.
+  it("names the budget refusal that retires a due deferred task", () => {
+    expect(failureReasonLabel("budget_exceeded", enT)).toBe(
+      "Runtime cost budget reached",
+    );
+    expect(failureReasonLabel("budget_exceeded", fixedT("zh-Hans"))).toBe(
+      "运行时费用额度已达上限",
+    );
+  });
+
   it("maps runtime access denial to actionable recovery copy", () => {
     const label = failureReasonLabel("runtime_access_denied", enT);
     expect(label).toMatch(/make the runtime public/i);
@@ -215,5 +230,34 @@ describe("failureReasonLabel", () => {
     expect(failureReasonLabel(null, enT)).toBeNull();
     expect(failureReasonLabel(undefined, enT)).toBeNull();
     expect(failureReasonLabel("", enT)).toBeNull();
+  });
+});
+
+describe("run outcome", () => {
+  it("reads a failed row with a cancellation reason as cancelled", () => {
+    expect(isCancelledOutcome({ status: "failed", failure_reason: "cancelled" })).toBe(true);
+    expect(isCancelledOutcome({ status: "failed", failure_reason: "user_cancelled" })).toBe(true);
+    expect(isCancelledOutcome({ status: "cancelled" })).toBe(true);
+    expect(isCancelledOutcome({ status: "failed", failure_reason: "timeout" })).toBe(false);
+    expect(isCancelledOutcome({ status: "failed" })).toBe(false);
+  });
+
+  it("flags only failures that need a configuration change", () => {
+    expect(failureNeedsAction({ status: "failed", failure_reason: "agent_error.provider_auth_or_access" })).toBe(true);
+    expect(failureNeedsAction({ status: "failed", failure_reason: "runtime_access_denied" })).toBe(true);
+    expect(failureNeedsAction({ status: "failed", failure_reason: "agent_error.provider_capacity_or_rate_limit" })).toBe(false);
+    expect(failureNeedsAction({ status: "cancelled", failure_reason: "runtime_access_denied" })).toBe(false);
+  });
+
+  it("labels a run once: reason first, then who cancelled it", () => {
+    expect(runOutcomeLabel({ status: "failed", failure_reason: "cancelled" }, enT)).toBe("Cancelled by the system");
+    expect(runOutcomeLabel({ status: "failed", failure_reason: null }, enT)).toBeNull();
+    expect(runOutcomeLabel({
+      status: "cancelled", failure_reason: "queued_expired", cancelled_by: { type: "system" },
+    }, enT)).toBe("Expired in queue");
+    expect(runOutcomeLabel({
+      status: "cancelled", cancelled_by: { type: "member", name: "Jiayuan" },
+    }, enT)).toBe("Cancelled by Jiayuan");
+    expect(runOutcomeLabel({ status: "cancelled" }, enT)).toBeNull();
   });
 });

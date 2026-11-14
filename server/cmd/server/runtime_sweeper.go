@@ -212,6 +212,11 @@ func sweepPendingDelegatedFailureRecoveries(ctx context.Context, taskSvc *servic
 	if result.Exhausted > 0 {
 		slog.Warn("delegated failure recovery sweeper: automatic attempts exhausted", "count", result.Exhausted)
 	}
+	// Not counted in stats.changed: a budget-blocked entry stays pending and
+	// changed nothing this tick. It replays once the period resets.
+	if result.Blocked > 0 {
+		slog.Info("delegated failure recovery sweeper: held by a reached runtime cost budget", "count", result.Blocked)
+	}
 	return
 }
 
@@ -565,6 +570,11 @@ func gcRuntime(ctx context.Context, txStarter runtimeGCTxStarter, queries *db.Qu
 		}
 		return result, fmt.Errorf("teardown runtime: %w", err)
 	}
+	// Budget rows carry no foreign key (repository rule), so the collected
+	// runtime's scopes are removed explicitly inside the same transaction.
+	if err := qtx.DeleteRuntimeCostBudgetsForRuntime(ctx, runtimeID); err != nil {
+		return result, fmt.Errorf("delete runtime budgets: %w", err)
+	}
 	if err := qtx.DeleteAgentRuntime(ctx, runtimeID); err != nil {
 		return result, fmt.Errorf("delete runtime: %w", err)
 	}
@@ -743,11 +753,19 @@ func broadcastFailedTasks(ctx context.Context, queries *db.Queries, taskSvc *ser
 			WorkspaceID: workspaceID,
 			ActorType:   "system",
 			TaskID:      util.UUIDToString(t.ID),
+			AgentID:     util.UUIDToString(t.AgentID),
+			IssueID:     util.UUIDToString(t.IssueID),
 			Payload:     payload,
 		}
 		if t.ChatSessionID.Valid {
 			e.ChatSessionID = util.UUIDToString(t.ChatSessionID)
 			payload["chat_session_id"] = e.ChatSessionID
+			if session, err := queries.GetChatSession(ctx, t.ChatSessionID); err == nil {
+				e.RecipientUserID = util.UUIDToString(session.CreatorID)
+				if workspaceID == "" {
+					e.WorkspaceID = util.UUIDToString(session.WorkspaceID)
+				}
+			}
 		}
 		bus.Publish(e)
 		affectedAgents[util.UUIDToString(t.AgentID)] = t.AgentID

@@ -97,6 +97,14 @@ func TestRequestLogger_200StaysInfo(t *testing.T) {
 	requireLogLevel(t, logs, "INFO", "WARN", "ERROR")
 }
 
+func TestRequestLogger_IncludesApplicationResponseBytes(t *testing.T) {
+	logs := runRequestLogger(t, http.StatusOK, `{"ok":true}`)
+	out := logs.String()
+	if !strings.Contains(out, "response_bytes=11") {
+		t.Fatalf("expected application response byte count in logs, got:\n%s", out)
+	}
+}
+
 func TestRequestLogger_HealthEndpointIsSkipped(t *testing.T) {
 	logs := withCapturedLogs(t)
 	handler := RequestLogger(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

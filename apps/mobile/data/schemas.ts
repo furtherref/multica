@@ -430,7 +430,7 @@ export const AgentTaskSchema: z.ZodType<AgentTask> = z.object({
   // Open string, not an enum — same contract as `failure_reason` in
   // packages/core/types/agent.ts and as the chat message schema above. The
   // backend taxonomy passed the six coarse values at MUL-1949 and keeps
-  // growing (26 canonical reasons today), so an installed build meets reasons
+  // growing (27 canonical reasons today), so an installed build meets reasons
   // it predates.
   //
   // This field WAS a closed six-value enum, which made the whole thing moot:
@@ -556,6 +556,7 @@ export const EMPTY_PIN_LIST: PinnedItem[] = [];
 const InboxItemSchema: z.ZodType<InboxItem> = z.object({
   id: z.string(),
   workspace_id: z.string().default(""),
+  workspace_slug: z.string().default(""),
   // Recipient is always a real actor in the dataset, but defend against
   // either field going missing — mobile's actor lookup tolerates null.
   recipient_type: z.enum(["member", "agent"]).catch("member"),

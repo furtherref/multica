@@ -637,7 +637,7 @@ if (!gotTheLock) {
     });
 
     electronApp.setAppUserModelId(
-      is.dev ? "ai.multica.desktop.dev" : "ai.multica.desktop",
+      is.dev ? "com.furtherref.multica.dev" : "com.furtherref.multica",
     );
 
     // macOS: replace the default Electron dock icon with the bundled logo

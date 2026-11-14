@@ -13,12 +13,14 @@ import type {
 } from "../types";
 import {
   CHILDREN_BY_PARENTS_CHUNK_SIZE,
+  PAGINATED_CATEGORIES,
   PROJECT_GANTT_MAX_ISSUES,
   PROJECT_GANTT_PAGE_LIMIT,
   childrenByParentsOptions,
   childIssuesOptions,
   issueIdentifierOptions,
   issueKeys,
+  issueListOptions,
   issueTableRowPageOptions,
   projectGanttIssuesOptions,
   sourceContextPreviewOptions,
@@ -430,6 +432,42 @@ describe("projectGanttIssuesOptions", () => {
     installFakeApi(unrestricted);
     await qc.fetchQuery(projectGanttIssuesOptions(WS_ID, PROJECT_ID));
     expect(unrestricted.mock.calls[0]![0]).not.toHaveProperty("assignee_types");
+  });
+});
+
+// `archive` (fork status #39) is a closed-lifecycle key, not a catalog
+// category, so the legacy bucket fan-out never requests it by name. Archived
+// issues are reached through an explicit status filter on the table channel.
+describe("PAGINATED_CATEGORIES — archive stays out of the default fetch", () => {
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  });
+
+  afterEach(() => {
+    qc.clear();
+    vi.restoreAllMocks();
+  });
+
+  // Archive (fork status #39) is a closed-lifecycle KEY, never a bucket of its
+  // own: the server expands `closed` to include it.
+  it("excludes archive from the paginated categories", () => {
+    expect(PAGINATED_CATEGORIES).not.toContain("archive");
+    expect(PAGINATED_CATEGORIES).toEqual(["unstarted", "started", "done", "closed"]);
+  });
+
+  it("requests exactly those categories and never archive", async () => {
+    const listIssues = vi
+      .fn<(params?: ListIssuesParams) => Promise<ListIssuesResponse>>()
+      .mockResolvedValue({ issues: [], total: 0 });
+    installFakeApi(listIssues);
+
+    await qc.fetchQuery(issueListOptions(WS_ID));
+
+    const requested = listIssues.mock.calls.map(([p]) => p?.status_category);
+    expect(requested).toEqual([...PAGINATED_CATEGORIES]);
+    expect(requested).not.toContain("archive");
   });
 });
 

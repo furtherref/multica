@@ -386,6 +386,17 @@ func TestCreateComment_WorkerAgentCommentWakesPrivateSquadLeader_MUL4015(t *test
 		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
 	})
 
+	// Register the worker as a squad_member row so the cross-squad @mention
+	// gate in enqueueMentionedAgentTasks (fork-original) admits the leader's
+	// mention below — a raw SQL-seeded squad otherwise has only leader_id set,
+	// same as a squad predating CreateSquad's auto squad_member insert.
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO squad_member (squad_id, member_type, member_id, role)
+		VALUES ($1, 'agent', $2, 'member')
+	`, squadID, workerID); err != nil {
+		t.Fatalf("seed worker squad_member row: %v", err)
+	}
+
 	// Issue assigned to the squad, created by M (testUserID). CreatorType=member
 	// keeps the assign-time originator resolution to M.
 	var issueID string

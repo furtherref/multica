@@ -1,6 +1,6 @@
+import { createRef, useState } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { createRef, useState } from "react";
 import type { Attachment } from "@multica/core/types";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
 
@@ -192,6 +192,17 @@ describe("ContentEditor", () => {
     fireEvent.mouseDown(screen.getByTestId("prosemirror"));
 
     expect(mockFocus).not.toHaveBeenCalled();
+  });
+
+  it("sets markdown content through the imperative ref", () => {
+    const ref = createRef<ContentEditorRef>();
+    render(<ContentEditor ref={ref} placeholder="Add description..." />);
+
+    ref.current?.setMarkdown("## Template\n\nBody");
+
+    expect(mockSetContent).toHaveBeenCalledWith("## Template\n\nBody", {
+      contentType: "markdown",
+    });
   });
 
   it("syncs editor content when value changes externally and editor is unfocused", () => {
@@ -392,6 +403,24 @@ describe("ContentEditor", () => {
   // sessions). Without it the armed debounce fires after the switch and, since
   // onUpdate always resolves to the latest render's closure, files the old
   // document under the new destination (MUL-4864).
+  describe("clearContent", () => {
+    it("parks the caret at the start so a select-all send cannot leave a highlight", () => {
+      const ref = createRef<ContentEditorRef>();
+      render(<ContentEditor ref={ref} defaultValue="sent text" />);
+      const { clearContent } = (
+        editorRef.current as { commands: { clearContent: ReturnType<typeof vi.fn> } }
+      ).commands;
+
+      ref.current?.clearContent();
+
+      expect(clearContent).toHaveBeenCalledTimes(1);
+      expect(mockSetTextSelection).toHaveBeenCalledWith(0);
+      expect(clearContent.mock.invocationCallOrder[0]).toBeLessThan(
+        mockSetTextSelection.mock.invocationCallOrder[0]!,
+      );
+    });
+  });
+
   describe("flushPendingUpdate", () => {
     it("hands back the pending markdown and cancels the debounce so it cannot fire later", () => {
       vi.useFakeTimers();

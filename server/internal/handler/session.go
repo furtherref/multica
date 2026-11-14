@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -93,10 +92,6 @@ func (h *Handler) RefreshSession(w http.ResponseWriter, r *http.Request) {
 
 	newToken, newExpiresAt, err := auth.RenewSessionToken(claims)
 	if err != nil {
-		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
-			return
-		}
 		slog.Warn("session refresh: failed to re-sign token",
 			append(logger.RequestAttrs(r), "error", err, "user_id", userID)...)
 		// The caller's current session is still valid — this failure costs it

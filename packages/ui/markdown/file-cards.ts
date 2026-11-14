@@ -113,6 +113,7 @@ export function preprocessFileCards(markdown: string, cdnDomain: string): string
       // New syntax: !file[name](url) — always a file card, no hostname check needed.
       const newMatch = trimmed.match(NEW_FILE_CARD_RE)
       if (newMatch) {
+        if (!isAllowedFileCardHref(newMatch[2]!)) return line
         const filename = newMatch[1]!.replace(/\\([[\]\\()])/g, '$1')
         return toFileCardHtml(filename, newMatch[2]!)
       }

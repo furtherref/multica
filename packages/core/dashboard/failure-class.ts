@@ -1,6 +1,6 @@
 // Display grouping for `agent_task_queue.failure_reason`.
 //
-// The backend taxonomy (server/pkg/taskfailure) has 26 reasons, which is far
+// The backend taxonomy (server/pkg/taskfailure) has 27 reasons, which is far
 // too many series for a stacked chart or a scannable breakdown list. These
 // seven classes are the granularity an operator actually acts on: an auth
 // spike means "go re-auth", a rate-limit spike means "back off or raise the
@@ -23,7 +23,7 @@ export const FAILURE_CLASSES = [
 
 export type FailureClass = (typeof FAILURE_CLASSES)[number];
 
-// Reason → class. Keys are the wire values written by the backend: the 26
+// Reason → class. Keys are the wire values written by the backend: the 27
 // canonical `taskfailure.Reason` strings, the `"unclassified"` sentinel the
 // failure rollups substitute for a failed row with an empty column, and the
 // pre-MUL-1949 coarse values that still sit in historical rows.
@@ -40,6 +40,13 @@ const REASON_CLASS: Record<string, FailureClass> = {
   // class because the operator response is the same: wait, or raise a cap.
   "agent_error.provider_capacity_or_rate_limit": "rate_limit",
   "agent_error.provider_quota_limit": "rate_limit",
+  // The workspace's own runtime cost budget was spent, so the task was never
+  // made claimable. Same class as the provider quota it mirrors, and for the
+  // same reason the class exists: the operator response is to wait for the
+  // period to reset or raise the cap. "runtime" would be the wrong read —
+  // nothing on the daemon's host is broken, and the run was refused by
+  // policy before any provider was contacted.
+  budget_exceeded: "rate_limit",
 
   // Ran too long. Platform-side sweeper timeout and the agent's own hard
   // timeout land together — from the dashboard both read as "this run hung".

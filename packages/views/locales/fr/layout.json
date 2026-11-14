@@ -11,6 +11,7 @@
     "usage": "Statistiques",
     "runtimes": "Runtimes",
     "skills": "Skills",
+    "issue_templates": "Modèles de tâche",
     "settings": "Paramètres"
   },
   "tab": {
@@ -48,6 +49,7 @@
     "invitation_workspace_fallback": "Espace de travail",
     "invitation_join": "Rejoindre",
     "invitation_decline": "Refuser",
+    "system_admin": "Administration système",
     "log_out": "Se déconnecter",
     "new_issue": "Nouvelle tâche",
     "new_issue_shortcut": "C",

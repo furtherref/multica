@@ -19,9 +19,9 @@ import {
  */
 export const CLI_INSTALL_COMMANDS = {
   macosLinux:
-    "curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash",
+    "curl -fsSL https://raw.githubusercontent.com/furtherref/multica/main/scripts/install.sh | bash",
   windows:
-    "irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex",
+    "irm https://raw.githubusercontent.com/furtherref/multica/main/scripts/install.ps1 | iex",
 } as const;
 
 export type CliInstallPlatform = keyof typeof CLI_INSTALL_COMMANDS;

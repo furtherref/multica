@@ -19,6 +19,16 @@
     "toast_deleted": "Issue deleted",
     "toast_delete_failed": "Failed to delete issue"
   },
+  "issue_status_confirm": {
+    "title": "Change issue status?",
+    "description_cancelled": "This issue will be marked as Cancelled. You can cancel now to keep the current status.",
+    "description_archive": "This issue will be moved to Archive. You can cancel now to keep the current status.",
+    "description_cancelled_batch": "{{count}} selected issues will be marked as Cancelled. You can cancel now to keep their current statuses.",
+    "description_archive_batch": "{{count}} selected issues will be moved to Archive. You can cancel now to keep their current statuses.",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "confirming": "Confirming..."
+  },
   "feedback": {
     "title": "Feedback",
     "placeholder": "Tell us about your experience, bugs you've found, or features you'd like to see…",
@@ -151,6 +161,7 @@
     "description_placeholder": "Add description...",
     "more_options_aria": "More options",
     "title_required": "Enter a title to create",
+    "project_required": "Select a project to create",
     "submit": "Create Issue",
     "submitting": "Creating...",
     "toast_created": "Issue created",
@@ -211,6 +222,19 @@
     "customize_fields": "Customize fields...",
     "custom_properties": "Custom properties",
     "remove_parent": "Remove parent",
+    "template": {
+      "trigger": "Apply Issue Template",
+      "title": "Select template",
+      "description": "The selected template fills the issue title and content.",
+      "empty_title": "No issue templates yet",
+      "empty_description": "Create one from the Issue Templates page under Configure.",
+      "manage": "Open Issue Templates",
+      "apply_failed": "Failed to apply issue template",
+      "confirm_title": "Overwrite current title and content?",
+      "confirm_description": "Applying a template replaces the current issue title and content. Other fields stay unchanged.",
+      "confirm_cancel": "Cancel",
+      "confirm_apply": "Overwrite"
+    },
     "set_parent_picker": {
       "title": "Set parent issue",
       "description": "Search for an issue to set as the parent of the new issue"

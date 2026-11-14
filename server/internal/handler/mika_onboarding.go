@@ -178,7 +178,7 @@ func (h *Handler) StartMikaOnboarding(w http.ResponseWriter, r *http.Request) {
 	// about the opening the same way they learn about any assistant message.
 	// The kickoff row is deliberately not broadcast: it is never a bubble.
 	messageID := uuidToString(opened.Opening.ID)
-	h.publishChat(protocol.EventChatMessage, workspaceID, "member", userID, uuidToString(session.ID), protocol.ChatMessagePayload{
+	h.publishChat(protocol.EventChatMessage, workspaceID, "member", userID, uuidToString(session.CreatorID), uuidToString(session.ID), uuidToString(session.AgentID), protocol.ChatMessagePayload{
 		ChatSessionID: uuidToString(session.ID),
 		MessageID:     messageID,
 		Role:          "assistant",

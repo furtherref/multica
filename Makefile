@@ -112,7 +112,7 @@ selfhost: ## Create .env if needed, then pull and start the official self-hosted
 	$(COMPOSE) -f docker-compose.selfhost.yml up -d
 	@bash scripts/selfhost-wait.sh official
 
-selfhost-build: ## Build backend/web from the current checkout and start the self-hosted stack
+selfhost-build: ## Build backend/web/docs from the current checkout and start the self-hosted stack
 	$(REQUIRE_COMPOSE)
 	@if [ ! -f .env ]; then \
 		echo "==> Creating .env from .env.example..."; \

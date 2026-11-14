@@ -1,0 +1,85 @@
+{
+  "fields": {
+    "name": "模板名称",
+    "issue_title": "issue标题",
+    "issue_content": "issue内容"
+  },
+  "page": {
+    "title": "Issue模板",
+    "tagline": "管理创建 issue 时可套用的标题和内容模板。",
+    "new_template": "新建 Issue模板",
+    "search_placeholder": "搜索模板名称、标题或内容...",
+    "empty": {
+      "title": "还没有 Issue模板",
+      "description": "创建第一个模板后，在新建 issue 时可以一键带入标题和内容。"
+    },
+    "no_matches": {
+      "title": "无匹配",
+      "with_query": "没有模板匹配 \"{{query}}\"。"
+    },
+    "list_error": {
+      "title": "无法加载 Issue模板",
+      "fallback": "拉取 Issue模板 列表时出错。",
+      "retry": "重试"
+    }
+  },
+  "table": {
+    "name": "名称",
+    "source": "来源 · 添加者",
+    "updated": "更新时间",
+    "no_content": "无内容",
+    "source_manual": "手动创建",
+    "by_creator": "由 {{name}} 创建"
+  },
+  "create": {
+    "title": "新建 Issue模板",
+    "description": "模板只会在创建 issue 时带入标题和内容。",
+    "close": "关闭",
+    "name_placeholder": "例如：缺陷反馈",
+    "issue_title_placeholder": "例如：修复 {{module}} 中的问题",
+    "issue_content_placeholder": "## 背景\n\n## 复现步骤\n\n## 预期结果\n",
+    "cancel": "取消",
+    "submit": "创建模板",
+    "submitting": "创建中...",
+    "toast_created": "已创建 Issue模板",
+    "fallback_error": "创建 Issue模板 失败"
+  },
+  "detail": {
+    "all_templates": "全部 Issue模板",
+    "delete_aria": "删除 Issue模板",
+    "toast_saved": "已保存 Issue模板",
+    "toast_save_failed": "保存 Issue模板 失败",
+    "toast_deleted": "已删除 Issue模板",
+    "toast_delete_failed": "删除 Issue模板 失败",
+    "save_bar": {
+      "unsaved": "未保存的修改",
+      "discard": "丢弃",
+      "save": "保存修改",
+      "saving": "保存中..."
+    },
+    "sidebar": {
+      "metadata": "元数据",
+      "source": "来源",
+      "created": "创建于",
+      "updated": "更新于",
+      "created_by": "添加者",
+      "id": "ID"
+    },
+    "content_edit": "编辑",
+    "content_preview": "预览",
+    "no_content": "暂无内容。点击编辑按钮添加 Issue 内容。",
+    "not_found": {
+      "title": "未找到该 Issue模板",
+      "fallback": "这个模板可能已被删除，或你没有访问权限。",
+      "back": "返回 Issue模板"
+    },
+    "delete_dialog": {
+      "title": "删除这个 Issue模板？",
+      "description": "将永久删除“{{name}}”。已创建的 issue 不会受影响。",
+      "warning": "此操作不可撤销。",
+      "cancel": "取消",
+      "confirm": "永久删除",
+      "deleting": "删除中..."
+    }
+  }
+}

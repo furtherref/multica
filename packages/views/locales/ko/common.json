@@ -42,6 +42,27 @@
     "hours_ago": "{{count}}시간 전",
     "days_ago": "{{count}}일 전"
   },
+  "status_pill": {
+    "stages": {
+      "offline": "오프라인",
+      "reconnecting": "다시 연결 중",
+      "retrying": "재시도 중",
+      "queued": "대기 중",
+      "waiting_local_directory": "로컬 디렉터리 대기 중",
+      "waiting_local_directory_reason": "{{reason}} 대기 중",
+      "starting_up": "시작 중",
+      "thinking": "생각 중",
+      "typing": "입력 중"
+    },
+    "tools": {
+      "running_command": "명령 실행 중",
+      "reading_files": "파일 읽는 중",
+      "searching_code": "코드 검색 중",
+      "making_edits": "수정 중",
+      "searching_web": "웹 검색 중",
+      "fallback": "작업 중"
+    }
+  },
   "lark_bind": {
     "page_title": "Lark 계정 연결",
     "redeeming": "바인딩 토큰을 사용하는 중…",

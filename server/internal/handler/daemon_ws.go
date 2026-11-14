@@ -84,8 +84,13 @@ func (h *Handler) buildDaemonWebSocketIdentity(w http.ResponseWriter, r *http.Re
 				workspaceIDs = append(workspaceIDs, workspaceID)
 			}
 		}
+		ownerID := ""
+		if rt.OwnerID.Valid {
+			ownerID = uuidToString(rt.OwnerID)
+		}
 		identity.RuntimeLeases[runtimeID] = daemonws.NewRuntimeLease(
 			workspaceID,
+			ownerID,
 			rt.Status,
 			rt.LastSeenAt.Time,
 			rt.LastSeenAt.Valid,

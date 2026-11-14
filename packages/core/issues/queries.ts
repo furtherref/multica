@@ -254,6 +254,9 @@ export const ISSUE_PAGE_SIZE = 50;
  * These are internal legacy cache buckets, not user-facing columns.
  * Board/List use independently paged exact-key table branches; Swimlane uses
  * compound status branches. Never derive visible column identity from this cache.
+ *
+ * The fork's `archive` status (#39) rides the `closed` bucket: the server
+ * expands `closed` to every closed-lifecycle key, archive included.
  */
 export const PAGINATED_CATEGORIES: readonly IssueStatusCategory[] = ALL_STATUSES;
 

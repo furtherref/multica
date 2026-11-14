@@ -36,6 +36,9 @@ export function JoinDiscordCard() {
   const userId = useAuthStore((s) => s.user?.id);
   const [dismissed, dismiss] = useDiscordCardDismissed(userId);
 
+  // Dormant until the fork configures its own DISCORD_URL — we never link to
+  // the upstream community.
+  if (!DISCORD_URL) return null;
   if (dismissed) return null;
 
   return (

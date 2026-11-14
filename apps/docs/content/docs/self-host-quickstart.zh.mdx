@@ -14,7 +14,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 它们可以是同一台机器，也可以分开。自托管替换的只是 Multica Cloud 部分。
 
-这篇文档使用 Docker Compose。Kubernetes 部署见仓库中的 [Self-hosting guide](https://github.com/multica-ai/multica/blob/main/SELF_HOSTING.md#kubernetes-deployment-alternative)。
+这篇文档使用 Docker Compose。Kubernetes 部署见仓库中的 [Self-hosting guide](https://github.com/furtherref/multica/blob/main/SELF_HOSTING.md#kubernetes-deployment-alternative)。
 
 ## 开始前
 
@@ -40,7 +40,7 @@ Multica 使用 Compose v2，也就是 `docker compose`。旧版的 `docker-compo
 在准备运行服务的机器上执行：
 
 ```bash
-git clone --depth 1 https://github.com/multica-ai/multica.git
+git clone --depth 1 https://github.com/furtherref/multica.git
 cd multica
 make selfhost
 ```
@@ -222,13 +222,13 @@ docker compose -f docker-compose.selfhost.yml logs backend \
 **macOS / Linux**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/furtherref/multica/main/scripts/install.sh | bash
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/furtherref/multica/main/scripts/install.ps1 | iex
 ```
 
 如果 Multica 服务也在这台电脑上，运行：
@@ -366,7 +366,7 @@ curl -s localhost:8080/readyz
 
 Helm 有自己的升级路径：在 values 文件里把 `images.backend.tag` / `images.frontend.tag` 设成你要的版本，然后 `helm upgrade`。改 tag 就改了 pod spec，Kubernetes 会拉新镜像并滚动更新——这是可靠的路径。
 
-`kubectl -n multica rollout restart` 本身**不是**升级。chart 默认 `pullPolicy: IfNotPresent`（`deploy/helm/multica/values.yaml`），节点上已经缓存过这个 tag 的话，restart 只会用回旧镜像，什么都没变——和钉死 `MULTICA_IMAGE_TAG` 是同一类坑。真要靠浮动 tag 走这条路，得先把 `images.backend.pullPolicy` / `images.frontend.pullPolicy` 设成 `Always`。详见仓库的 [Self-hosting guide](https://github.com/multica-ai/multica/blob/main/SELF_HOSTING.md#kubernetes-deployment-alternative)。
+`kubectl -n multica rollout restart` 本身**不是**升级。chart 默认 `pullPolicy: IfNotPresent`（`deploy/helm/multica/values.yaml`），节点上已经缓存过这个 tag 的话，restart 只会用回旧镜像，什么都没变——和钉死 `MULTICA_IMAGE_TAG` 是同一类坑。真要靠浮动 tag 走这条路，得先把 `images.backend.pullPolicy` / `images.frontend.pullPolicy` 设成 `Always`。详见仓库的 [Self-hosting guide](https://github.com/furtherref/multica/blob/main/SELF_HOSTING.md#kubernetes-deployment-alternative)。
 
 <Callout type="warning">
 `docker compose down` 会保留 `pgdata` 和 `backend_uploads`。加上 `-v` 会删除这些数据卷，包括数据库；除非确定要清空实例，否则不要运行 `docker compose down -v`。
@@ -388,5 +388,5 @@ Helm 有自己的升级路径：在 values 文件里把 `images.backend.tag` / `
 
 - [登录与注册配置](/auth-setup) — 配置邮件、Google 登录和注册范围。
 - [环境变量](/environment-variables) — 查看完整的服务端配置。
-- [Self-hosting guide](https://github.com/multica-ai/multica/blob/main/SELF_HOSTING.md) — Kubernetes、升级和手动部署。
+- [Self-hosting guide](https://github.com/furtherref/multica/blob/main/SELF_HOSTING.md) — Kubernetes、升级和手动部署。
 - [桌面应用](/desktop-app) — 让 Desktop 连接自托管服务。

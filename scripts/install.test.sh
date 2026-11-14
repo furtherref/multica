@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
+# Fork-specific installer test: Homebrew is disabled in install.sh until the
+# furtherref formula is published, so the script always goes through the
+# GitHub Releases binary path. This test exercises that single path end to end.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Build a self-contained sandbox with stub `curl` and a tarball that the
-# release-binary fallback path will download. Each test supplies its own
-# `brew` stub to model a specific Homebrew failure mode.
+# Build a self-contained sandbox with a stub `curl` that returns a canned
+# release tag header and serves a tarball when asked for the binary.
 _setup_sandbox() {
   local tmp="$1"
   local stub_bin="$tmp/stub-bin"
@@ -23,7 +25,7 @@ STUB
   cat >"$stub_bin/curl" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$*" == *"-sI"* ]]; then
-  printf 'HTTP/2 302\r\nlocation: https://github.com/multica-ai/multica/releases/tag/v0.3.2\r\n'
+  printf 'HTTP/2 302\r\nlocation: https://github.com/furtherref/multica/releases/tag/v0.3.2\r\n'
   exit 0
 fi
 
@@ -69,64 +71,14 @@ _run_installer() {
     cat "$err" >&2 || true
     return 1
   fi
-
-  if ! grep -q "Homebrew output (last 80 lines):" "$err"; then
-    echo "expected diagnostic tail in stderr" >&2
-    cat "$err" >&2 || true
-    return 1
-  fi
 }
 
-test_brew_install_failure_falls_back_to_release_binary() {
+test_release_binary_install() {
   local tmp
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
 
   _setup_sandbox "$tmp"
-  cat >"$tmp/stub-bin/brew" <<'STUB'
-#!/usr/bin/env bash
-case "${1:-}" in
-  tap)
-    exit 0
-    ;;
-  install)
-    echo "simulated brew install failure" >&2
-    exit 42
-    ;;
-  list)
-    exit 1
-    ;;
-  *)
-    exit 0
-    ;;
-esac
-STUB
-  chmod +x "$tmp/stub-bin/brew"
-
-  _run_installer "$tmp"
-}
-
-test_brew_tap_failure_falls_back_to_release_binary() {
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-
-  _setup_sandbox "$tmp"
-  cat >"$tmp/stub-bin/brew" <<'STUB'
-#!/usr/bin/env bash
-case "${1:-}" in
-  tap)
-    echo "simulated brew tap failure" >&2
-    exit 17
-    ;;
-  *)
-    echo "brew $* should not be reached after tap failure" >&2
-    exit 99
-    ;;
-esac
-STUB
-  chmod +x "$tmp/stub-bin/brew"
-
   _run_installer "$tmp"
 }
 
@@ -166,7 +118,7 @@ STUB
     cat "$tmp/install.out" >&2 || true
     return 1
   fi
-  if ! grep -q "https://multica.ai/settings?tab=tokens" "$tmp/install.out"; then
+  if ! grep -q "https://multica.furtherref.com/settings?tab=tokens" "$tmp/install.out"; then
     echo "expected direct API Tokens settings URL in installer output" >&2
     cat "$tmp/install.out" >&2 || true
     return 1
@@ -509,8 +461,7 @@ STUB
   fi
 }
 
-test_brew_install_failure_falls_back_to_release_binary
-test_brew_tap_failure_falls_back_to_release_binary
+test_release_binary_install
 test_remote_ssh_install_prints_token_login_hint
 test_local_install_does_not_print_token_login_hint
 test_with_server_uses_compose_published_ports

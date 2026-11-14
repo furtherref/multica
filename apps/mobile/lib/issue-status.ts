@@ -33,6 +33,12 @@ export const STATUS_CATEGORIES: IssueStatusCategory[] = [
   "closed",
 ];
 
+/**
+ * Built-in keys in display order. Ends with the fork's `archive` (status #39):
+ * a built-in KEY in the closed lifecycle with no catalog row. It resolves and
+ * renders everywhere but is never offered as a pick — mirrors
+ * packages/core/issues/config/status.ts.
+ */
 export const BUILT_IN_STATUS_ORDER: BuiltInIssueStatus[] = [
   "backlog",
   "todo",
@@ -41,6 +47,7 @@ export const BUILT_IN_STATUS_ORDER: BuiltInIssueStatus[] = [
   "blocked",
   "done",
   "cancelled",
+  "archive",
 ];
 
 export const BUILT_IN_STATUS_CATEGORY: Record<BuiltInIssueStatus, IssueStatusCategory> = {
@@ -51,6 +58,7 @@ export const BUILT_IN_STATUS_CATEGORY: Record<BuiltInIssueStatus, IssueStatusCat
   blocked: "started",
   done: "done",
   cancelled: "closed",
+  archive: "closed",
 };
 
 /**
@@ -81,6 +89,7 @@ export const STATUS_LABEL: Record<BuiltInIssueStatus, string> = {
   done: "issues:status.done",
   blocked: "issues:status.blocked",
   cancelled: "issues:status.cancelled",
+  archive: "issues:status.archive",
 };
 
 export const CATEGORY_LABEL: Record<IssueStatusCategory, string> = {
@@ -344,7 +353,7 @@ export function statusOptions(catalog: IssueStatusCatalog): StatusOption[] {
     const entries = catalog.inCategory(category);
     if (entries.length === 0) {
       return BUILT_IN_STATUS_ORDER.filter(
-        (status) => BUILT_IN_STATUS_CATEGORY[status] === category,
+        (status) => BUILT_IN_STATUS_CATEGORY[status] === category && status !== "archive",
       ).map((status) => ({
         key: status,
         category,

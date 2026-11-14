@@ -192,9 +192,19 @@ The auth rate limits require `REDIS_URL`; without it, the startup log notes that
 | Plugins | `MULTICA_PLUGIN_API_URL` | Complete versioned Plugin Public API base URL, such as `https://plugin-api.example.com/v1`; falls back to `MULTICA_PUBLIC_URL` + `/v1` |
 | Plugins | `MULTICA_PLUGIN_DIR` | Optional absolute directory used to publish local plugin bundles during development |
 
-Without `GITHUB_APP_ID` and the private key, PRs still link, mirror, and trigger merge-to-done normally, but cards show no CI or mergeability status, and the "pick from GitHub" repository entry is disabled.
+Without `GITHUB_APP_ID` and the private key, PRs still link, mirror, and move issues on merge normally, but cards show no CI or mergeability status, and the "pick from GitHub" repository entry is disabled.
 
 For setup steps, see [GitHub integration](/github-integration#self-hosting-setup), [Lark bot](/lark-bot-integration#self-hosting-setup), [Slack bot](/slack-bot-integration#self-hosting-setup), and [Telegram bot](/telegram-bot-integration#self-hosting-setup).
+
+### GitHub API token (rate limits)
+
+| Variable | Default | Description |
+|---|---|---|
+| `GITHUB_TOKEN` | empty | Optional token that authenticates Multica's own calls to the GitHub REST API, raising the rate limit from 60 to 5000 requests/hour |
+
+`GITHUB_TOKEN` is **unrelated** to the GitHub App integration above. It authenticates two GitHub REST API callers: **CLI self-update** release lookups (read by the **daemon**) and **skill imports** from GitHub repositories (read by the **server**). Unauthenticated GitHub API requests are capped at **60 requests/hour per source IP**, which is trivially exhausted when many daemons or tools share one egress IP (NAT / forward proxy) and surfaces as `403` errors — for example `fetch release metadata: GitHub API returned 403` during CLI self-update. Setting `GITHUB_TOKEN` raises the limit to **5000/hour scoped to the token** rather than the IP. Any token that can read the public release repo works; no scopes are required for public repositories.
+
+Set it in the environment of whichever process needs it — the **daemon** for CLI self-update, the **server** for skill imports — and **restart that process**, since the token is read at startup.
 
 ## Server-side LLM
 

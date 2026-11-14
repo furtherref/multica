@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import enAgents from "../../locales/en/agents.json";
 import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,6 +29,17 @@ vi.mock("@multica/core/api", () => ({
 
 vi.mock("@multica/ui/lib/clipboard", () => ({
   copyText: copyTextMock,
+}));
+
+// The dialog's live-activity fallback (useLiveTaskActivity) subscribes via
+// useWSEvent. Capture the handlers so tests can fire task:activity / task:message.
+const { wsHandlers } = vi.hoisted(() => ({
+  wsHandlers: new Map<string, (payload: unknown) => void>(),
+}));
+vi.mock("@multica/core/realtime", () => ({
+  useWSEvent: (event: string, handler: (payload: unknown) => void) => {
+    wsHandlers.set(event, handler);
+  },
 }));
 
 // Real react-virtuoso renders no data rows under jsdom's zero-height viewport,
@@ -105,9 +117,10 @@ vi.mock("@multica/ui/components/ui/dropdown-menu", async () => {
   DropdownMenuItem: ({
     children,
     onClick,
+    disabled,
     className: _className,
   }: ButtonHTMLAttributes<HTMLButtonElement>) => (
-    <button type="button" onClick={onClick}>
+    <button type="button" onClick={onClick} disabled={disabled}>
       {children}
     </button>
   ),
@@ -248,7 +261,27 @@ afterEach(() => {
   cleanup();
 });
 
+// The live-activity label paints a decorative, aria-hidden ShimmerText copy;
+// match only the readable one (the same filter upstream's shimmer tests use).
+const SHIMMER_COPY = '[aria-hidden="true"] *';
+
 describe("AgentTranscriptDialog", () => {
+  it("shows what was asked, whole, under the header", () => {
+    // The lists that open this dialog cut the ask to one line; here it wraps.
+    const ask = "Merge the three split-out sub-issues back into this PR &amp; ship conditions, history and runaway protection together";
+    renderDialog(items, { task: { ...baseTask, trigger_comment_id: "comment-1", trigger_summary: ask } });
+
+    expect(screen.getByText("Trigger")).toBeInTheDocument();
+    expect(
+      screen.getByText("Merge the three split-out sub-issues back into this PR & ship conditions, history and runaway protection together"),
+    ).toBeInTheDocument();
+  });
+
+  it("has no trigger row for a run with no snapshot", () => {
+    renderDialog(items, { task: { ...baseTask, trigger_summary: undefined } });
+    expect(screen.queryByText("Trigger")).not.toBeInTheDocument();
+  });
+
   it("opens the matching result and duration for parallel same-tool calls", () => {
     const at = (seconds: number) =>
       new Date(Date.parse(baseTask.started_at!) + seconds * 1000).toISOString();
@@ -275,8 +308,10 @@ describe("AgentTranscriptDialog", () => {
 
     renderDialog([], { task: liveTask, isLive: true });
 
+    // Antigravity now streams live events (MUL-7625), so it waits like every
+    // other runtime — via the fork's live-activity label (#72).
     await screen.findByRole("button", { name: "Run details" });
-    expect(screen.getByText("Waiting for events...")).toBeInTheDocument();
+    expect(screen.getByText("Thinking", { ignore: SHIMMER_COPY })).toBeInTheDocument();
   });
 
   it("keeps waiting for live events from other runtimes", async () => {
@@ -285,9 +320,12 @@ describe("AgentTranscriptDialog", () => {
     renderDialog([], { task: liveTask, isLive: true });
 
     // Runtime detail now lives in the ⓘ popover; its trigger appearing proves
-    // the runtime loaded. The non-antigravity live state still waits.
+    // the runtime loaded. The non-antigravity live state still waits — shown
+    // via the fork's live-activity label (#72; see the "live activity"
+    // describe block below), whose no-hint default reads "Thinking" rather
+    // than a generic "Waiting for events...".
     await screen.findByRole("button", { name: "Run details" });
-    expect(screen.getByText("Waiting for events...")).toBeInTheDocument();
+    expect(screen.getByText("Thinking", { ignore: SHIMMER_COPY })).toBeInTheDocument();
   });
 
   it("shows live Antigravity tool events", async () => {
@@ -1002,6 +1040,128 @@ describe("AgentTranscriptDialog — reason vs raw diagnostics", () => {
   });
 });
 
+// Fork-original (#72): a live empty transcript shows the real stage — sourced
+// from the parent's reconnect-consistent prop, falling back to a component-
+// local task:activity subscription — rather than upstream's generic
+// "waiting for events" spinner.
+describe("AgentTranscriptDialog live activity", () => {
+  function renderLive(activity?: string) {
+    return renderWithI18n(
+      <AgentTranscriptDialog
+        open={true}
+        onOpenChange={() => {}}
+        task={liveTask}
+        items={[]}
+        agentName="Codex"
+        isLive
+        activity={activity}
+      />,
+    );
+  }
+  const fireActivity = (value: string, afterSeq = 0) =>
+    act(() => {
+      wsHandlers
+        .get("task:activity")
+        ?.({ task_id: "task-1", activity: value, after_seq: afterSeq });
+    });
+  const fireMessage = (seq: number) =>
+    act(() => {
+      wsHandlers.get("task:message")?.({ task_id: "task-1", seq, type: "tool_use" });
+    });
+
+  it("shows the live stage, not a static 'waiting for events', in the empty live state", () => {
+    renderLive();
+    expect(screen.getByText("Thinking", { ignore: SHIMMER_COPY })).toBeInTheDocument();
+  });
+
+  it("reflects the parent's reconnect hint so it matches the live card on (re)open", () => {
+    renderLive("reconnecting");
+    expect(screen.getByText("Reconnecting", { ignore: SHIMMER_COPY })).toBeInTheDocument();
+  });
+
+  it("with no prop, a task:activity reconnect hint shows Reconnecting (lazy fallback)", () => {
+    renderLive();
+    expect(screen.getByText("Thinking", { ignore: SHIMMER_COPY })).toBeInTheDocument();
+    fireActivity("reconnecting", 0);
+    expect(screen.getByText("Reconnecting", { ignore: SHIMMER_COPY })).toBeInTheDocument();
+  });
+
+  it("a task:message with a higher seq clears the stale fallback hint", () => {
+    renderLive();
+    fireActivity("reconnecting", 0);
+    expect(screen.getByText("Reconnecting", { ignore: SHIMMER_COPY })).toBeInTheDocument();
+    fireMessage(1); // seq 1 > after_seq 0 → supersedes
+    expect(screen.queryByText("Reconnecting", { ignore: SHIMMER_COPY })).not.toBeInTheDocument();
+    expect(screen.getByText("Thinking", { ignore: SHIMMER_COPY })).toBeInTheDocument();
+  });
+
+  it("the activity prop takes priority over the fallback subscription", () => {
+    renderLive("reconnecting"); // prop set
+    fireActivity("reconnecting", 0); // fallback also set
+    fireMessage(5); // clears the fallback (5 > 0) — but the prop drives the display
+    expect(screen.getByText("Reconnecting", { ignore: SHIMMER_COPY })).toBeInTheDocument();
+  });
+});
+
+// Fork-original: the displayed transcript has not yet been verified by the
+// authoritative server catch-up, so a failed catch-up must be visible and
+// retryable, and copy-all must not ship possibly-partial content.
+describe("AgentTranscriptDialog catch-up banner", () => {
+  const bannerItems: TimelineItem[] = [{ seq: 1, type: "text", content: "hello" }];
+
+  function renderBanner(props: {
+    loadIncomplete?: boolean;
+    loadPending?: boolean;
+    onRetryLoad?: () => void;
+    retrying?: boolean;
+  }) {
+    return renderWithI18n(
+      <AgentTranscriptDialog
+        open={true}
+        onOpenChange={() => {}}
+        task={baseTask}
+        items={bannerItems}
+        agentName="Codex"
+        {...props}
+      />,
+    );
+  }
+
+  it("stays silent while the catch-up is still pending (no banner, no retry)", () => {
+    renderBanner({
+      loadIncomplete: true,
+      loadPending: true,
+      onRetryLoad: () => {},
+      retrying: true,
+    });
+
+    expect(
+      screen.queryByText(enAgents.transcript.load_incomplete),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: enAgents.transcript.retry }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the incomplete warning with a retry only after the catch-up fails", () => {
+    renderBanner({ loadIncomplete: true, loadPending: false, onRetryLoad: () => {} });
+
+    expect(
+      screen.getByText(enAgents.transcript.load_incomplete),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: enAgents.transcript.retry }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps copy-all disabled while the transcript is unverified, even while pending", () => {
+    renderBanner({ loadIncomplete: true, loadPending: true });
+
+    expect(
+      screen.getByRole("button", { name: enAgents.transcript.copy_all }),
+    ).toBeDisabled();
+  });
+});
 
 describe("readable issue references", () => {
   it("searches both the displayed identifier and original UUID", async () => {

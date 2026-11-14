@@ -56,6 +56,8 @@ const TYPE_KEY: Record<InboxItemType, string> = {
   quick_create_unconfirmed: "type.quick_create_unconfirmed",
   autopilot_paused: "type.autopilot_paused",
   autopilot_quota_exceeded: "type.autopilot_quota_exceeded",
+  runtime_budget_exceeded: "type.runtime_budget_exceeded",
+  children_done: "type.children_done",
 };
 
 // due_date is a calendar day — format timezone-safely (no offset day shift).
@@ -163,6 +165,8 @@ export function InboxDetailLabel({
       }
       case "autopilot_quota_exceeded":
         return t("type.run_limit_blocked");
+      case "runtime_budget_exceeded":
+        return t("type.runtime_budget_blocked");
       default:
         return t(TYPE_KEY[item.type]) ?? item.type;
     }

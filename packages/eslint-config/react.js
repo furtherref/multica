@@ -7,6 +7,15 @@ export default [
   ...baseConfig,
   // React rules (JSX only)
   {
+    files: ["**/*.{js,jsx,ts,tsx}"],
+    plugins: {
+      "react-hooks": reactHooksPlugin,
+    },
+    rules: {
+      ...reactHooksPlugin.configs["recommended-latest"].rules,
+    },
+  },
+  {
     files: ["**/*.{jsx,tsx}"],
     plugins: { react: reactPlugin },
     rules: {

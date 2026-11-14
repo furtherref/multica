@@ -14,7 +14,7 @@ Self-hosting Multica has two parts:
 
 They can be the same machine or separate ones. Self-hosting replaces only the Multica Cloud part.
 
-This guide uses Docker Compose. For Kubernetes deployments, see the [Self-hosting guide](https://github.com/multica-ai/multica/blob/main/SELF_HOSTING.md#kubernetes-deployment-alternative) in the repository.
+This guide uses Docker Compose. For Kubernetes deployments, see the [Self-hosting guide](https://github.com/furtherref/multica/blob/main/SELF_HOSTING.md#kubernetes-deployment-alternative) in the repository.
 
 ## Before you start
 
@@ -40,7 +40,7 @@ The computer also needs at least one [AI coding tool](/providers) installed and 
 On the machine that will run the service:
 
 ```bash
-git clone --depth 1 https://github.com/multica-ai/multica.git
+git clone --depth 1 https://github.com/furtherref/multica.git
 cd multica
 make selfhost
 ```
@@ -223,13 +223,13 @@ Install the Multica CLI first:
 **macOS / Linux**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/furtherref/multica/main/scripts/install.sh | bash
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/furtherref/multica/main/scripts/install.ps1 | iex
 ```
 
 If the Multica service runs on this same computer:
@@ -367,7 +367,7 @@ Anything other than HTTP 200 with both checks `ok` means the new version did not
 
 Helm has its own upgrade path: set `images.backend.tag` / `images.frontend.tag` to the release you want in your values file, then `helm upgrade`. Changing the tag changes the pod spec, so Kubernetes pulls the new image and rolls the Deployments — this is the reliable route.
 
-`kubectl -n multica rollout restart` is **not** an upgrade on its own. The chart ships `pullPolicy: IfNotPresent` (`deploy/helm/multica/values.yaml`), so a node that already has that tag cached reuses the old image and the restart silently changes nothing — the same class of trap as a pinned `MULTICA_IMAGE_TAG`. If you want to track a floating tag that way, set `images.backend.pullPolicy` / `images.frontend.pullPolicy` to `Always` first. See the [Self-hosting guide](https://github.com/multica-ai/multica/blob/main/SELF_HOSTING.md#kubernetes-deployment-alternative).
+`kubectl -n multica rollout restart` is **not** an upgrade on its own. The chart ships `pullPolicy: IfNotPresent` (`deploy/helm/multica/values.yaml`), so a node that already has that tag cached reuses the old image and the restart silently changes nothing — the same class of trap as a pinned `MULTICA_IMAGE_TAG`. If you want to track a floating tag that way, set `images.backend.pullPolicy` / `images.frontend.pullPolicy` to `Always` first. See the [Self-hosting guide](https://github.com/furtherref/multica/blob/main/SELF_HOSTING.md#kubernetes-deployment-alternative).
 
 <Callout type="warning">
 `docker compose down` keeps `pgdata` and `backend_uploads`. Adding `-v` deletes these volumes, including the database; do not run `docker compose down -v` unless you intend to wipe the instance.
@@ -389,5 +389,5 @@ For more scenarios, see [Troubleshooting](/troubleshooting).
 
 - [Auth setup](/auth-setup) — configure email, Google login, and signup scope.
 - [Environment variables](/environment-variables) — the full server configuration reference.
-- [Self-hosting guide](https://github.com/multica-ai/multica/blob/main/SELF_HOSTING.md) — Kubernetes, upgrades, and manual deployment.
+- [Self-hosting guide](https://github.com/furtherref/multica/blob/main/SELF_HOSTING.md) — Kubernetes, upgrades, and manual deployment.
 - [Desktop app](/desktop-app) — connect Desktop to a self-hosted service.

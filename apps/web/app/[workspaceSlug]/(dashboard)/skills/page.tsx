@@ -1,1 +1,7 @@
-export { SkillsPage as default } from "@multica/views/skills";
+"use client";
+
+import { SkillsPage } from "@multica/views/skills";
+
+export default function Page() {
+  return <SkillsPage />;
+}

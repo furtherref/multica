@@ -905,7 +905,7 @@ func TestHandleDaemonWSHeartbeat_RuntimeGoneReturnsAckNotError(t *testing.T) {
 		daemonws.ClientIdentity{
 			WorkspaceID: testWorkspaceID,
 			RuntimeLeases: map[string]*daemonws.RuntimeLease{
-				missingRuntime: daemonws.NewRuntimeLease(testWorkspaceID, "online", time.Now().Add(-2*runtimeHeartbeatDBFlushInterval), true),
+				missingRuntime: daemonws.NewRuntimeLease(testWorkspaceID, "", "online", time.Now().Add(-2*runtimeHeartbeatDBFlushInterval), true),
 			},
 		},
 		missingRuntime, false)
@@ -949,7 +949,7 @@ func TestHandleDaemonWSHeartbeat_AllowsAnyAuthorizedWorkspace(t *testing.T) {
 		daemonws.ClientIdentity{
 			WorkspaceIDs: []string{testWorkspaceID, workspaceID},
 			RuntimeLeases: map[string]*daemonws.RuntimeLease{
-				runtimeID: daemonws.NewRuntimeLease(workspaceID, "online", time.Now(), true),
+				runtimeID: daemonws.NewRuntimeLease(workspaceID, "", "online", time.Now(), true),
 			},
 		},
 		runtimeID, false)

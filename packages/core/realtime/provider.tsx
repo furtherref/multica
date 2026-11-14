@@ -4,6 +4,7 @@ import {
   createContext,
   use,
   useEffect,
+  useRef,
   useState,
   useCallback,
   useSyncExternalStore,
@@ -16,8 +17,10 @@ import type { StoreApi, UseBoundStore } from "zustand";
 import type { AuthState } from "../auth/store";
 import {
   getCurrentSlug,
+  getCurrentWsId,
   subscribeToCurrentSlug,
 } from "../platform/workspace-storage";
+import { useLocalSearchIndexSync } from "../search-index/hooks";
 import { createLogger } from "../logger";
 import { useRealtimeSync, type RealtimeSyncStores } from "./use-realtime-sync";
 
@@ -44,6 +47,11 @@ export interface WSProviderProps {
   identity?: ClientIdentity;
   /** Optional callback for showing toast messages (platform-specific, e.g. sonner) */
   onToast?: (message: string, type?: "info" | "error") => void;
+  /** Fired when the server rejects the WS connection's auth because the
+   *  account is suspended (ws-client's `auth_error` frame with
+   *  `code === ACCOUNT_SUSPENDED`). Threaded through to the same session-kill
+   *  as the API client's `onSessionRejected("account_suspended")`. */
+  onAuthRejected?: () => void;
 }
 
 export function WSProvider({
@@ -54,6 +62,7 @@ export function WSProvider({
   cookieAuth,
   identity,
   onToast,
+  onAuthRejected,
 }: WSProviderProps) {
   const user = authStore((s) => s.user);
   // Reactive read of the current workspace slug (URL-driven singleton in
@@ -66,6 +75,7 @@ export function WSProvider({
     getCurrentSlug,
     () => null,
   );
+  const wsId = useSyncExternalStore(subscribeToCurrentSlug, getCurrentWsId, () => null);
   const [wsClient, setWsClient] = useState<WSClient | null>(null);
 
   // Depend on identity primitives instead of the object reference so a parent
@@ -75,6 +85,14 @@ export function WSProvider({
   const identityPlatform = identity?.platform;
   const identityVersion = identity?.version;
   const identityOS = identity?.os;
+
+  // A ref, not a dependency: the caller (CoreProvider) passes a fresh
+  // closure each render. Tracking it in the effect's deps would tear down
+  // and reconnect the live WS connection on every unrelated re-render;
+  // reading it via ref keeps the connection stable while still calling the
+  // latest callback if auth is ever rejected.
+  const onAuthRejectedRef = useRef(onAuthRejected);
+  onAuthRejectedRef.current = onAuthRejected;
 
   useEffect(() => {
     if (!user || !wsSlug) return;
@@ -99,6 +117,7 @@ export function WSProvider({
               os: identityOS,
             }
           : undefined,
+      onAuthRejected: () => onAuthRejectedRef.current?.(),
     });
     ws.setAuth(token, wsSlug);
     setWsClient(ws);
@@ -123,6 +142,9 @@ export function WSProvider({
 
   // Centralized WS -> store sync (uses state so it re-subscribes when WS changes)
   useRealtimeSync(wsClient, stores, onToast);
+
+  // Keeps this workspace's local search index attached and caught up.
+  useLocalSearchIndexSync(wsClient, user?.id ?? null, wsId, wsSlug);
 
   const subscribe = useCallback(
     (event: WSEventType, handler: EventHandler) => {

@@ -87,7 +87,7 @@ func (h *Handler) projectTerminalIssueStatusKeys(ctx context.Context, workspaceI
 	}
 	slog.Warn("expand project terminal status categories failed; using canonical keys",
 		"workspace_id", uuidToString(workspaceID), "error", err)
-	return []string{issuestatus.Done, issuestatus.Cancelled}
+	return []string{issuestatus.Done, issuestatus.Cancelled, issuestatus.Archive}
 }
 
 func (h *Handler) loadProjectResourceCount(ctx context.Context, projectID pgtype.UUID) int64 {

@@ -5,6 +5,11 @@ import (
 	"sync"
 )
 
+// EventWorkspaceAuthorizationExpanded is an internal control event. It asks
+// realtime nodes to add newly-visible authorization rooms in place and must
+// never be serialized to clients.
+const EventWorkspaceAuthorizationExpanded = "internal:workspace_authorization_expanded"
+
 // Event represents a domain event published by handlers or services.
 type Event struct {
 	Type        string // e.g. "issue:created", "inbox:new"
@@ -19,6 +24,16 @@ type Event struct {
 	// without re-deserializing Payload. See MUL-1138 phase 1.
 	TaskID        string
 	ChatSessionID string
+	// AgentID and IssueID are trusted routing metadata. They must be populated
+	// from typed domain objects, never recovered from the public payload.
+	AgentID string
+	IssueID string
+	// AuthorizationChanged marks a domain mutation that invalidates immutable
+	// connection authorization metadata. It is routing metadata only.
+	AuthorizationChanged bool
+	// RecipientUserID is trusted creator-routing metadata for private direct
+	// Chat events. It is never copied from the public payload.
+	RecipientUserID string
 }
 
 // Handler is a function that processes an event.

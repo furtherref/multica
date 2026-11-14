@@ -527,7 +527,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		runtimeName = overrides.RuntimeName
 	}
 
-	// Workspaces root: override > env > default (~/multica_workspaces or ~/multica_workspaces_<profile>)
+	// Workspaces root: override > env > CLI config file > default (~/multica_workspaces or ~/multica_workspaces_<profile>)
 	workspacesRoot, err := ResolveWorkspacesRoot(profile, overrides.WorkspacesRoot)
 	if err != nil {
 		return Config{}, err
@@ -749,7 +749,7 @@ const TaskWorkspacesRootEnv = "MULTICA_TASK_WORKSPACES_ROOT"
 
 // ResolveWorkspacesRoot returns the absolute path that the daemon and CLI
 // should treat as the workspaces root. Resolution order: explicit override >
-// MULTICA_WORKSPACES_ROOT env > default ($HOME/multica_workspaces, or
+// MULTICA_WORKSPACES_ROOT env > CLI config file > default ($HOME/multica_workspaces, or
 // $HOME/multica_workspaces_<profile> for a named profile). Read-only callers
 // (e.g. `multica daemon disk-usage`) use this directly so they pick the same
 // directory the running daemon would have picked. Inside a managed task use
@@ -758,6 +758,12 @@ func ResolveWorkspacesRoot(profile, override string) (string, error) {
 	root := strings.TrimSpace(os.Getenv("MULTICA_WORKSPACES_ROOT"))
 	if override != "" {
 		root = override
+	}
+	if root == "" {
+		cliCfg, err := cli.LoadCLIConfigForProfile(profile)
+		if err == nil && cliCfg.WorkspacesRoot != "" {
+			root = cliCfg.WorkspacesRoot
+		}
 	}
 	if root == "" {
 		home, err := os.UserHomeDir()

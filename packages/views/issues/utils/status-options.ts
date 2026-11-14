@@ -39,6 +39,11 @@ export interface StatusOption {
  * future assignment. A read-only filter can opt specific current keys back in
  * through `includeArchivedKeys`, so existing issues remain findable without a
  * picker offering a retired value for assignment.
+ *
+ * `archive` (fork status #39) is appended by hand. It is not a catalog
+ * category, so the loop below cannot produce it — but it has to stay on this
+ * list, because this list is the ONLY way to archive an issue and the only way
+ * to filter for archived work. It sorts last, where STATUS_ORDER puts it.
  */
 const NO_ARCHIVED_STATUS_KEYS: readonly IssueStatus[] = [];
 
@@ -63,7 +68,7 @@ export function useStatusOptions(
         // category so the seven concrete status choices remain available.
         if (entries.length === 0) {
           return BUILT_IN_STATUS_ORDER.filter(
-            (key) => BUILT_IN_STATUS_CATEGORY[key] === category,
+            (key) => BUILT_IN_STATUS_CATEGORY[key] === category && key !== "archive",
           ).map((key) => ({
             key,
             category,
@@ -78,7 +83,16 @@ export function useStatusOptions(
           color: issueStatusColor(e),
           icon: e.icon,
         }));
-      });
+      }).concat([
+        {
+          // The fork's archive status (#39) has no catalog row, so it is
+          // appended once, last, in its closed lifecycle.
+          key: "archive" as IssueStatus,
+          category: "closed",
+          label: labelOf("archive"),
+          color: null,
+        },
+      ]);
     },
     [includeArchivedKeys, labelOf, statuses],
   );

@@ -9,6 +9,7 @@ import {
 import { toast } from "sonner";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useAuthStore } from "@multica/core/auth";
+import { getCurrentWsId } from "@multica/core/platform";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { canAssignAgent } from "../../issues/components/pickers/assignee-picker";
@@ -186,6 +187,41 @@ export function seedAcceptedPendingTask(
   qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
 }
 
+/**
+ * Which `chat.input.*` toast a refused send shows, from the admission gate's
+ * `reason_code`.
+ *
+ * Every one of these refusals is DECIDED, not transient, so the generic
+ * "Failed to send message" is the wrong answer for all of them: it reads as
+ * "retry" and the retry is refused again. `budget_exceeded` in particular waits
+ * on a calendar period, not on the user trying harder.
+ *
+ * Shared by ChatWindow and ChatPage so both surfaces name the same cause, and
+ * covers the session-create leg as well as the send: a revoked permission or a
+ * spent budget refuses the lazy `ensureSession` call first.
+ */
+export type ChatSendFailureToast =
+  | "send_blocked_toast"
+  | "runtime_required_toast"
+  | "runtime_access_denied_toast"
+  | "send_blocked_budget_exceeded"
+  | "send_failed_toast";
+
+export function chatSendFailureToast(reason: string | undefined): ChatSendFailureToast {
+  switch (reason) {
+    case "invocation_not_allowed":
+      return "send_blocked_toast";
+    case "agent_runtime_required":
+      return "runtime_required_toast";
+    case "runtime_access_denied":
+      return "runtime_access_denied_toast";
+    case "budget_exceeded":
+      return "send_blocked_budget_exceeded";
+    default:
+      return "send_failed_toast";
+  }
+}
+
 const CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX = 1_000_000;
 
 
@@ -313,12 +349,14 @@ export function useChatController(opts?: { isActive?: boolean }) {
   // A project may be deleted on another client while this workspace's next
   // chat preference is still persisted locally. Normalize it as soon as the
   // authoritative project list settles so a future send cannot carry a stale
-  // selection.
+  // selection. An outgoing route can retain its queries after the shared
+  // store has rehydrated another workspace; only clean up our own namespace.
   useEffect(() => {
+    if (getCurrentWsId() !== wsId) return;
     if (!projectsLoaded || !selectedProjectId) return;
     if (projects.some((project) => project.id === selectedProjectId)) return;
     setSelectedProjectId(null);
-  }, [projectsLoaded, projects, selectedProjectId, setSelectedProjectId]);
+  }, [wsId, projectsLoaded, projects, selectedProjectId, setSelectedProjectId]);
 
   const qc = useQueryClient();
   const createSession = useCreateChatSession();
@@ -475,12 +513,13 @@ export function useChatController(opts?: { isActive?: boolean }) {
   // rendering an editable empty chat whose send would POST into a nonexistent
   // session. Lives in the shared controller so every surface self-heals.
   useEffect(() => {
+    if (getCurrentWsId() !== wsId) return;
     if (!activeSessionId || !sessionsLoaded) return;
     if (sessions.some((s) => s.id === activeSessionId)) return;
     if (hasInFlightPendingTask(qc, activeSessionId)) return;
     uiLogger.info("clearing dangling activeSessionId", { sessionId: activeSessionId });
     setActiveSession(null);
-  }, [activeSessionId, sessionsLoaded, sessions, qc, setActiveSession]);
+  }, [wsId, activeSessionId, sessionsLoaded, sessions, qc, setActiveSession]);
 
   // Upload transport moved into the coordinated-upload engine inside ChatInput
   // (MUL-5181 L2); surfaces only forward whether the affordance exists.
@@ -547,16 +586,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
         apiLogger.error("sendChatMessage.ensureSession.error", err);
         // A revoked invoke permission blocks session create with a structured
         // 403 (MUL-4525) — name the cause instead of a generic failure.
-        const reason = dispatchReasonCode(err);
-        toast.error(
-          reason === "invocation_not_allowed"
-            ? t(($) => $.input.send_blocked_toast)
-            : reason === "agent_runtime_required"
-              ? t(($) => $.input.runtime_required_toast)
-              : reason === "runtime_access_denied"
-                ? t(($) => $.input.runtime_access_denied_toast)
-                : t(($) => $.input.send_failed_toast),
-        );
+        const toastKey = chatSendFailureToast(dispatchReasonCode(err));
+        toast.error(t(($) => $.input[toastKey]));
         return false;
       }
       if (!sessionId) {
@@ -579,16 +610,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
         // a structured 403 before anything persists (MUL-4525). Surface the
         // specific cause so the user knows it is a permission change, not a
         // transient failure they should retry.
-        const reason = dispatchReasonCode(err);
-        toast.error(
-          reason === "invocation_not_allowed"
-            ? t(($) => $.input.send_blocked_toast)
-            : reason === "agent_runtime_required"
-              ? t(($) => $.input.runtime_required_toast)
-              : reason === "runtime_access_denied"
-                ? t(($) => $.input.runtime_access_denied_toast)
-                : t(($) => $.input.send_failed_toast),
-        );
+        const toastKey = chatSendFailureToast(dispatchReasonCode(err));
+        toast.error(t(($) => $.input[toastKey]));
         return false;
       }
       apiLogger.info("sendChatMessage.success", {

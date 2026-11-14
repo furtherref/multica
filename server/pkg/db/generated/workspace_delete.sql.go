@@ -238,6 +238,9 @@ WITH deleted_wakeup_receipts AS (
 ), deleted_wakeups AS (
  DELETE FROM issue_wakeup WHERE workspace_id=$1
 ),
+deleted_child_events AS (
+ DELETE FROM issue_child_event WHERE workspace_id=$1
+),
 deleted_issues AS (
     DELETE FROM issue WHERE issue.workspace_id = $1
 ),
@@ -592,6 +595,16 @@ DELETE FROM vcs_pull_request WHERE vcs_pull_request.workspace_id = $1
 
 func (q *Queries) DeleteWorkspacePullRequests(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspacePullRequests, workspaceID)
+	return err
+}
+
+const deleteWorkspaceRuntimeCostBudgets = `-- name: DeleteWorkspaceRuntimeCostBudgets :exec
+DELETE FROM runtime_cost_budget
+WHERE runtime_cost_budget.workspace_id = $1
+`
+
+func (q *Queries) DeleteWorkspaceRuntimeCostBudgets(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceRuntimeCostBudgets, workspaceID)
 	return err
 }
 

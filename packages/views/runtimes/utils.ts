@@ -1,6 +1,8 @@
 import type {
+  Agent,
   AgentRuntime,
   RuntimeUsage,
+  RuntimeUsageCoverage,
   RuntimeUsageByAgent,
 } from "@multica/core/types";
 import { getCustomPricing } from "@multica/core/runtimes/custom-pricing-store";
@@ -182,6 +184,7 @@ export function formatUsd(n: number): string {
 //   Moonshot:  https://www.kimi.com/resources/kimi-k2-6-pricing
 //   Zhipu:     https://docs.z.ai/guides/overview/pricing
 //   xAI:       https://docs.x.ai/developers/pricing
+//   Copilot:   https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing
 //
 // Anthropic's cacheWrite reflects the 5-minute cache TTL (1.25× input); the
 // daemon reports cache_creation_input_tokens without TTL metadata, so 5m is
@@ -189,9 +192,10 @@ export function formatUsd(n: number): string {
 // Moonshot, Zhipu and xAI do not bill cache writes separately (cached input
 // is just discounted on subsequent reads), so cacheWrite mirrors input there.
 // OpenAI historically did the same, but its GPT-5.6+ generation bills cache
-// writes at 1.25× input (cache reads still get the 90% cached-input
-// discount), so those rows carry a distinct cacheWrite. Codex usage doesn't
-// yet stream cache-write tokens, so that rate isn't exercised today.
+// writes at 1.25× input (cache reads generally get the 90% cached-input
+// discount; GPT-6.1 Sol gets 95%), so those rows carry a distinct cacheWrite.
+// Codex usage doesn't yet stream cache-write tokens, so that rate isn't
+// exercised today.
 //
 // The resolver matches exact keys after stripping a trailing date snapshot
 // (see `resolvePricing` below). It deliberately does NOT do startsWith
@@ -209,10 +213,72 @@ export function formatUsd(n: number): string {
 // `${provider}/${model}` (e.g. `cursor/auto`). `resolvePricing` tries the
 // `${provider}/…` form first, then the bare form, so vendor-prefixed SKUs
 // stay unqualified and still resolve.
-const MODEL_PRICING: Record<
-  string,
-  { input: number; output: number; cacheRead: number; cacheWrite: number }
-> = {
+type ModelPricing = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+
+type CopilotPricePeriod = {
+  validFrom?: string;
+  validThrough?: string;
+  default: ModelPricing;
+  longContext: {
+    thresholdInputTokens: number;
+    pricing: ModelPricing;
+  };
+};
+
+// GitHub Copilot prices the same underlying model differently from direct API
+// access. Keep these rules provider-qualified so a Copilot row never borrows
+// the OpenAI API rate. Sol's 50%-off launch promotion ended on 2026-09-03;
+// the UTC pricing date keeps historical rows stable across that boundary.
+//
+// Long-context thresholds apply to one model request, not an aggregate task.
+// Callers only select that tier when they carry an explicit request-size
+// signal. Current daily/owner/hour aggregates do not, so they deliberately use
+// the default tier rather than treating a multi-request total as one prompt.
+const COPILOT_MODEL_PRICING: Record<string, CopilotPricePeriod[]> = {
+  "gpt-5.6-sol": [
+    {
+      validThrough: "2026-09-03",
+      default: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+      longContext: {
+        thresholdInputTokens: 272_000,
+        pricing: { input: 4, output: 15, cacheRead: 0.4, cacheWrite: 5 },
+      },
+    },
+    {
+      validFrom: "2026-09-04",
+      default: { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
+      longContext: {
+        thresholdInputTokens: 272_000,
+        pricing: { input: 8, output: 30, cacheRead: 0.8, cacheWrite: 10 },
+      },
+    },
+  ],
+  "gpt-5.6-terra": [
+    {
+      default: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
+      longContext: {
+        thresholdInputTokens: 272_000,
+        pricing: { input: 4, output: 18, cacheRead: 0.4, cacheWrite: 5 },
+      },
+    },
+  ],
+  "gpt-5.6-luna": [
+    {
+      default: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+      longContext: {
+        thresholdInputTokens: 200_000,
+        pricing: { input: 0.4, output: 1.8, cacheRead: 0.04, cacheWrite: 0.5 },
+      },
+    },
+  ],
+};
+
+const MODEL_PRICING: Record<string, ModelPricing> = {
   // -- Anthropic: current generation. Sonnet 5 uses Anthropic's published
   //    intro launch rate ($2 / $10 through 2026-08-31). This static map has
   //    no future-dated pricing support yet, so update the row when the
@@ -233,6 +299,16 @@ const MODEL_PRICING: Record<
   "claude-opus-4-7":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
   "claude-opus-4-8":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
 
+  // -- Anthropic: fast mode (research preview). Same model at a per-model
+  //    premium multiplier (fast-mode doc): Opus 4.8 fast is 2x standard,
+  //    Opus 4.7 fast is 6x and deprecated upstream (removal 2026-07-24) but
+  //    historical usage rows still need pricing. Cache multipliers stack on
+  //    the fast base rate (0.1x read / 1.25x write). Copilot reports these
+  //    as dotted ids (`claude-opus-4.8-fast`); the resolver's dot->dash
+  //    canonicalization lands them on these dashed keys. --
+  "claude-opus-4-8-fast": { input: 10, output: 50,  cacheRead: 1.00, cacheWrite: 12.50 },
+  "claude-opus-4-7-fast": { input: 30, output: 150, cacheRead: 3.00, cacheWrite: 37.50 },
+
   // -- Anthropic: pre-4.5 Opus (legacy, still served at original price tier) --
   "claude-opus-4-1":    { input: 15,   output: 75,   cacheRead: 1.50, cacheWrite: 18.75 },
   "claude-opus-4":      { input: 15,   output: 75,   cacheRead: 1.50, cacheWrite: 18.75 },
@@ -248,11 +324,16 @@ const MODEL_PRICING: Record<
   //    `server/pkg/agent/models.go` (Codex provider list).
   //    gpt-6-astra and gpt-5.6 (sol/terra/luna) use OpenAI's official rates.
   //    5.6+ is the first OpenAI generation to bill cache writes separately:
-  //    cacheRead = 0.1x input (90% cached-input discount), cacheWrite = 1.25x
+  //    cacheRead generally = 0.1x input, cacheWrite = 1.25x
   //    input (see the header note above). Codex usage doesn't yet report
   //    cache-write tokens, so cacheWrite isn't exercised today, but the rate
   //    is kept correct for when it is.
   "gpt-6-astra":        { input: 10,   output: 50,   cacheRead: 1.00,  cacheWrite: 12.50 },
+  // Standard short-context rates: developers.openai.com/api/docs/models/.
+  // GPT-6.1 Sol's cached input is 0.05x input; GPT-6 Sol's is 0.1x.
+  "gpt-6.1-sol":        { input: 2,    output: 10,   cacheRead: 0.10,  cacheWrite: 2.50 },
+  "gpt-6-sol":          { input: 2,    output: 10,   cacheRead: 0.20,  cacheWrite: 2.50 },
+  "gpt-6-luna":         { input: 0.10, output: 0.50, cacheRead: 0.01,  cacheWrite: 0.125 },
   "gpt-5.6-sol":        { input: 5,    output: 30,   cacheRead: 0.50,  cacheWrite: 6.25 },
   "gpt-5.6-terra":      { input: 2.50, output: 15,   cacheRead: 0.25,  cacheWrite: 3.125 },
   "gpt-5.6-luna":       { input: 1,    output: 6,    cacheRead: 0.10,  cacheWrite: 1.25 },
@@ -276,6 +357,14 @@ const MODEL_PRICING: Record<
   "gpt-4o-mini":        { input: 0.15, output: 0.60, cacheRead: 0.075, cacheWrite: 0.15 },
   "gpt-4o":             { input: 2.50, output: 10,   cacheRead: 1.25,  cacheWrite: 2.50 },
 
+  // -- Google Gemini: catalog SKUs. --
+  "gemini-3.1-pro-preview":        { input: 2.00, output: 12.00, cacheRead: 0.20,  cacheWrite: 3.75 },
+  "gemini-3.1-flash-lite-preview": { input: 0.25, output: 1.50,  cacheRead: 0.025, cacheWrite: 3.75 },
+  "gemini-3-flash-preview":        { input: 0.50, output: 3.00,  cacheRead: 0.05,  cacheWrite: 0.50 },
+  "gemini-2.5-flash-lite":         { input: 0.10, output: 0.40,  cacheRead: 0.025, cacheWrite: 0.10 },
+  "gemini-2.5-flash":              { input: 0.30, output: 2.50,  cacheRead: 0.075, cacheWrite: 0.30 },
+  "gemini-2.5-pro":                { input: 1.25, output: 10.00, cacheRead: 0.31,  cacheWrite: 1.25 },
+
   // -- DeepSeek (api-docs.deepseek.com/quick_start/pricing).
   //    The official catalog lists exactly two current SKUs; `deepseek-chat`
   //    and `deepseek-reasoner` are aliases that route to `deepseek-v4-flash`
@@ -292,6 +381,9 @@ const MODEL_PRICING: Record<
   // -- Moonshot Kimi (kimi.com/resources/kimi-k2-6-pricing).
   //    Only K2.6 is on the official price sheet today; earlier K2 variants
   //    are intentionally omitted until Moonshot publishes their rates. --
+  // kimi-k2.5 is a fork addition: Moonshot lists it on the same K2 price sheet
+  // the fork tracks; upstream omits it until an official rate is published.
+  "kimi-k2.5":          { input: 0.60, output: 3.00, cacheRead: 0.10,   cacheWrite: 0.60 },
   "kimi-k2.6":          { input: 0.95, output: 4.00, cacheRead: 0.16,   cacheWrite: 0.95 },
   // Kimi K3 (platform.kimi.ai/docs/pricing/chat-k3 via models.dev
   // providers/moonshotai/models/kimi-k3.toml). Moonshot bills no separate
@@ -316,6 +408,9 @@ const MODEL_PRICING: Record<
   "glm-4.5-air":        { input: 0.2,  output: 1.1,  cacheRead: 0.03,   cacheWrite: 0.2 },
   "glm-4.5-airx":       { input: 1.1,  output: 4.5,  cacheRead: 0.22,   cacheWrite: 1.1 },
   "glm-4.5-flash":      { input: 0,    output: 0,    cacheRead: 0,      cacheWrite: 0 },
+
+  // -- MiniMax: M2.7. Pricing sourced from minimax.io API docs. --
+  "minimax-m2.7": { input: 0.30, output: 1.20, cacheRead: 0.06, cacheWrite: 0.30 },
 
   // -- Alibaba Qwen (International ≤256K tier; official sources:
   //    alibabacloud.com/help/model-studio pricing sheet and
@@ -427,10 +522,36 @@ const MODEL_PRICING: Record<
 // every candidate is tried `${provider}/…`-qualified first, then bare, so a
 // `cursor/auto` row wins for a Cursor row while an unqualified `auto` (no
 // provider) stays unmapped instead of silently borrowing Cursor's price.
-function resolvePricing(model: string, provider?: string) {
+function resolvePricing(
+  model: string,
+  provider?: string,
+  pricingDate?: string,
+  requestInputTokens?: number,
+) {
   if (!model) return undefined;
 
   const candidates = pricingCandidates(model, provider);
+  const normalizedProvider = normalizeProvider(provider);
+  if (normalizedProvider === "copilot") {
+    const copilotPricing = resolveCopilotPricing(
+      model,
+      pricingDate,
+      requestInputTokens,
+    );
+    if (copilotPricing) return copilotPricing;
+
+    // GPT-5.6 is a provider-priced family. If a new or malformed member is
+    // absent from the Copilot catalog, fail closed instead of silently using
+    // the direct OpenAI API rate for the same-looking model id.
+    if (canonicalCandidates(model).some((candidate) => candidate.startsWith("gpt-5.6-"))) {
+      for (const candidate of candidates) {
+        if (!candidate.startsWith("copilot/")) continue;
+        const custom = getCustomPricing(candidate);
+        if (custom) return custom;
+      }
+      return undefined;
+    }
+  }
   for (const candidate of candidates) {
     const hit = MODEL_PRICING[candidate];
     if (hit) return hit;
@@ -440,6 +561,34 @@ function resolvePricing(model: string, provider?: string) {
     if (hit) return hit;
   }
   return undefined;
+}
+
+function resolveCopilotPricing(
+  model: string,
+  pricingDate?: string,
+  requestInputTokens?: number,
+): ModelPricing | undefined {
+  const ruleKey = canonicalCandidates(model).find(
+    (candidate) => COPILOT_MODEL_PRICING[candidate] !== undefined,
+  );
+  if (!ruleKey) return undefined;
+
+  const effectiveDate = /^\d{4}-\d{2}-\d{2}$/.test(pricingDate ?? "")
+    ? pricingDate!
+    : new Date().toISOString().slice(0, 10);
+  const period = COPILOT_MODEL_PRICING[ruleKey]?.find(
+    (candidate) =>
+      (!candidate.validFrom || effectiveDate >= candidate.validFrom) &&
+      (!candidate.validThrough || effectiveDate <= candidate.validThrough),
+  );
+  if (!period) return undefined;
+  if (
+    requestInputTokens !== undefined &&
+    requestInputTokens > period.longContext.thresholdInputTokens
+  ) {
+    return period.longContext.pricing;
+  }
+  return period.default;
 }
 
 // Canonical provider token for keying: trimmed + lowercased so lookup keys,
@@ -591,16 +740,44 @@ export function collectUnmappedModels(rows: readonly Priceable[]): string[] {
   const set = new Set<string>();
   for (const r of rows) {
     if (!r.model || isModelPriced(r.model, r.provider)) continue;
-    const uncosted = uncostedTokens(r);
-    const needsEstimate =
-      uncosted.input > 0 ||
-      uncosted.output > 0 ||
-      uncosted.cacheRead > 0 ||
-      uncosted.cacheWrite > 0;
-    if (!needsEstimate && (r.cost_usd_ticks ?? 0) > 0) continue;
+    if (!needsPriceEstimate(r) && (r.cost_usd_ticks ?? 0) > 0) continue;
     set.add(pricingKey(r.model, r.provider));
   }
   return Array.from(set).toSorted();
+}
+
+// Whether estimateCost would consult a rate table for this row at all: only
+// tokens the provider did not price itself go through resolvePricing.
+function needsPriceEstimate(row: Priceable): boolean {
+  const uncosted = uncostedTokens(row);
+  return (
+    uncosted.input > 0 ||
+    uncosted.output > 0 ||
+    uncosted.cacheRead > 0 ||
+    uncosted.cacheWrite > 0
+  );
+}
+
+// The custom prices that actually priced something in `rows`: a saved
+// override only counts as active when estimateCost consulted it, so a row the
+// provider costed in full (or one with no tokens) never raises the "priced
+// with your custom rates" notice.
+export function collectActiveCustomPricingModels(
+  rows: readonly Priceable[],
+): string[] {
+  const active = new Set<string>();
+  for (const row of rows) {
+    if (!row.model || !needsPriceEstimate(row)) continue;
+    const candidates = pricingCandidates(row.model, row.provider);
+    if (candidates.some((candidate) => MODEL_PRICING[candidate] !== undefined)) {
+      continue;
+    }
+    const custom = candidates.find(
+      (candidate) => getCustomPricing(candidate) !== undefined,
+    );
+    if (custom) active.add(custom);
+  }
+  return Array.from(active).toSorted();
 }
 
 // Anything carrying per-model token totals can be priced — RuntimeUsage,
@@ -620,6 +797,12 @@ export type Priceable = Pick<
   | "cache_write_tokens"
 > & {
   provider?: string;
+  // UTC date used to select an effective-dated provider price. Separate from
+  // RuntimeUsage.date, whose calendar boundary follows the viewer's timezone.
+  pricing_date?: string;
+  // Optional per-request input size. Aggregate token totals must never fill
+  // this field because long-context thresholds are evaluated per request.
+  request_input_tokens?: number;
   cost_usd_ticks?: number;
   uncosted_input_tokens?: number;
   uncosted_output_tokens?: number;
@@ -682,7 +865,12 @@ function uncostedTokens(usage: Priceable): {
 // authoritative half is not a guess.
 export function estimateCost(usage: Priceable): number {
   const authoritative = (usage.cost_usd_ticks ?? 0) / COST_USD_TICKS_PER_USD;
-  const pricing = resolvePricing(usage.model, usage.provider);
+  const pricing = resolvePricing(
+    usage.model,
+    usage.provider,
+    usage.pricing_date,
+    usage.request_input_tokens,
+  );
   if (!pricing) return authoritative;
   const uncosted = uncostedTokens(usage);
   return (
@@ -709,7 +897,12 @@ export interface CostBreakdown {
 // this way keeps the stacked chart summing to the headline figure instead of
 // silently under-drawing every Grok row.
 export function estimateCostBreakdown(usage: Priceable): CostBreakdown {
-  const pricing = resolvePricing(usage.model, usage.provider);
+  const pricing = resolvePricing(
+    usage.model,
+    usage.provider,
+    usage.pricing_date,
+    usage.request_input_tokens,
+  );
   if (!pricing) {
     // No rates to split by, but the provider may still have priced the turn
     // itself. Returning zeros here would make the stacked chart disagree with
@@ -831,7 +1024,12 @@ export function summarizeTaskUsageAcross(
 // minus what they actually cost at the discounted cache-hit rate. This is a
 // reconstruction of "money the cache saved you", not real-world spend.
 export function estimateCacheSavings(usage: Priceable): number {
-  const pricing = resolvePricing(usage.model, usage.provider);
+  const pricing = resolvePricing(
+    usage.model,
+    usage.provider,
+    usage.pricing_date,
+    usage.request_input_tokens,
+  );
   if (!pricing) return 0;
   const wouldHaveCost = (usage.cache_read_tokens * pricing.input) / 1_000_000;
   const actualCost = (usage.cache_read_tokens * pricing.cacheRead) / 1_000_000;
@@ -1149,20 +1347,52 @@ export function aggregateByWeek(
 // timezone so the cutoff lands on the same calendar boundary the backend
 // used when bucketing rows — without this the browser/runtime tz gap could
 // shift the boundary by a day at the edges (#MUL-2382 sliceWindow tz bug).
-export function sliceWindow(
-  usage: readonly RuntimeUsage[],
+//
+// The window is exactly `days` calendar days ending today (today's partial
+// bucket + days-1 prior full days), matching the workspace dashboard's
+// `dailyCutoffIso`. `days=1` therefore means "today" in the viewer's
+// timezone, never "the last 24 hours". The backend still serves one extra
+// bucket of headroom (N+1); that surplus is what the prior window reads.
+export function sliceWindow<T extends { date: string }>(
+  usage: readonly T[],
   days: number,
   tz: string,
-): { filtered: RuntimeUsage[]; prevFiltered: RuntimeUsage[] } {
+): { filtered: T[]; prevFiltered: T[] } {
   const today = todayIso(tz);
-  const isoCurrent = addDaysIso(today, -days);
-  const isoPrev = addDaysIso(today, -days * 2);
+  const isoCurrent = addDaysIso(today, -(days - 1));
+  const isoPrev = addDaysIso(today, -(days * 2 - 1));
   return {
     filtered: usage.filter((u) => u.date >= isoCurrent),
     prevFiltered: usage.filter(
       (u) => u.date >= isoPrev && u.date < isoCurrent,
     ),
   };
+}
+
+export interface UsageCoverageTotals {
+  completedRuns: number;
+  completeRuns: number;
+  outputOnlyRuns: number;
+  missingRuns: number;
+}
+
+export function aggregateUsageCoverage(
+  rows: readonly RuntimeUsageCoverage[],
+): UsageCoverageTotals {
+  return rows.reduce<UsageCoverageTotals>(
+    (total, row) => ({
+      completedRuns: total.completedRuns + row.completed_runs,
+      completeRuns: total.completeRuns + row.complete_runs,
+      outputOnlyRuns: total.outputOnlyRuns + row.output_only_runs,
+      missingRuns: total.missingRuns + row.missing_runs,
+    }),
+    {
+      completedRuns: 0,
+      completeRuns: 0,
+      outputOnlyRuns: 0,
+      missingRuns: 0,
+    },
+  );
 }
 
 function diffDaysIso(from: string, to: string): number {
@@ -1261,6 +1491,66 @@ export function aggregateCostByAgent(rows: RuntimeUsageByAgent[]): CostByKey[] {
     map.set(r.agent_id, entry);
   }
   return Array.from(map.values()).toSorted((a, b) => b.cost - a.cost);
+}
+
+// Bucket for usage that can't be attributed to a member: agents with no
+// owner_id, plus rows whose agent no longer exists in the workspace agent
+// list (deleted agents — their usage must not vanish from the breakdown).
+export const NO_OWNER_KEY = "__no_owner__";
+
+// Per-(agent, model) rows → per-owner totals. Reuses the by-agent server
+// aggregation and folds agent_id → agent.owner_id client-side, so the tab
+// needs no extra endpoint.
+export function aggregateCostByOwner(
+  rows: RuntimeUsageByAgent[],
+  agents: readonly Pick<Agent, "id" | "owner_id">[],
+): CostByKey[] {
+  const ownerByAgent = new Map<string, string | null>();
+  for (const a of agents) ownerByAgent.set(a.id, a.owner_id);
+  const map = new Map<string, CostByKey>();
+  for (const r of rows) {
+    // `||` (not `??`): listAgents is not zod-parsed, so an empty-string
+    // owner_id must fold into the bucket rather than mint a "" member key.
+    const key = ownerByAgent.get(r.agent_id) || NO_OWNER_KEY;
+    const entry = map.get(key) ?? { key, tokens: 0, cost: 0, taskCount: 0 };
+    entry.tokens +=
+      r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_write_tokens;
+    entry.cost += estimateCost(r);
+    entry.taskCount += r.task_count;
+    map.set(key, entry);
+  }
+  return Array.from(map.values()).toSorted((a, b) => b.cost - a.cost);
+}
+
+// Per-(agent, model) rows → per-owner, per-model totals. Backs the
+// expand-to-models affordance on each By-owner row: the same agent → owner
+// fold as aggregateCostByOwner, then grouped by the By-model tab's model
+// key so the two views agree on what counts as one model. Each owner's list
+// is sorted by cost desc and its costs sum to that owner's row.
+export function aggregateCostByOwnerModel(
+  rows: RuntimeUsageByAgent[],
+  agents: readonly Pick<Agent, "id" | "owner_id">[],
+): Map<string, CostByKey[]> {
+  const ownerByAgent = new Map<string, string | null>();
+  for (const a of agents) ownerByAgent.set(a.id, a.owner_id);
+  const byOwner = new Map<string, Map<string, CostByKey>>();
+  for (const r of rows) {
+    const owner = ownerByAgent.get(r.agent_id) || NO_OWNER_KEY;
+    const models = byOwner.get(owner) ?? new Map<string, CostByKey>();
+    const key = modelGroupingKey(r.model, r.provider);
+    const entry = models.get(key) ?? { key, tokens: 0, cost: 0, taskCount: 0 };
+    entry.tokens +=
+      r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_write_tokens;
+    entry.cost += estimateCost(r);
+    entry.taskCount += r.task_count;
+    models.set(key, entry);
+    byOwner.set(owner, models);
+  }
+  const out = new Map<string, CostByKey[]>();
+  for (const [owner, models] of byOwner) {
+    out.set(owner, Array.from(models.values()).toSorted((a, b) => b.cost - a.cost));
+  }
+  return out;
 }
 
 // Per-(date, model) rows → per-model totals (the "By model" tab reuses the

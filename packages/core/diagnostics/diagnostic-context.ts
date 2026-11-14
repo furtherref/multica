@@ -55,6 +55,9 @@ type RoutePattern = readonly string[];
 const WORKSPACE_ROUTES: readonly RoutePattern[] = [
   ["issues"],
   ["issues", ":id"],
+  // Fork-only: issue templates (paths.issueTemplates / issueTemplateDetail).
+  ["issue-templates"],
+  ["issue-templates", ":id"],
   ["projects"],
   ["projects", ":id"],
   ["autopilots"],

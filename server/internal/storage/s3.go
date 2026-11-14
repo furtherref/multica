@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -99,7 +100,43 @@ func NewS3StorageFromEnv() *S3Storage {
 }
 
 func (s *S3Storage) CdnDomain() string {
-	return s.cdnDomain
+	if s.cdnDomain != "" {
+		return s.cdnDomain
+	}
+	return publicEndpointHost(s.endpointURL)
+}
+
+func publicEndpointHost(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(u.Hostname()), "."))
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return ""
+	}
+	if !strings.Contains(host, ".") {
+		return ""
+	}
+	switch {
+	case strings.HasSuffix(host, ".local"),
+		strings.HasSuffix(host, ".localdomain"),
+		strings.HasSuffix(host, ".internal"),
+		strings.HasSuffix(host, ".lan"),
+		strings.HasSuffix(host, ".home"),
+		strings.HasSuffix(host, ".docker"):
+		return ""
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if addr.IsLoopback() ||
+			addr.IsPrivate() ||
+			addr.IsLinkLocalUnicast() ||
+			addr.IsLinkLocalMulticast() ||
+			addr.IsUnspecified() {
+			return ""
+		}
+	}
+	return host
 }
 
 // looksLikeS3Hostname returns true when the configured S3_BUCKET value looks

@@ -22,7 +22,9 @@ export function dispatchReasonCode(err: unknown): string | undefined {
  * User-facing sentence for a refused send. `invocation_not_allowed` is the
  * revoked-permission case (MUL-4525): the session was created while the user
  * could run the agent and the server now refuses, so it must not read as a
- * transient failure the user should retry.
+ * transient failure the user should retry. `budget_exceeded` is the same shape
+ * for a different cause — the runtime's cost budget is spent, and it clears on
+ * the period boundary, not by trying again.
  */
 export function sendFailureMessage(err: unknown): string {
   switch (dispatchReasonCode(err)) {
@@ -35,6 +37,8 @@ export function sendFailureMessage(err: unknown): string {
       // Retrying never fixes this — the fix is making that runtime public or
       // rebinding/copying the agent to a runtime its owner can use.
       return `Message not sent — ${RUNTIME_ACCESS_DENIED_RECOVERY_COPY}`;
+    case "budget_exceeded":
+      return "This runtime has reached its cost budget, so the message was not sent. Try again after the period resets.";
     default:
       return "Your message could not be sent. Please try again.";
   }

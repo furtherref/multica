@@ -7,6 +7,11 @@ import type { IssueStatusCategory } from "./issue";
  * Category is presentation and workflow phase; the server keeps the legacy
  * status behavior projection separate so collapsing `in_review` and `blocked`
  * into `started` does not change existing automation behavior.
+ *
+ * Deliberately NOT `IssueStatus` (which also carries the fork's `archive`
+ * value, migration 069): archive sits outside this catalog and is never a
+ * selectable category. Its lifecycle is `closed` — see
+ * `getIssueStatusCategory` and `issuestatus.CategoryForBehavior` server-side.
  */
 
 // IssueStatusCategory is defined in ./issue, next to IssueStatus, because the

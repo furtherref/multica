@@ -147,11 +147,11 @@ describe("StepWorkspace — DISABLE_WORKSPACE_CREATION gate", () => {
 });
 
 // #4263: the workspace URL prefix must reflect the deployment's own host on
-// self-hosted instances instead of the hardcoded `multica.ai`.
+// self-hosted instances instead of the hardcoded brand host.
 describe("StepWorkspace — workspace URL prefix", () => {
   it("shows the brand host when no app URL is configured", () => {
     renderStep({ existing: null, disabled: false });
-    expect(screen.getByText("multica.ai/")).toBeInTheDocument();
+    expect(screen.getByText("multica.furtherref.com/")).toBeInTheDocument();
   });
 
   it("shows the deployment host for self-hosted instances", () => {
@@ -161,7 +161,7 @@ describe("StepWorkspace — workspace URL prefix", () => {
       daemonAppUrl: "https://multica.example.com",
     });
     expect(screen.getByText("multica.example.com/")).toBeInTheDocument();
-    expect(screen.queryByText("multica.ai/")).not.toBeInTheDocument();
+    expect(screen.queryByText("multica.furtherref.com/")).not.toBeInTheDocument();
   });
 });
 

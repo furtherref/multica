@@ -192,9 +192,19 @@ reverse proxy 뒤에 배포한다면 실제 proxy 네트워크를 입력해야 �
 | Plugins | `MULTICA_PLUGIN_API_URL` | 버전을 포함한 Plugin Public API의 전체 Base URL(예: `https://plugin-api.example.com/v1`). 설정하지 않으면 `MULTICA_PUBLIC_URL` + `/v1` 사용 |
 | Plugins | `MULTICA_PLUGIN_DIR` | 개발 중 로컬 plugin bundle을 게시하는 선택적 절대 디렉터리 |
 
-`GITHUB_APP_ID`와 private key를 설정하지 않아도 PR 연결, 미러링, merge 시 done 전환은 정상적으로 작동합니다. 다만 카드에 CI와 merge 가능 상태가 표시되지 않고 "GitHub에서 선택" 저장소 메뉴도 비활성화됩니다.
+`GITHUB_APP_ID`와 private key를 설정하지 않아도 PR 연결, 미러링, merge 시 상태 변경은 정상적으로 작동합니다. 다만 카드에 CI와 merge 가능 상태가 표시되지 않고 "GitHub에서 선택" 저장소 메뉴도 비활성화됩니다.
 
 설정 단계는 [GitHub 연동](/github-integration#자체-호스팅-설정), [Feishu Bot](/lark-bot-integration#자체-호스팅-설정), [Slack Bot](/slack-bot-integration#자체-호스팅-설정), [Telegram Bot](/telegram-bot-integration#관리-및-자체-호스팅)을 참고하세요.
+
+### GitHub API token (속도 제한)
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `GITHUB_TOKEN` | 비어 있음 | Multica 자체의 GitHub REST API 호출을 인증하는 선택적 token. 속도 제한을 60에서 5000 요청/시간으로 올립니다 |
+
+`GITHUB_TOKEN`은 위의 GitHub App 연동과 **무관합니다**. 두 종류의 GitHub REST API 호출을 인증합니다: **CLI 자체 업데이트**의 릴리스 조회(**데몬**이 읽음)와 GitHub 저장소에서의 **skill 가져오기**(**서버**가 읽음). 인증되지 않은 GitHub API 요청은 **소스 IP당 60 요청/시간**으로 제한되며, 여러 데몬이나 도구가 하나의 송신 IP(NAT / 포워드 프록시)를 공유하면 쉽게 소진되어 `403` 오류로 나타납니다 — 예를 들어 CLI 자체 업데이트 시 `fetch release metadata: GitHub API returned 403`. `GITHUB_TOKEN`을 설정하면 한도가 IP가 아니라 **token 기준으로 5000 요청/시간**으로 올라갑니다. 공개 릴리스 저장소를 읽을 수 있는 token이면 무엇이든 동작하며, 공개 저장소에서는 scope가 필요 없습니다.
+
+필요한 프로세스의 환경에 설정하세요 — **CLI 자체 업데이트는 데몬**, **skill 가져오기는 서버** — 그리고 **해당 프로세스를 재시작**하세요. token은 시작 시점에 읽힙니다.
 
 ## 서버 측 LLM
 

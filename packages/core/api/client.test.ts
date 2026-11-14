@@ -1,11 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setCurrentWorkspace } from "../platform/workspace-storage";
 import { createAuthStore } from "../auth";
 import { configStore } from "../config";
 import type { StorageAdapter, User } from "../types";
 import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, clientErrorMessage } from "./client";
-import { EMPTY_PLUGIN_PACKAGE_LIST, EMPTY_PLUGIN_PREVIEW, EMPTY_PLUGIN_SURFACE_LAUNCH } from "./schemas";
+import {
+  EMPTY_PLUGIN_PACKAGE_LIST,
+  EMPTY_PLUGIN_PREVIEW,
+  EMPTY_PLUGIN_SURFACE_LAUNCH,
+  EMPTY_RUNTIME_COST_BUDGET,
+} from "./schemas";
 
 afterEach(() => {
+  setCurrentWorkspace(null, null);
   configStore.getState().setAgentConversationStartersSupported(false);
   vi.unstubAllGlobals();
 });
@@ -237,7 +244,7 @@ describe("ApiClient pull-request response schema", () => {
   it("parses the auto-complete decision and link source", async () => {
     stubPullRequests({
       pull_requests: [{ ...validPR, link_source: "title" }],
-      auto_complete: { state: "waiting", pull_request_ids: ["pr-1"], issue_disabled: false, workspace_enabled: true },
+      auto_complete: { state: "waiting", pull_request_ids: ["pr-1"], issue_disabled: false, workspace_enabled: true, target_status: "in_review" },
     });
     const result = await new ApiClient("https://api.example.test").listIssuePullRequests("issue-1");
     expect(result.pull_requests[0]?.link_source).toBe("title");
@@ -246,6 +253,7 @@ describe("ApiClient pull-request response schema", () => {
       pull_request_ids: ["pr-1"],
       issue_disabled: false,
       workspace_enabled: true,
+      target_status: "in_review",
     });
   });
 
@@ -1147,13 +1155,41 @@ describe("ApiClient", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new ApiClient("https://api.example.test");
-    const tasks = await client.listAgentTasks("agent-1");
+    const { tasks, nextCursor } = await client.listAgentTasksPage("agent-1");
 
     expect(tasks.map((task) => task.id)).toEqual(["task-1", "task-2"]);
+    expect(nextCursor).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "https://api.example.test/api/agents/agent-1/tasks",
+      "https://api.example.test/api/agents/agent-1/tasks?limit=200",
     );
+  });
+
+  it("reads a lossless task cursor and passes it to the next bounded request", async () => {
+    const cursor = "2026-09-24T01:02:03.123456Z|00000000-0000-0000-0000-000000000001";
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(
+      JSON.stringify([{ id: "task-1", status: "completed" }]),
+      { headers: { "X-Agent-Tasks-Next-Cursor": cursor } },
+    )));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+    const page = await client.listAgentTasksPage("agent-1", { limit: 7 });
+    expect(page.nextCursor).toBe(cursor);
+    const controller = new AbortController();
+    await client.listAgentTasksPage("agent-1", { limit: 7, before: page.nextCursor!, signal: controller.signal });
+    const request = new URL(fetchMock.mock.calls[1]![0]);
+    expect(request.searchParams.get("limit")).toBe("7");
+    expect(request.searchParams.get("before")).toBe(cursor);
+    expect(fetchMock.mock.calls[1]![1].signal).toBe(controller.signal);
+  });
+
+  it("drops the continuation when the task page is malformed", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ tasks: "not-an-array" }),
+      { headers: { "X-Agent-Tasks-Next-Cursor": "cursor" } },
+    )));
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listAgentTasksPage("agent-1")).resolves.toEqual({ tasks: [], nextCursor: null });
   });
 
   it("falls back to an empty agent task history for a malformed response", async () => {
@@ -1166,7 +1202,7 @@ describe("ApiClient", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new ApiClient("https://api.example.test");
-    await expect(client.listAgentTasks("agent-1")).resolves.toEqual([]);
+    await expect(client.listAgentTasksPage("agent-1")).resolves.toEqual({ tasks: [], nextCursor: null });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -1276,6 +1312,25 @@ describe("ApiClient", () => {
     expect(headers["X-Client-Platform"]).toBe("desktop");
     expect(headers["X-Client-Version"]).toBe("1.2.3");
     expect(headers["X-Client-OS"]).toBe("macos");
+  });
+
+  it("can fetch notification preferences for a workspace other than the current slug", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ workspace_id: "ws-target", preferences: {} }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    setCurrentWorkspace("current", "ws-current");
+
+    await client.getNotificationPreferences("target");
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://api.example.test/api/notification-preferences");
+    expect((init?.headers as Record<string, string>)["X-Workspace-Slug"]).toBe("target");
   });
 
   it("omits X-Client-* headers when identity is not configured", async () => {
@@ -2278,6 +2333,65 @@ describe("ApiClient model discovery response schema", () => {
  * every child kept notifying. An unknown path 404s, which surfaces as a
  * rejected mutation the user can act on.
  */
+describe("ApiClient runtime cost budget writes", () => {
+  const budget = {
+    runtime: {
+      daily: {
+        limit_usd: 20,
+        used_usd: 3.42,
+        period_start: "2026-09-03T00:00:00Z",
+        reset_at: "2026-09-04T00:00:00Z",
+        reached: false,
+      },
+      weekly: null,
+      monthly: null,
+    },
+    users: [],
+    can_manage: true,
+  };
+
+  // Parsing tolerance, not a claim about the current server: an installed
+  // desktop build can talk to a backend that answers this PUT with 204 and no
+  // body. The client must then answer the empty budget rather than throw or
+  // hand the caller `undefined` — the mutation's invalidation refetches through
+  // GET, which is the single read gate.
+  it("answers the empty budget when the write returns 204 with no body", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+    );
+
+    const result = await new ApiClient("https://api.example.test")
+      .updateRuntimeCostBudget("rt-1", {
+        runtime: { daily_usd: 20, weekly_usd: null, monthly_usd: null },
+        users: [],
+      });
+
+    expect(result).toEqual(EMPTY_RUNTIME_COST_BUDGET);
+  });
+
+  it("parses the budget body a 200 carries", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(budget), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const result = await new ApiClient("https://api.example.test")
+      .updateRuntimeCostBudget("rt-1", {
+        runtime: { daily_usd: 20, weekly_usd: null, monthly_usd: null },
+        users: [],
+      });
+
+    expect(result.can_manage).toBe(true);
+    expect(result.runtime?.daily?.limit_usd).toBe(20);
+  });
+});
+
 describe("ApiClient unsubscribe endpoints", () => {
   function stubOK() {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
@@ -2548,6 +2662,19 @@ describe("ApiClient workspace MCP servers", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]?.transport).toBe("websocket");
+  });
+
+  it("keeps the agent count and degrades a malformed one to unknown", async () => {
+    stubJSON([
+      { ...server, id: "srv-1", agent_count: 3 },
+      { ...server, id: "srv-2", agent_count: "many" },
+      { ...server, id: "srv-3" },
+    ]);
+
+    const result = await new ApiClient("https://api.example.test")
+      .listWorkspaceMcpServers("ws-1");
+
+    expect(result.map((item) => item.agent_count)).toEqual([3, undefined, undefined]);
   });
 
   it("POSTs a name and entry when creating a library server", async () => {

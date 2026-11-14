@@ -281,9 +281,9 @@ const daemonAPI = {
     ipcRenderer.invoke("daemon:reauthenticate", token, userId),
   isCliInstalled: (): Promise<boolean> =>
     ipcRenderer.invoke("daemon:is-cli-installed"),
-  getPrefs: (): Promise<{ autoStart: boolean; autoStop: boolean }> =>
+  getPrefs: (): Promise<{ autoStart: boolean; autoStop: boolean; workspacesRoot?: string }> =>
     ipcRenderer.invoke("daemon:get-prefs"),
-  setPrefs: (prefs: Partial<{ autoStart: boolean; autoStop: boolean }>): Promise<{ autoStart: boolean; autoStop: boolean }> =>
+  setPrefs: (prefs: Partial<{ autoStart: boolean; autoStop: boolean; workspacesRoot?: string }>): Promise<{ autoStart: boolean; autoStop: boolean; workspacesRoot?: string }> =>
     ipcRenderer.invoke("daemon:set-prefs", prefs),
   autoStart: (): Promise<void> =>
     ipcRenderer.invoke("daemon:auto-start"),
@@ -298,6 +298,8 @@ const daemonAPI = {
   },
   openLogFile: (): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke("daemon:open-log-file"),
+  pickDirectory: (): Promise<{ canceled: boolean; path?: string }> =>
+    ipcRenderer.invoke("daemon:pick-directory"),
 };
 
 const updaterAPI = {

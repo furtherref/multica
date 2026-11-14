@@ -106,6 +106,9 @@ func TestListWorkspaceAgentTaskSnapshot(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("ListWorkspaceAgentTaskSnapshot: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 
 	var tasks []AgentTaskResponse
 	if err := json.NewDecoder(w.Body).Decode(&tasks); err != nil {
@@ -976,6 +979,9 @@ func TestListAgents_ResponseHasNoCustomEnv(t *testing.T) {
 	req := newRequest("GET", "/agents", nil)
 	w := httptest.NewRecorder()
 	testHandler.ListAgents(w, req)
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -1596,3 +1602,172 @@ func insertHandlerTestTask(t *testing.T, agentID string) string {
 // Defence-in-depth: spot-check that the package compiles a small
 // fmt.Sprintf so accidental imports stay tidy.
 var _ = fmt.Sprintf
+
+// envOwnedAgentFixture creates a workspace-visible agent owned by a fresh
+// plain-member user, plus a second unrelated plain member in the same
+// workspace. Returns the agent id, the agent owner's user id, and the
+// unrelated member's user id. Mirrors privateAgentTestFixture but with
+// visibility='workspace' so loadAgentForUser passes for every member and
+// these tests exercise the env authorization gate specifically.
+func envOwnedAgentFixture(t *testing.T) (agentID, ownerID, otherID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO "user" (name, email)
+		VALUES ('Env Agent Owner', 'env-agent-owner@multica.test')
+		RETURNING id
+	`).Scan(&ownerID); err != nil {
+		t.Fatalf("create owner user: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM "user" WHERE email = 'env-agent-owner@multica.test'`)
+	})
+
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO member (workspace_id, user_id, role)
+		VALUES ($1, $2, 'member')
+	`, testWorkspaceID, ownerID); err != nil {
+		t.Fatalf("add owner as member: %v", err)
+	}
+
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO "user" (name, email)
+		VALUES ('Env Plain Member', 'env-plain-member@multica.test')
+		RETURNING id
+	`).Scan(&otherID); err != nil {
+		t.Fatalf("create plain member user: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM "user" WHERE email = 'env-plain-member@multica.test'`)
+	})
+
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO member (workspace_id, user_id, role)
+		VALUES ($1, $2, 'member')
+	`, testWorkspaceID, otherID); err != nil {
+		t.Fatalf("add plain member: %v", err)
+	}
+
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent (
+			workspace_id, name, description, runtime_mode, runtime_config,
+			runtime_id, visibility, max_concurrent_tasks, owner_id,
+			instructions, custom_env, custom_args
+		)
+		VALUES ($1, 'env-owner-gate-agent', '', 'cloud', '{}'::jsonb,
+		        $2, 'workspace', 1, $3, '', '{"KEY_ONE": "v1"}'::jsonb, '[]'::jsonb)
+		RETURNING id
+	`, testWorkspaceID, handlerTestRuntimeID(t), ownerID).Scan(&agentID); err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID)
+	})
+
+	return agentID, ownerID, otherID
+}
+
+// TestAgentEnv_AgentOwnerPlainMemberAllowed locks in the owner-access rule:
+// the agent owner can reveal and edit env even when their workspace role is
+// plain `member`. The audit rows must record the owner as the actor.
+func TestAgentEnv_AgentOwnerPlainMemberAllowed(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, ownerID, _ := envOwnedAgentFixture(t)
+
+	// Reveal.
+	req := newRequestAs(ownerID, http.MethodGet, "/api/agents/"+agentID+"/env", nil)
+	req = withURLParam(req, "id", agentID)
+	w := httptest.NewRecorder()
+	testHandler.GetAgentEnv(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GetAgentEnv as agent owner: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp AgentEnvResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.CustomEnv["KEY_ONE"] != "v1" {
+		t.Errorf("expected KEY_ONE=v1, got %v", resp.CustomEnv)
+	}
+
+	// Audit row must record the agent owner as the actor.
+	var actorID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT actor_id::text FROM activity_log
+		WHERE workspace_id = $1 AND action = 'agent_env_revealed'
+		  AND details->>'agent_id' = $2
+		ORDER BY created_at DESC LIMIT 1
+	`, testWorkspaceID, agentID).Scan(&actorID); err != nil {
+		t.Fatalf("no agent_env_revealed activity row found: %v", err)
+	}
+	if actorID != ownerID {
+		t.Errorf("audit actor mismatch: got %s, want %s", actorID, ownerID)
+	}
+
+	// Edit.
+	body := map[string]any{"custom_env": map[string]string{"KEY_ONE": "v1", "KEY_TWO": "v2"}}
+	putReq := newRequestAs(ownerID, http.MethodPut, "/api/agents/"+agentID+"/env", body)
+	putReq = withURLParam(putReq, "id", agentID)
+	w = httptest.NewRecorder()
+	testHandler.UpdateAgentEnv(w, putReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateAgentEnv as agent owner: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var updResp AgentEnvResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &updResp); err != nil {
+		t.Fatalf("decode update response: %v", err)
+	}
+	if updResp.CustomEnv["KEY_TWO"] != "v2" {
+		t.Errorf("expected KEY_TWO=v2 after update, got %v", updResp.CustomEnv)
+	}
+
+	var updActorID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT actor_id::text FROM activity_log
+		WHERE workspace_id = $1 AND action = 'agent_env_updated'
+		  AND details->>'agent_id' = $2
+		ORDER BY created_at DESC LIMIT 1
+	`, testWorkspaceID, agentID).Scan(&updActorID); err != nil {
+		t.Fatalf("no agent_env_updated activity row found: %v", err)
+	}
+	if updActorID != ownerID {
+		t.Errorf("update audit actor mismatch: got %s, want %s", updActorID, ownerID)
+	}
+}
+
+// TestAgentEnv_NonOwnerPlainMemberForbidden keeps the old denial in place
+// for members who neither own the agent nor hold a workspace owner/admin
+// role.
+func TestAgentEnv_NonOwnerPlainMemberForbidden(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, _, otherID := envOwnedAgentFixture(t)
+
+	cases := []struct {
+		name   string
+		method string
+		fn     func(http.ResponseWriter, *http.Request)
+		body   any
+	}{
+		{"reveal", http.MethodGet, testHandler.GetAgentEnv, nil},
+		{"update", http.MethodPut, testHandler.UpdateAgentEnv, map[string]any{"custom_env": map[string]string{"K": "v"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := newRequestAs(otherID, tc.method, "/api/agents/"+agentID+"/env", tc.body)
+			req = withURLParam(req, "id", agentID)
+			w := httptest.NewRecorder()
+			tc.fn(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("expected 403 for non-owner plain member, got %d: %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}

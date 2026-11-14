@@ -1,9 +1,10 @@
 "use client";
 
-import { useRef, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowLeft,
+  CheckCircle2,
   ChevronRight,
   Download,
   FileArchive,
@@ -12,17 +13,14 @@ import {
   Loader2,
   Pencil,
   Plus,
+  SkipForward,
+  Upload,
   X as XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import type { Skill } from "@multica/core/types";
-import {
-  prepareSkillArchiveFromPickerFiles,
-  wrapExistingSkillArchive,
-  type PreparedSkillArchive,
-} from "@multica/core/skills";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { isImeComposing } from "@multica/core/utils";
 import {
@@ -40,8 +38,10 @@ import {
   TooltipTrigger,
 } from "@multica/ui/components/ui/tooltip";
 import { Button } from "@multica/ui/components/ui/button";
+import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
+import { Progress } from "@multica/ui/components/ui/progress";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { cn } from "@multica/ui/lib/utils";
@@ -49,8 +49,15 @@ import { openExternal } from "../../platform";
 import { RuntimeLocalSkillImportPanel } from "./runtime-local-skill-import-panel";
 import { useT } from "../../i18n";
 import { isNameConflictError } from "../lib/utils";
+import {
+  parseZipBundles,
+  parseFolderBundle,
+  ParseError,
+  updateFrontmatter,
+  type ParsedSkillBundle,
+} from "../lib/parse-skill-bundle";
 
-type Method = "chooser" | "manual" | "local" | "url" | "runtime";
+type Method = "chooser" | "manual" | "url" | "runtime" | "upload";
 
 function seedAfterCreate(
   qc: ReturnType<typeof useQueryClient>,
@@ -63,7 +70,7 @@ function seedAfterCreate(
 }
 
 // ---------------------------------------------------------------------------
-// Chooser — initial method picker (4 cards)
+// Chooser — initial method picker (3 cards)
 // ---------------------------------------------------------------------------
 
 function MethodChooser({ onChoose }: { onChoose: (m: Method) => void }) {
@@ -73,8 +80,8 @@ function MethodChooser({ onChoose }: { onChoose: (m: Method) => void }) {
     icon: typeof Plus;
   }[] = [
     { key: "manual", icon: Plus },
-    { key: "local", icon: FolderOpen },
     { key: "url", icon: Download },
+    { key: "upload", icon: Upload },
     { key: "runtime", icon: HardDrive },
   ];
   return (
@@ -428,62 +435,498 @@ function UrlForm({
 }
 
 // ---------------------------------------------------------------------------
-// Local folder / archive import
+// Upload form — supports single skill and bulk (multi-skill zip) import
 // ---------------------------------------------------------------------------
 
-function LocalForm({
-  prepared,
-  preparing,
+type UploadBulkResult = {
+  name: string;
+  status: "success" | "skipped" | "failed";
+  error?: string;
+  skill?: Skill;
+};
+
+type UploadBulkState = {
+  phase: "idle" | "importing" | "done" | "cancelled";
+  total: number;
+  completed: number;
+  results: UploadBulkResult[];
+};
+
+const INITIAL_UPLOAD_BULK: UploadBulkState = {
+  phase: "idle",
+  total: 0,
+  completed: 0,
+  results: [],
+};
+
+function UploadBulkSummary({ results }: { results: UploadBulkResult[] }) {
+  const { t } = useT("skills");
+  const succeeded = results.filter((r) => r.status === "success");
+  const skipped = results.filter((r) => r.status === "skipped");
+  const failed = results.filter((r) => r.status === "failed");
+
+  return (
+    <div className="space-y-4 py-2">
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="rounded-md bg-green-50 px-3 py-2 dark:bg-green-950/30">
+          <div className="text-title font-semibold text-green-700 dark:text-green-400">
+            {succeeded.length}
+          </div>
+          <div className="text-caption text-muted-foreground">
+            {t(($) => $.create.upload.bulk_summary_imported)}
+          </div>
+        </div>
+        <div className="rounded-md bg-yellow-50 px-3 py-2 dark:bg-yellow-950/30">
+          <div className="text-title font-semibold text-yellow-700 dark:text-yellow-400">
+            {skipped.length}
+          </div>
+          <div className="text-caption text-muted-foreground">
+            {t(($) => $.create.upload.bulk_summary_skipped)}
+          </div>
+        </div>
+        <div className="rounded-md bg-red-50 px-3 py-2 dark:bg-red-950/30">
+          <div className="text-title font-semibold text-red-700 dark:text-red-400">
+            {failed.length}
+          </div>
+          <div className="text-caption text-muted-foreground">
+            {t(($) => $.create.upload.bulk_summary_failed)}
+          </div>
+        </div>
+      </div>
+
+      <div className="max-h-64 space-y-1 overflow-y-auto rounded-md border p-2">
+        {results.map((r, i) => (
+          <div
+            key={i}
+            className="flex items-center gap-2 rounded-xs px-2 py-1.5 text-caption"
+          >
+            {r.status === "success" && (
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-green-600" />
+            )}
+            {r.status === "skipped" && (
+              <SkipForward className="h-3.5 w-3.5 shrink-0 text-yellow-600" />
+            )}
+            {r.status === "failed" && (
+              <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+            )}
+            <span className="min-w-0 flex-1 truncate">{r.name}</span>
+            {r.error && (
+              <span className="max-w-[200px] shrink-0 truncate text-muted-foreground">
+                {r.error}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UploadForm({
   onCreated,
   onCancel,
-  onChooseFolder,
-  onChooseArchive,
+  onBulkDone,
+  onWideChange,
 }: {
-  prepared: PreparedSkillArchive | null;
-  preparing: boolean;
   onCreated: (skill: Skill) => void;
   onCancel: () => void;
-  onChooseFolder: () => void;
-  onChooseArchive: () => void;
+  onBulkDone?: () => void;
+  onWideChange?: (wide: boolean) => void;
 }) {
   const { t } = useT("skills");
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
+
+  // Single-skill state
+  const [bundle, setBundle] = useState<ParsedSkillBundle | null>(null);
+  // Multi-skill state
+  const [bundles, setBundles] = useState<ParsedSkillBundle[]>([]);
+  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
+  const [bulkState, setBulkState] = useState<UploadBulkState>(INITIAL_UPLOAD_BULK);
+  const cancelRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      cancelRef.current = true;
+    };
+  }, []);
+
+  const [parsing, setParsing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  const zipInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fadeStyle = useScrollFade(scrollRef);
 
-  // Import stays disabled until a valid selection exists, so an invalid one
-  // never reaches here — `prepareError` below already explains why.
-  const submit = async () => {
-    if (!prepared?.ok) return;
+  const isBulk = bundles.length > 1;
+
+  const localizeParseError = useCallback(
+    (err: unknown): string => {
+      if (err instanceof ParseError) {
+        const key = `error_${err.code}` as const;
+        return t(($) => $.create.upload[key]);
+      }
+      return t(($) => $.create.upload.fallback_error);
+    },
+    [t],
+  );
+
+  const handleZipFile = useCallback(
+    async (file: File) => {
+      setParsing(true);
+      setError("");
+      setBundle(null);
+      setBundles([]);
+      setSelectedIndices(new Set());
+      setBulkState(INITIAL_UPLOAD_BULK);
+      try {
+        if (file.size > 50 << 20) {
+          throw new Error("Archive exceeds 50 MiB size limit");
+        }
+        const buf = await file.arrayBuffer();
+        const parsed = parseZipBundles(buf, file.name.replace(/\.zip$/i, ""));
+        if (parsed.length === 0) {
+          throw new ParseError("skill_md_not_found_zip");
+        }
+        if (parsed.length === 1) {
+          setBundle(parsed[0]!);
+          onWideChange?.(false);
+        } else {
+          setBundles(parsed);
+          setSelectedIndices(new Set(parsed.map((_, i) => i)));
+          onWideChange?.(true);
+        }
+      } catch (err) {
+        setError(localizeParseError(err));
+      } finally {
+        setParsing(false);
+      }
+    },
+    [onWideChange, localizeParseError],
+  );
+
+  const handleFolderFiles = useCallback(
+    async (files: FileList) => {
+      setParsing(true);
+      setError("");
+      setBundle(null);
+      setBundles([]);
+      setSelectedIndices(new Set());
+      setBulkState(INITIAL_UPLOAD_BULK);
+      try {
+        const result = await parseFolderBundle(files);
+        setBundle(result);
+        onWideChange?.(false);
+      } catch (err) {
+        setError(localizeParseError(err));
+      } finally {
+        setParsing(false);
+      }
+    },
+    [onWideChange, localizeParseError],
+  );
+
+  const handleZipSelect = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      handleZipFile(file);
+      e.target.value = "";
+    },
+    [handleZipFile],
+  );
+
+  const handleFolderSelect = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files?.length) return;
+      handleFolderFiles(files);
+      e.target.value = "";
+    },
+    [handleFolderFiles],
+  );
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragOver(false);
+      const items = e.dataTransfer.items;
+      if (!items?.length) return;
+
+      const firstItem = items[0] as DataTransferItem | undefined;
+      if (!firstItem || firstItem.kind !== "file") return;
+      const file = firstItem.getAsFile();
+      if (!file) return;
+
+      if (/\.zip$/i.test(file.name)) {
+        handleZipFile(file);
+      } else {
+        setError(t(($) => $.create.upload.error_drop_zip_only));
+      }
+    },
+    [handleZipFile, t],
+  );
+
+  const resetAll = useCallback(() => {
+    setBundle(null);
+    setBundles([]);
+    setSelectedIndices(new Set());
+    setBulkState(INITIAL_UPLOAD_BULK);
+    setError("");
+    onWideChange?.(false);
+  }, [onWideChange]);
+
+  // --- Single-skill submit ---
+  const submitSingle = async () => {
+    if (!bundle) return;
     setLoading(true);
     setError("");
     try {
-      const skill = await api.importSkillArchive(prepared.file, "fail");
+      const content = updateFrontmatter(
+        bundle.content,
+        bundle.name,
+        bundle.description,
+      );
+      const skill = await api.createSkill({
+        name: bundle.name,
+        description: bundle.description,
+        content,
+        config: { origin: { type: "upload" } },
+        files: bundle.files,
+      });
       seedAfterCreate(qc, wsId, skill);
-      toast.success(t(($) => $.create.local.toast_imported));
+      toast.success(t(($) => $.create.upload.toast_created));
       onCreated(skill);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : "";
       setError(
-        err instanceof Error ? err.message : t(($) => $.create.local.fallback_error),
+        isNameConflictError(msg)
+          ? t(($) => $.create.upload.error_name_conflict)
+          : msg || t(($) => $.create.upload.fallback_error),
       );
       setLoading(false);
     }
   };
 
-  const prepareError =
-    prepared && !prepared.ok
-      ? {
-          missing_skill_md: t(($) => $.create.local.missing_skill_md),
-          too_large: t(($) => $.create.local.too_large),
-          empty: t(($) => $.create.local.empty),
-          too_many_files: t(($) => $.create.local.too_many_files),
-        }[prepared.error]
-      : "";
-  const displayError = error || prepareError;
+  // --- Bulk import ---
+  const handleBulkImport = async () => {
+    const toImport = bundles.filter((_, i) => selectedIndices.has(i));
+    if (toImport.length === 0) return;
 
+    cancelRef.current = false;
+    setBulkState({ phase: "importing", total: toImport.length, completed: 0, results: [] });
+
+    const results: UploadBulkResult[] = [];
+
+    for (const b of toImport) {
+      if (cancelRef.current) break;
+      try {
+        const skill = await api.createSkill({
+          name: b.name,
+          description: b.description,
+          content: b.content,
+          config: { origin: { type: "upload" } },
+          files: b.files,
+        });
+        results.push({ name: b.name, status: "success", skill });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "";
+        results.push({
+          name: b.name,
+          status: isNameConflictError(msg) ? "skipped" : "failed",
+          error: msg || t(($) => $.create.upload.fallback_error),
+        });
+      }
+      setBulkState((prev) => ({
+        ...prev,
+        completed: prev.completed + 1,
+        results: [...results],
+      }));
+    }
+
+    qc.invalidateQueries({ queryKey: workspaceKeys.skills(wsId) });
+    qc.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+    for (const r of results) {
+      if (r.status === "success" && r.skill) {
+        qc.setQueryData(skillDetailOptions(wsId, r.skill.id).queryKey, r.skill);
+      }
+    }
+
+    setBulkState((prev) => ({
+      ...prev,
+      phase: cancelRef.current ? "cancelled" : "done",
+    }));
+  };
+
+  // --- Selection helpers ---
+  const toggleIndex = (idx: number) => {
+    setSelectedIndices((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (selectedIndices.size === bundles.length) {
+      setSelectedIndices(new Set());
+    } else {
+      setSelectedIndices(new Set(bundles.map((_, i) => i)));
+    }
+  };
+
+  const allSelected = bundles.length > 0 && selectedIndices.size === bundles.length;
+
+  // --- File picker (shared between single & bulk) ---
+  const filePickerContent = (
+    <>
+      <input
+        ref={zipInputRef}
+        type="file"
+        accept=".zip"
+        className="hidden"
+        onChange={handleZipSelect}
+      />
+      <input
+        ref={folderInputRef}
+        type="file"
+        // @ts-expect-error -- webkitdirectory is not in the TS DOM types
+        webkitdirectory=""
+        className="hidden"
+        onChange={handleFolderSelect}
+      />
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={handleDrop}
+        className={cn(
+          "flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed px-6 py-8 text-center transition-colors",
+          dragOver
+            ? "border-primary bg-primary/5"
+            : "border-muted-foreground/25 hover:border-muted-foreground/40",
+        )}
+      >
+        <FileArchive className="h-8 w-8 text-faint-foreground" />
+        <p className="text-body text-muted-foreground">
+          {dragOver
+            ? t(($) => $.create.upload.drop_zone_active)
+            : t(($) => $.create.upload.drop_zone)}
+        </p>
+        <p className="text-caption text-muted-foreground">
+          {t(($) => $.create.upload.or)}
+        </p>
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => zipInputRef.current?.click()}
+          >
+            <FileArchive className="h-3 w-3" />
+            {t(($) => $.create.upload.browse_zip)}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => folderInputRef.current?.click()}
+          >
+            <FolderOpen className="h-3 w-3" />
+            {t(($) => $.create.upload.browse_folder)}
+          </Button>
+        </div>
+      </div>
+    </>
+  );
+
+  // --- Render: bulk progress / summary ---
+  if (bulkState.phase === "importing") {
+    const pct =
+      bulkState.total > 0
+        ? Math.round((bulkState.completed / bulkState.total) * 100)
+        : 0;
+    return (
+      <>
+        <div className="flex-1 min-h-0 space-y-4 overflow-y-auto px-5 py-4">
+          <div className="space-y-4 py-4">
+            <div className="text-center">
+              <Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" />
+              <p className="mt-3 text-body font-medium">
+                {t(($) => $.create.upload.bulk_progress, {
+                  completed: bulkState.completed,
+                  total: bulkState.total,
+                })}
+              </p>
+            </div>
+            <Progress value={pct} />
+            <div className="max-h-48 space-y-1 overflow-y-auto">
+              {bulkState.results.map((r, i) => (
+                <div
+                  key={i}
+                  className="flex items-center gap-2 rounded-xs px-2 py-1 text-caption"
+                >
+                  {r.status === "success" && (
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-green-600" />
+                  )}
+                  {r.status === "skipped" && (
+                    <SkipForward className="h-3.5 w-3.5 shrink-0 text-yellow-600" />
+                  )}
+                  {r.status === "failed" && (
+                    <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+                  )}
+                  <span className="truncate">{r.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t bg-muted/30 px-5 py-3">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              cancelRef.current = true;
+            }}
+          >
+            {t(($) => $.create.upload.bulk_cancel)}
+          </Button>
+        </div>
+      </>
+    );
+  }
+
+  if (bulkState.phase === "done" || bulkState.phase === "cancelled") {
+    return (
+      <>
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
+          <p className="mb-2 text-caption text-muted-foreground">
+            {bulkState.phase === "done"
+              ? t(($) => $.create.upload.bulk_complete_hint)
+              : t(($) => $.create.upload.bulk_cancelled_hint)}
+          </p>
+          <UploadBulkSummary results={bulkState.results} />
+        </div>
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t bg-muted/30 px-5 py-3">
+          <Button
+            type="button"
+            size="sm"
+            onClick={onBulkDone ?? onCancel}
+          >
+            {t(($) => $.create.upload.bulk_done)}
+          </Button>
+        </div>
+      </>
+    );
+  }
+
+  // --- Render: main content (file picker / single edit / bulk list) ---
   return (
     <>
       <div
@@ -491,114 +934,223 @@ function LocalForm({
         style={fadeStyle}
         className="flex-1 min-h-0 space-y-4 overflow-y-auto px-5 py-4"
       >
-        {preparing && (
-          <div className="flex items-center gap-2 text-caption text-muted-foreground">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            {t(($) => $.create.local.importing)}
+        {/* File picker — shown when nothing is loaded yet */}
+        {!bundle && !isBulk && !parsing && filePickerContent}
+
+        {parsing && (
+          <div className="flex flex-col items-center justify-center gap-2 py-8 text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin" />
+            <p className="text-body">{t(($) => $.create.upload.parsing)}</p>
           </div>
         )}
 
-        {prepared?.ok && (
+        {/* Single skill editing */}
+        {bundle && !parsing && (
           <div className="space-y-3">
-            <div className="rounded-md border px-3 py-2.5">
-              <div className="text-caption text-muted-foreground">
-                {prepared.preview.source === "archive"
-                  ? t(($) => $.create.local.archive_label)
-                  : t(($) => $.create.local.folder_label)}
-              </div>
-              <div className="mt-0.5 truncate text-body font-medium">
-                {prepared.preview.displayName}
-              </div>
+            <div className="space-y-1.5">
+              <Label className="text-caption text-muted-foreground">
+                {t(($) => $.create.upload.parsed_name)}
+              </Label>
+              <Input
+                value={bundle.name}
+                onChange={(e) =>
+                  setBundle({ ...bundle, name: e.target.value })
+                }
+              />
             </div>
-            <div className="space-y-1">
-              <div className="text-body font-medium">{prepared.preview.skillName}</div>
-              {prepared.preview.description ? (
-                <p className="text-caption text-muted-foreground">
-                  {prepared.preview.description}
-                </p>
-              ) : null}
-              {prepared.preview.fileCount != null ? (
-                <p className="text-caption text-muted-foreground">
-                  {t(($) => $.create.local.files, {
-                    count: prepared.preview.fileCount,
-                  })}
-                </p>
-              ) : null}
+            <div className="space-y-1.5">
+              <Label className="text-caption text-muted-foreground">
+                <Pencil className="h-3 w-3" />
+                {t(($) => $.create.upload.parsed_description)}
+              </Label>
+              <Textarea
+                value={bundle.description}
+                onChange={(e) =>
+                  setBundle({ ...bundle, description: e.target.value })
+                }
+                rows={2}
+                className="resize-none"
+                placeholder={t(($) => $.create.upload.no_description)}
+              />
             </div>
+            {bundle.files.length > 0 && (
+              <p className="text-caption text-muted-foreground">
+                {t(($) => $.create.upload.parsed_files, {
+                  count: bundle.files.length,
+                })}
+              </p>
+            )}
+            {bundle.truncated && (
+              <p className="text-caption text-destructive">
+                {t(($) => $.create.upload.truncated_warning)}
+              </p>
+            )}
+            {bundle.skippedBinaryCount > 0 && (
+              <p className="text-caption text-muted-foreground">
+                {t(($) => $.create.upload.binary_skipped_warning, {
+                  count: bundle.skippedBinaryCount,
+                })}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={resetAll}
+              className="text-caption text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              {t(($) => $.create.upload.change_file)}
+            </button>
           </div>
         )}
 
-        {/* Source pickers belong in the body: four buttons in the footer
-            overflow the dialog width and clip Cancel (MUL-6794). */}
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="w-full"
-            onClick={onChooseFolder}
-            disabled={loading || preparing}
-          >
-            <FolderOpen className="h-3 w-3" />
-            {t(($) => $.create.local.choose_folder)}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="w-full"
-            onClick={onChooseArchive}
-            disabled={loading || preparing}
-          >
-            <FileArchive className="h-3 w-3" />
-            {t(($) => $.create.local.choose_archive)}
-          </Button>
-        </div>
+        {/* Bulk skill list with checkboxes */}
+        {isBulk && !parsing && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Checkbox
+                checked={allSelected}
+                onCheckedChange={toggleAll}
+              />
+              <button
+                type="button"
+                onClick={toggleAll}
+                className="text-caption font-medium text-muted-foreground hover:text-foreground"
+              >
+                {t(($) => $.create.upload.select_all, {
+                  count: bundles.length,
+                })}
+              </button>
+            </div>
+            <div className="space-y-2">
+              {bundles.map((b, idx) => {
+                const checked = selectedIndices.has(idx);
+                return (
+                  <div
+                    key={idx}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => toggleIndex(idx)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        toggleIndex(idx);
+                      }
+                    }}
+                    className={cn(
+                      "flex items-start gap-3 rounded-lg border px-4 py-3 text-left transition-colors cursor-pointer",
+                      checked
+                        ? "border-primary bg-primary/5"
+                        : "hover:bg-accent/40",
+                    )}
+                  >
+                    <Checkbox
+                      checked={checked}
+                      tabIndex={-1}
+                      className="pointer-events-none mt-0.5"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-body font-medium truncate">
+                        {b.name}
+                      </div>
+                      {b.description && (
+                        <p className="mt-0.5 text-caption text-muted-foreground line-clamp-2">
+                          {b.description}
+                        </p>
+                      )}
+                      {b.files.length > 0 && (
+                        <p className="mt-0.5 text-caption text-muted-foreground">
+                          {t(($) => $.create.upload.parsed_files, {
+                            count: b.files.length,
+                          })}
+                        </p>
+                      )}
+                      {b.truncated && (
+                        <p className="mt-0.5 text-caption text-destructive">
+                          {t(($) => $.create.upload.truncated_warning)}
+                        </p>
+                      )}
+                      {b.skippedBinaryCount > 0 && (
+                        <p className="mt-0.5 text-caption text-muted-foreground">
+                          {t(($) => $.create.upload.binary_skipped_warning, {
+                            count: b.skippedBinaryCount,
+                          })}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={resetAll}
+              className="text-caption text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              {t(($) => $.create.upload.change_file)}
+            </button>
+          </div>
+        )}
 
-        {displayError && (
+        {error && (
           <div
             role="alert"
             className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-caption text-destructive"
           >
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>
-              {displayError}
-              {isNameConflictError(displayError) && (
-                <>{t(($) => $.create.local.name_conflict_hint)}</>
-              )}
-            </span>
+            <span>{error}</span>
           </div>
         )}
       </div>
 
+      {/* Footer */}
       <div className="flex shrink-0 items-center justify-end gap-2 border-t bg-muted/30 px-5 py-3">
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          onClick={onCancel}
+          onClick={() => {
+            resetAll();
+            onCancel();
+          }}
           disabled={loading}
         >
-          {t(($) => $.create.local.cancel)}
+          {t(($) => $.create.upload.cancel)}
         </Button>
-        <Button
-          type="button"
-          size="sm"
-          onClick={submit}
-          disabled={!prepared?.ok || loading || preparing}
-        >
-          {loading ? (
-            <>
-              <Loader2 className="h-3 w-3 animate-spin" />
-              {t(($) => $.create.local.importing)}
-            </>
-          ) : (
-            <>
-              <FolderOpen className="h-3 w-3" />
-              {t(($) => $.create.local.import)}
-            </>
-          )}
-        </Button>
+
+        {isBulk ? (
+          <Button
+            type="button"
+            size="sm"
+            onClick={handleBulkImport}
+            disabled={
+              selectedIndices.size === 0 ||
+              bundles.some((b, i) => selectedIndices.has(i) && b.truncated)
+            }
+          >
+            <Upload className="h-3 w-3" />
+            {t(($) => $.create.upload.bulk_import_button, {
+              count: selectedIndices.size,
+            })}
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            onClick={submitSingle}
+            disabled={!bundle?.name.trim() || bundle?.truncated || loading}
+          >
+            {loading ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {t(($) => $.create.upload.submitting)}
+              </>
+            ) : (
+              <>
+                <Upload className="h-3 w-3" />
+                {t(($) => $.create.upload.submit)}
+              </>
+            )}
+          </Button>
+        )}
       </div>
     </>
   );
@@ -617,95 +1169,14 @@ export function CreateSkillDialog({
 }) {
   const { t } = useT("skills");
   const [method, setMethod] = useState<Method>("chooser");
-  const [localPrepared, setLocalPrepared] = useState<PreparedSkillArchive | null>(
-    null,
-  );
-  const [localPreparing, setLocalPreparing] = useState(false);
-  const [localEpoch, setLocalEpoch] = useState(0);
-  const localGeneration = useRef(0);
-  const folderInputRef = useRef<HTMLInputElement>(null);
-  const archiveInputRef = useRef<HTMLInputElement>(null);
+  const [uploadWide, setUploadWide] = useState(false);
 
   const handleCreated = (skill: Skill) => {
     onCreated?.(skill);
     onClose();
   };
 
-  const beginLocalSelection = (): number => {
-    const next = localGeneration.current + 1;
-    localGeneration.current = next;
-    setLocalEpoch(next);
-    return next;
-  };
-
-  const resetLocal = () => {
-    beginLocalSelection();
-    setLocalPrepared(null);
-    setLocalPreparing(false);
-  };
-
-  const bindDirectoryInput = (el: HTMLInputElement | null) => {
-    folderInputRef.current = el;
-    if (!el) return;
-    el.setAttribute("webkitdirectory", "");
-    el.setAttribute("directory", "");
-  };
-
-  const openFolderPicker = () => {
-    folderInputRef.current?.click();
-  };
-
-  const openArchivePicker = () => {
-    archiveInputRef.current?.click();
-  };
-
-  const handleChoose = (next: Method) => {
-    if (next === "local") {
-      // Switch first so cancelling the picker still lands on the local
-      // panel (choose-folder / choose-archive), rather than silently
-      // staying on the chooser with no way to pick a .skill file.
-      setMethod("local");
-      openFolderPicker();
-      return;
-    }
-    resetLocal();
-    setMethod(next);
-  };
-
-  const onFolderPicked = async (e: ChangeEvent<HTMLInputElement>) => {
-    // FileList is live: clearing the input empties the same object. Snapshot
-    // File handles first so resetting `value` (to allow picking the same
-    // folder again) cannot drop the selection.
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = "";
-    if (files.length === 0) return;
-    const gen = beginLocalSelection();
-    setMethod("local");
-    setLocalPreparing(true);
-    setLocalPrepared(null);
-    try {
-      const prepared = await prepareSkillArchiveFromPickerFiles(files);
-      if (gen !== localGeneration.current) return;
-      setLocalPrepared(prepared);
-    } catch {
-      if (gen !== localGeneration.current) return;
-      setLocalPrepared({ ok: false, error: "empty" });
-    } finally {
-      if (gen === localGeneration.current) setLocalPreparing(false);
-    }
-  };
-
-  const onArchivePicked = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    beginLocalSelection();
-    setMethod("local");
-    setLocalPreparing(false);
-    setLocalPrepared(wrapExistingSkillArchive(file));
-  };
-
-  const wide = method === "runtime";
+  const wide = method === "runtime" || (method === "upload" && uploadWide);
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
@@ -721,7 +1192,7 @@ export function CreateSkillDialog({
       >
         {/* Header */}
         <div className="flex shrink-0 items-start justify-between gap-3 border-b px-5 pt-4 pb-3">
-          <div className="flex items-start gap-2 min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
             {method !== "chooser" && (
               <Tooltip>
                 <TooltipTrigger
@@ -729,10 +1200,10 @@ export function CreateSkillDialog({
                     <button
                       type="button"
                       onClick={() => {
-                        resetLocal();
                         setMethod("chooser");
+                        setUploadWide(false);
                       }}
-                      className="-ml-1 mt-px rounded-sm p-1 text-faint-foreground transition-colors hover:bg-accent/60 hover:text-muted-foreground"
+                      className="-ml-1 rounded-sm p-1 text-faint-foreground transition-colors hover:bg-accent/60 hover:text-muted-foreground"
                       aria-label={t(($) => $.create.back_aria)}
                     >
                       <ArrowLeft className="h-3.5 w-3.5" />
@@ -768,53 +1239,26 @@ export function CreateSkillDialog({
           </Tooltip>
         </div>
 
-        {/* Hidden pickers stay mounted so the chooser click can open them
-            in the same user-gesture (browsers otherwise block input.click()). */}
-        <input
-          ref={bindDirectoryInput}
-          type="file"
-          multiple
-          className="sr-only"
-          tabIndex={-1}
-          aria-hidden
-          onChange={onFolderPicked}
-        />
-        <input
-          ref={archiveInputRef}
-          type="file"
-          accept=".skill,.zip,application/zip"
-          className="sr-only"
-          tabIndex={-1}
-          aria-hidden
-          onChange={onArchivePicked}
-        />
-
         {/* Method body — each form owns its scroll middle + footer */}
-        {method === "chooser" && <MethodChooser onChoose={handleChoose} />}
+        {method === "chooser" && <MethodChooser onChoose={setMethod} />}
         {method === "manual" && (
           <ManualForm
             onCreated={handleCreated}
             onCancel={() => setMethod("chooser")}
           />
         )}
-        {method === "local" && (
-          <LocalForm
-            key={localEpoch}
-            prepared={localPrepared}
-            preparing={localPreparing}
-            onCreated={handleCreated}
-            onCancel={() => {
-              resetLocal();
-              setMethod("chooser");
-            }}
-            onChooseFolder={openFolderPicker}
-            onChooseArchive={openArchivePicker}
-          />
-        )}
         {method === "url" && (
           <UrlForm
             onCreated={handleCreated}
             onCancel={() => setMethod("chooser")}
+          />
+        )}
+        {method === "upload" && (
+          <UploadForm
+            onCreated={handleCreated}
+            onCancel={() => setMethod("chooser")}
+            onBulkDone={onClose}
+            onWideChange={setUploadWide}
           />
         )}
         {method === "runtime" && (

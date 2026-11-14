@@ -1,64 +1,100 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
-import type { Issue } from "@multica/core/types";
-import { BatchActionToolbar } from "./batch-action-toolbar";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { I18nProvider } from "@multica/core/i18n/react";
+import enCommon from "../../locales/en/common.json";
+import enIssues from "../../locales/en/issues.json";
 
-// Mutable selection state shared with the store mock below. The real toolbar
-// derives the pickers' current value from the issues it can resolve out of
-// this selection, so each test sets `selection.selectedIds` before rendering.
-const selection = vi.hoisted(() => ({
-  selectedIds: new Set<string>(),
-  clear: () => {},
+const TEST_RESOURCES = { en: { common: enCommon, issues: enIssues } };
+
+vi.mock("@multica/core/hooks", () => ({
+  useWorkspaceId: () => "ws-1",
 }));
+
+const mockAuthState = { user: { id: "user-1" }, isAuthenticated: true };
+vi.mock("@multica/core/auth", () => ({
+  useAuthStore: Object.assign(
+    (selector?: any) => (selector ? selector(mockAuthState) : mockAuthState),
+    { getState: () => mockAuthState },
+  ),
+  registerAuthStore: vi.fn(),
+}));
+
+vi.mock("@multica/core/workspace/queries", () => ({
+  memberListOptions: () => ({
+    queryKey: ["workspaces", "ws-1", "members"],
+    queryFn: () =>
+      Promise.resolve([
+        { user_id: "user-1", name: "Test User", email: "t@t.com", role: "admin" },
+      ]),
+  }),
+  agentListOptions: () => ({
+    queryKey: ["workspaces", "ws-1", "agents"],
+    queryFn: () => Promise.resolve([]),
+  }),
+  squadListOptions: () => ({
+    queryKey: ["workspaces", "ws-1", "squads"],
+    queryFn: () => Promise.resolve([]),
+  }),
+  assigneeFrequencyOptions: () => ({
+    queryKey: ["workspaces", "ws-1", "assignee-frequency"],
+    queryFn: () => Promise.resolve([]),
+  }),
+}));
+
+vi.mock("@multica/core/workspace/hooks", () => ({
+  useActorName: () => ({ getActorName: (_type: string, id: string) => id }),
+}));
+
+vi.mock("../../common/actor-avatar", () => ({
+  ActorAvatar: ({ actorId }: any) => <span data-testid="actor">{actorId}</span>,
+}));
+
+const selectionState = {
+  selectedIds: new Set<string>(),
+  clear: vi.fn(),
+};
 
 vi.mock("@multica/core/issues/stores/selection-store", () => ({
-  useIssueSelectionStore: (selector: (s: typeof selection) => unknown) =>
-    selector(selection),
+  useIssueSelectionStore: (selector: any) => selector(selectionState),
 }));
 
+const mockBatchUpdate = vi.fn();
+const mockBatchDelete = vi.fn();
 vi.mock("@multica/core/issues/mutations", () => ({
-  useBatchUpdateIssues: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useBatchDeleteIssues: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useBatchUpdateIssues: () => ({
+    mutateAsync: mockBatchUpdate,
+    isPending: false,
+  }),
+  useBatchDeleteIssues: () => ({
+    mutateAsync: mockBatchDelete,
+    isPending: false,
+  }),
 }));
 
-vi.mock("../../i18n", () => ({
-  useT: () => ({ t: () => "label" }),
+const mockOpenModal = vi.fn();
+vi.mock("@multica/core/modals", () => ({
+  useModalStore: (selector: any) => selector({ open: mockOpenModal }),
 }));
 
-// Render each picker as a probe that surfaces the value the toolbar passed in,
-// so the test asserts the wiring (real `commonIssueFields` runs underneath).
-vi.mock("./pickers", () => ({
-  StatusPicker: ({ status }: { status: string | null }) => (
-    <div data-testid="status-picker" data-status={status ?? "__none__"} />
-  ),
-  PriorityPicker: ({ priority }: { priority: string | null }) => (
-    <div data-testid="priority-picker" data-priority={priority ?? "__none__"} />
-  ),
-  AssigneePicker: ({
-    assigneeType,
-    assigneeId,
-    mixed,
-  }: {
-    assigneeType: string | null;
-    assigneeId: string | null;
-    mixed?: boolean;
-  }) => (
-    <div
-      data-testid="assignee-picker"
-      data-assignee-type={assigneeType ?? "__null__"}
-      data-assignee-id={assigneeId ?? "__null__"}
-      data-mixed={String(Boolean(mixed))}
-    />
-  ),
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
-function makeIssue(overrides: Partial<Issue> = {}): Issue {
+import { BatchActionToolbar } from "./batch-action-toolbar";
+import type { Issue } from "@multica/core/types";
+
+// The toolbar acts on the intersection of the selection store (mocked below)
+// and the visible `issues` list (MUL-4797), so these flow tests must pass the
+// selected issues in `issues` for the toolbar to render. Picker-value wiring
+// is covered separately in batch-action-toolbar.wiring.test.tsx.
+function makeIssue(id: string): Issue {
   return {
-    id: "issue-1",
+    id,
     workspace_id: "ws-1",
     number: 1,
     identifier: "MUL-1",
-    title: "Issue 1",
+    title: `Issue ${id}`,
     description: null,
     status: "todo",
     priority: "none",
@@ -76,77 +112,94 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     properties: {},
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
-    ...overrides,
   };
 }
 
+const selectedIssues = [makeIssue("issue-1"), makeIssue("issue-2")];
+function wrap(ui: React.ReactNode) {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return (
+    <I18nProvider locale="en" resources={TEST_RESOURCES}>
+      <QueryClientProvider client={qc}>{ui}</QueryClientProvider>
+    </I18nProvider>
+  );
+}
+
 beforeEach(() => {
-  selection.selectedIds = new Set();
+  selectionState.selectedIds = new Set(["issue-1", "issue-2"]);
+  selectionState.clear.mockReset();
+  mockBatchUpdate.mockReset();
+  mockBatchDelete.mockReset();
+  mockOpenModal.mockReset();
 });
 
-describe("BatchActionToolbar picker wiring", () => {
-  it("reflects the shared status / priority / assignee of the selected issues", () => {
-    const issues = [
-      makeIssue({ id: "a", status: "in_progress", priority: "high", assignee_type: "member", assignee_id: "u-1" }),
-      makeIssue({ id: "b", status: "in_progress", priority: "high", assignee_type: "member", assignee_id: "u-1" }),
-    ];
-    selection.selectedIds = new Set(["a", "b"]);
+describe("BatchActionToolbar", () => {
+  it("opens a confirmation modal before batch updating status to cancelled", async () => {
+    render(wrap(<BatchActionToolbar issues={selectedIssues} />));
 
-    render(<BatchActionToolbar issues={issues} />);
+    fireEvent.click(screen.getByText("Status"));
+    fireEvent.click(await screen.findByText("Cancelled"));
 
-    expect(screen.getByTestId("status-picker")).toHaveAttribute("data-status", "in_progress");
-    expect(screen.getByTestId("priority-picker")).toHaveAttribute("data-priority", "high");
-    const assignee = screen.getByTestId("assignee-picker");
-    expect(assignee).toHaveAttribute("data-assignee-type", "member");
-    expect(assignee).toHaveAttribute("data-assignee-id", "u-1");
-    expect(assignee).toHaveAttribute("data-mixed", "false");
+    expect(mockBatchUpdate).not.toHaveBeenCalled();
+    expect(mockOpenModal).toHaveBeenCalledWith("issue-status-confirm", {
+      status: "cancelled",
+      count: 2,
+      onConfirm: expect.any(Function),
+    });
+
+    const payload = mockOpenModal.mock.calls.at(-1)?.[1] as {
+      onConfirm: () => Promise<void>;
+    };
+    await payload.onConfirm();
+
+    expect(mockBatchUpdate).toHaveBeenCalledWith({
+      ids: ["issue-1", "issue-2"],
+      updates: { status: "cancelled" },
+    });
   });
 
-  it("falls back to an empty (no-checkmark) state when the selection is mixed", () => {
-    const issues = [
-      makeIssue({ id: "a", status: "todo", priority: "none", assignee_type: "member", assignee_id: "u-1" }),
-      makeIssue({ id: "b", status: "done", priority: "urgent", assignee_type: "agent", assignee_id: "ag-1" }),
-    ];
-    selection.selectedIds = new Set(["a", "b"]);
+  it("opens a confirmation modal before batch updating status to archive", async () => {
+    render(wrap(<BatchActionToolbar issues={selectedIssues} />));
 
-    render(<BatchActionToolbar issues={issues} />);
+    fireEvent.click(screen.getByText("Status"));
+    fireEvent.click(await screen.findByText("Archive"));
 
-    expect(screen.getByTestId("status-picker")).toHaveAttribute("data-status", "__none__");
-    expect(screen.getByTestId("priority-picker")).toHaveAttribute("data-priority", "__none__");
-    expect(screen.getByTestId("assignee-picker")).toHaveAttribute("data-mixed", "true");
+    expect(mockBatchUpdate).not.toHaveBeenCalled();
+    expect(mockOpenModal).toHaveBeenCalledWith("issue-status-confirm", {
+      status: "archive",
+      count: 2,
+      onConfirm: expect.any(Function),
+    });
   });
 
-  it("treats an all-unassigned selection as unassigned, not mixed", () => {
-    const issues = [
-      makeIssue({ id: "a", assignee_type: null, assignee_id: null }),
-      makeIssue({ id: "b", assignee_type: null, assignee_id: null }),
-    ];
-    selection.selectedIds = new Set(["a", "b"]);
+  it("updates non-confirmable batch statuses immediately", async () => {
+    render(wrap(<BatchActionToolbar issues={selectedIssues} />));
 
-    render(<BatchActionToolbar issues={issues} />);
+    fireEvent.click(screen.getByText("Status"));
+    fireEvent.click(await screen.findByText("Done"));
 
-    const assignee = screen.getByTestId("assignee-picker");
-    expect(assignee).toHaveAttribute("data-mixed", "false");
-    expect(assignee).toHaveAttribute("data-assignee-type", "__null__");
-    expect(assignee).toHaveAttribute("data-assignee-id", "__null__");
-  });
-
-  it("renders nothing when nothing is selected", () => {
-    render(<BatchActionToolbar issues={[makeIssue({ id: "a" })]} />);
-    expect(screen.queryByTestId("status-picker")).toBeNull();
+    await waitFor(() => {
+      expect(mockBatchUpdate).toHaveBeenCalledWith({
+        ids: ["issue-1", "issue-2"],
+        updates: { status: "done" },
+      });
+    });
+    expect(mockOpenModal).not.toHaveBeenCalled();
   });
 
   it("removes the toolbar after the final selected issue is cleared", async () => {
-    const issues = [makeIssue({ id: "a" })];
-    selection.selectedIds = new Set(["a"]);
-    const view = render(<BatchActionToolbar issues={issues} />);
+    const issues = [makeIssue("a")];
+    selectionState.selectedIds = new Set(["a"]);
+    const view = render(wrap(<BatchActionToolbar issues={issues} />));
 
-    expect(screen.getByTestId("status-picker")).toBeInTheDocument();
-    selection.selectedIds = new Set();
-    view.rerender(<BatchActionToolbar issues={issues} />);
+    expect(screen.getByText("Status")).toBeInTheDocument();
+    selectionState.selectedIds = new Set();
+    view.rerender(wrap(<BatchActionToolbar issues={issues} />));
 
     await waitFor(() => {
-      expect(screen.queryByTestId("status-picker")).not.toBeInTheDocument();
+      expect(screen.queryByText("Status")).not.toBeInTheDocument();
     });
   });
 });

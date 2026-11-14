@@ -10,6 +10,11 @@ describe("failureClassOf", () => {
     );
     // Billing quota shares the rate-limit class: same operator response.
     expect(failureClassOf("agent_error.provider_quota_limit")).toBe("rate_limit");
+    // The workspace's own spend cap answers to the same operator move as the
+    // provider's: wait for the period to reset, or raise the cap. It is not a
+    // "runtime" failure — the daemon is healthy and the run was refused by
+    // policy before it could be dispatched.
+    expect(failureClassOf("budget_exceeded")).toBe("rate_limit");
     expect(failureClassOf("timeout")).toBe("timeout");
     expect(failureClassOf("agent_error.agent_timeout")).toBe("timeout");
     expect(failureClassOf("agent_error.provider_server_error")).toBe("provider");

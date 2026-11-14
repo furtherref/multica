@@ -217,12 +217,12 @@ func RenewSessionToken(claims jwt.MapClaims) (string, time.Time, error) {
 	}
 	email, _ := claims["email"].(string)
 
-	// A user disabled since their token was signed must not have that token
-	// extended — renewal is the one place a live session's lifetime is
-	// decided after login, so the check belongs here as much as at issuance.
-	if IsTemporarilyDisabledUser(sub, email) {
-		return "", time.Time{}, ErrTemporarilyDisabledUser
-	}
+	// A user suspended since their token was signed must not have that token
+	// extended. The fork enforces that one layer up: account_status (#91,
+	// which replaced the emergency denylist upstream still checks here) is
+	// checked by the auth middleware before either renewal path runs — the
+	// inline cookie renewal and the /api/auth/refresh endpoint both sit
+	// behind it.
 
 	sid, _ := claims[sessionIDClaim].(string)
 	if sid == "" {

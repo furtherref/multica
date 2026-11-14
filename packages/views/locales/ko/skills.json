@@ -62,7 +62,8 @@
     "source_runtime_unknown": "런타임에서 가져옴",
     "source_clawhub": "ClawHub에서 가져옴",
     "source_skills_sh": "Skills.sh에서 가져옴",
-    "source_github": "GitHub에서 가져옴"
+    "source_github": "GitHub에서 가져옴",
+    "source_upload": "Uploaded"
   },
   "actions": {
     "row_menu": "작업",
@@ -112,11 +113,17 @@
     "sort_by": "정렬",
     "direction_asc": "오름차순",
     "direction_desc": "내림차순",
-    "section_columns": "표시 열"
+    "section_columns": "표시 열",
+    "manage_labels": "라벨 관리...",
+    "manage_labels_title": "스킬 라벨"
   },
   "detail": {
     "all_skills": "모든 스킬",
     "read_only": "읽기 전용",
+    "download_aria": "스킬을 zip으로 다운로드",
+    "download_tooltip": ".zip으로 다운로드",
+    "download_tooltip_dirty": "다운로드하기 전에 변경사항을 저장하세요",
+    "download_collision_error": "다운로드가 차단되었습니다: 일부 지원 파일의 경로가 충돌합니다. 내보내기 전에 파일 경로를 수정하세요.",
     "delete_aria": "스킬 삭제",
     "delete_tooltip": "스킬 삭제",
     "supporting_data_warning": "일부 워크스페이스 데이터를 불러오지 못했습니다. 다음 새로고침 전까지 생성자 표시, 런타임 이름, 수정 권한이 불완전하게 보일 수 있습니다.",
@@ -255,6 +262,10 @@
       "runtime": {
         "title": "런타임에서 복사",
         "desc": "로컬 런타임에 설치된 스킬을 워크스페이스로 가져옵니다."
+      },
+      "upload": {
+        "title": "Upload file",
+        "desc": "Import a skill from a local folder or zip archive containing SKILL.md."
       }
     },
     "manual": {
@@ -299,6 +310,42 @@
       "fallback_error": "가져오기 실패",
       "cancel": "취소",
       "toast_imported": "스킬을 가져왔습니다"
+    },
+    "upload": {
+      "drop_zone": "Drop a .zip file here",
+      "drop_zone_active": "Drop here",
+      "or": "or",
+      "browse_zip": "Choose .zip file",
+      "browse_folder": "Choose folder",
+      "parsing": "Parsing…",
+      "parsed_name": "Name",
+      "parsed_description": "Description",
+      "parsed_files": "{{count}} supporting files",
+      "no_description": "No description",
+      "change_file": "Change file",
+      "error_skill_md_not_found_zip": "SKILL.md not found in the archive.",
+      "error_skill_md_not_found_folder": "SKILL.md not found in the selected folder.",
+      "error_skill_md_too_large": "SKILL.md exceeds 1 MiB size limit.",
+      "error_skill_md_ambiguous_folder": "Multiple SKILL.md files found at the same level. Please select a folder containing only one skill.",
+      "error_drop_zip_only": "Please drop a .zip file, or use the folder picker below.",
+      "truncated_warning": "Some files were skipped because they exceed size or count limits. Import is disabled for incomplete bundles.",
+      "binary_skipped_warning": "{{count}} binary file(s) were skipped (images, PDFs, etc.). Only text files are imported.",
+      "error_name_conflict": "A skill with this name already exists. Try a different name and submit again.",
+      "fallback_error": "Failed to create skill.",
+      "cancel": "Cancel",
+      "submit": "Create skill",
+      "submitting": "Creating…",
+      "toast_created": "Skill uploaded",
+      "select_all": "Select all ({{count}})",
+      "bulk_import_button": "Import {{count}} skills",
+      "bulk_progress": "Importing {{completed}} / {{total}}…",
+      "bulk_cancel": "Cancel",
+      "bulk_complete_hint": "Import complete.",
+      "bulk_cancelled_hint": "Import cancelled.",
+      "bulk_done": "Done",
+      "bulk_summary_imported": "Imported",
+      "bulk_summary_skipped": "Skipped",
+      "bulk_summary_failed": "Failed"
     }
   },
   "runtime_import": {

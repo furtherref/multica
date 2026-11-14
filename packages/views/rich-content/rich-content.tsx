@@ -55,6 +55,7 @@ import {
   useOptionalNavigation,
 } from "../navigation";
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
+import { EntityMentionName, type EntityMentionType } from "../editor/mention-name";
 import { useResolveIssueIdentifier } from "../issues/hooks";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
@@ -68,7 +69,7 @@ import { preprocessMarkdown } from "../editor/utils/preprocess";
 import { highlightToHtml } from "../editor/utils/highlight-markdown";
 import { AttachmentDownloadProvider } from "../editor/attachment-download-context";
 import { Attachment as AttachmentRenderer } from "../editor/attachment";
-import { computeClosedFenceOffsets } from "./streaming-fence";
+import { computeClosedFences, type ClosedFence } from "./streaming-fence";
 import { remarkRepairCjkStrongTrailingWhitespace } from "./cjk-emphasis";
 import {
   CodeBlockShell,
@@ -94,13 +95,16 @@ export type RichContentPhase = "streaming" | "settled";
 // every highlighted <code>'s innerHTML and collapses an active text selection
 // inside a code block (MUL-3621).
 
-const ClosedFenceContext = createContext<ReadonlySet<number>>(new Set<number>());
+const ClosedFenceContext = createContext<ReadonlyMap<number, ClosedFence>>(
+  new Map<number, ClosedFence>(),
+);
 
-function useIsFenceClosed(offset: number | undefined): boolean {
+/** The closed fence at this source offset, or undefined while it is still open. */
+function useClosedFence(offset: number | undefined): ClosedFence | undefined {
   const closed = useContext(ClosedFenceContext);
   // An offset-less node cannot be matched to a source fence; refusing to
   // upgrade is the safe direction (source instead of a possibly partial block).
-  return offset != null && closed.has(offset);
+  return offset == null ? undefined : closed.get(offset);
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +221,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   }
 
   if (isMentionHref(href)) {
-    const match = href.match(/^mention:\/\/(member|agent|issue|project|all)\/(.+)$/);
+    const match = href.match(/^mention:\/\/(member|agent|squad|issue|project|all)\/(.+)$/);
     if (match?.[1] === "issue" && match[2]) {
       // A bare identifier (from the autolink preprocessor) is carried as the id
       // segment; a real mention carries a UUID. Dispatch on the id shape.
@@ -234,7 +238,26 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
     if (match?.[1] === "project" && match[2]) {
       return <ProjectMentionLink projectId={match[2]} label={childrenToLabel(children)} />;
     }
-    // Member / agent / all mentions
+    // Agent / member / squad — look up the entity by UUID and render its
+    // canonical name. The markdown label is treated as a fallback hint only.
+    // This catches label/UUID mismatch ("[@A](mention://agent/<B-uuid>)") so
+    // the rendered comment always names the entity actually addressed.
+    if (
+      match &&
+      (match[1] === "agent" || match[1] === "member" || match[1] === "squad") &&
+      match[2]
+    ) {
+      return (
+        <span className="mention">
+          <EntityMentionName
+            type={match[1] as EntityMentionType}
+            id={match[2]}
+            fallbackLabel={childrenToLabel(children) ?? ""}
+          />
+        </span>
+      );
+    }
+    // @all and any other shape: keep the literal markdown text.
     return <span className="mention">{children}</span>;
   }
 
@@ -343,13 +366,19 @@ function isMultiLineNode(node: ExtraProps["node"]): boolean {
 function RichCode({ className, children, node, ...props }: RichCodeProps) {
   const language = /language-(\w+)/.exec(className || "")?.[1];
   const isBlock = isMultiLineNode(node);
-  const isFenceClosed = useIsFenceClosed(nodeStartOffset(node));
+  const fence = useClosedFence(nodeStartOffset(node));
 
-  if (isBlock && shouldUpgradeFence(language, isFenceClosed)) {
+  if (isBlock && shouldUpgradeFence(language, fence != null)) {
     // isRichFenceLanguage is re-checked for the type narrow; shouldUpgradeFence
     // already required it.
     if (isRichFenceLanguage(language)) {
-      return <RichFenceBlock language={language} body={String(children).replace(/\n$/, "")} />;
+      return (
+        <RichFenceBlock
+          language={language}
+          body={String(children).replace(/\n$/, "")}
+          title={fence?.title}
+        />
+      );
     }
   }
 
@@ -388,7 +417,7 @@ function readFencedCodeChild(children: ReactNode): {
  */
 function RichPre({ children }: RichPreProps) {
   const { language, offset } = readFencedCodeChild(children);
-  const isFenceClosed = useIsFenceClosed(offset);
+  const isFenceClosed = useClosedFence(offset) != null;
 
   // Upgraded fences escape the <pre><code> envelope entirely. An OPEN
   // mermaid/html fence deliberately falls through to the normal code shell, so
@@ -528,7 +557,7 @@ export const RichContent = memo(function RichContent({
   // Derived from the SAME string handed to ReactMarkdown, so offsets line up
   // with the hast node positions the `code`/`pre` renderers observe. Computing
   // it from the raw pre-preprocess text would mis-match every rewritten node.
-  const closedFences = useMemo(() => computeClosedFenceOffsets(processed), [processed]);
+  const closedFences = useMemo(() => computeClosedFences(processed), [processed]);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const hover = useLinkHover(wrapperRef);

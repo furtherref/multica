@@ -2,7 +2,6 @@ import Mention from "@tiptap/extension-mention";
 import { mergeAttributes } from "@tiptap/core";
 import { ReactNodeViewRenderer } from "@tiptap/react";
 import { MentionView } from "./mention-view";
-import { escapeMarkdownLabel } from "../utils/escape-markdown-label";
 
 const MENTION_LINK_MARKER = "](mention://";
 
@@ -91,10 +90,22 @@ export const BaseMentionExtension = Mention.extend({
         /^\[@?((?:\\.|[^\]\\])+)\]\(mention:\/\/(\w+)\/([^)]+)\)/,
       );
       if (!match) return undefined;
-      // Reverse escapeMarkdownLabel: unescape \[ \] \\ \( \) that
-      // renderMarkdown produced. Must mirror the escaped set exactly, or a
-      // label containing "\" fails to round-trip through the linear tokenizer.
-      const rawLabel = match[1]?.replace(/\\([[\]\\()])/g, "$1");
+      // Unescape backslash sequences produced by renderMarkdown / the Go
+      // backend's util.EscapeMentionLabel. `\\` must be unescaped LAST so
+      // it doesn't eat a backslash that's part of a `\[` / `\]` pair.
+      const rawLabel = match[1]
+        ?.replace(/\\\[/g, "[")
+        .replace(/\\\]/g, "]")
+        .replace(/\\\\/g, "\\");
+      // Mirror util.parseMentionAt's empty-label guard: a `[@](...)` payload
+      // backtracks into the label group (regex `@?` matches empty, `@`
+      // becomes the single captured char). Without this check tokenize would
+      // accept it, renderMarkdown would emit `[@@](...)`, and the backend's
+      // non-empty check would no longer reject it — a back door to @all.
+      const labelAfterAt = rawLabel?.startsWith("@")
+        ? rawLabel.slice(1)
+        : rawLabel;
+      if (!labelAfterAt) return undefined;
       return {
         type: "mention",
         raw: match[0],
@@ -108,11 +119,15 @@ export const BaseMentionExtension = Mention.extend({
   renderMarkdown: (node: any) => {
     const { id, label, type = "member" } = node.attrs || {};
     const prefix = type === "issue" || type === "project" ? "" : "@";
-    // Escape [ ] \ ( ) in the label so the markdown link syntax is not broken
-    // and the label survives the linear tokenizer (which now treats "\" as an
-    // escape lead, not an ordinary char). Must stay in sync with the unescape
-    // in tokenize() above. Shared with file-card/slash via escapeMarkdownLabel.
-    const safeLabel = escapeMarkdownLabel(label ?? id);
+    // Escape `\`, `[`, `]` in the label so the markdown link syntax is not
+    // broken when the name contains them (e.g. "David[TF]" or "Ops\Bot").
+    // Mirrors the backend's util.EscapeMentionLabel — `\` must be escaped
+    // FIRST so a name like `foo\[bar` produces `foo\\\[bar`, not `foo\\[bar`
+    // (which the scanner would consume as `\\` + raw `[`).
+    const safeLabel = (label ?? id)
+      .replace(/\\/g, "\\\\")
+      .replace(/\[/g, "\\[")
+      .replace(/\]/g, "\\]");
     return `[${prefix}${safeLabel}](mention://${type}/${id})`;
   },
 });

@@ -85,3 +85,20 @@ UPDATE "user" SET
     updated_at = now()
 WHERE id = $1
 RETURNING *;
+
+-- name: GetUserAccountStatus :one
+SELECT account_status FROM "user"
+WHERE id = $1;
+
+-- name: SetUserAccountStatus :one
+UPDATE "user" SET
+    account_status = $2,
+    updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ListUsersWithStatus :many
+-- Global user list for the system-admin console. Not workspace-scoped on
+-- purpose: suspension is an account-level property.
+SELECT * FROM "user"
+ORDER BY created_at ASC;

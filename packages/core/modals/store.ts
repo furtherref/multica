@@ -12,6 +12,7 @@ type ModalType =
   | "issue-mark-duplicate"
   | "issue-add-child"
   | "issue-delete-confirm"
+  | "issue-status-confirm"
   | "issue-run-confirm"
   | null;
 

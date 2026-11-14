@@ -62,9 +62,9 @@ const BUILT_INS: IssueStatusEntry[] = (
 );
 
 describe("useStatusOptions", () => {
-  // A cold render must offer the same 7 statuses it always did, or the picker
+  // A cold render must offer the same statuses it always did, or the picker
   // opens empty on first paint and on any workspace whose catalog fetch failed.
-  it("offers the 7 built-ins when the catalog has not loaded", () => {
+  it("offers the 7 built-ins plus archive when the catalog has not loaded", () => {
     catalogEntries = undefined;
     const { result } = renderHook(() => useStatusOptions("workspace-1"));
 
@@ -76,7 +76,23 @@ describe("useStatusOptions", () => {
       "blocked",
       "done",
       "cancelled",
+      "archive",
     ]);
+  });
+
+  // `archive` (fork status #39) has no catalog row, so the catalog loop cannot
+  // produce it — and this list is the only way to archive an issue or to filter
+  // for archived work. It is appended, always last, in its closed lifecycle,
+  // and never carries a custom color.
+  it("always offers archive last, whatever the catalog holds", () => {
+    catalogEntries = [...BUILT_INS, entry({ key: "qa", name: "QA", category: "started" })];
+    const { result } = renderHook(() => useStatusOptions("workspace-1"));
+
+    const archive = result.current.at(-1);
+    expect(archive?.key).toBe("archive");
+    expect(archive?.category).toBe("closed");
+    expect(archive?.label).toBe(en.status.archive);
+    expect(archive?.color).toBeNull();
   });
 
   // One flat list, never nested by category (MUL-6399): a custom status sits
@@ -95,6 +111,7 @@ describe("useStatusOptions", () => {
       "qa",
       "done",
       "cancelled",
+      "archive",
     ]);
   });
 

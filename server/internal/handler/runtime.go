@@ -87,6 +87,7 @@ func runtimeToResponse(rt db.AgentRuntime) AgentRuntimeResponse {
 type RuntimeUsageResponse struct {
 	RuntimeID        string `json:"runtime_id"`
 	Date             string `json:"date"`
+	PricingDate      string `json:"pricing_date"`
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`
@@ -146,6 +147,7 @@ func (h *Handler) listRuntimeUsage(ctx context.Context, runtimeID pgtype.UUID, t
 		resp[i] = RuntimeUsageResponse{
 			RuntimeID:                resolvedRuntimeID,
 			Date:                     row.Date.Time.Format("2006-01-02"),
+			PricingDate:              row.PricingDate.Time.Format("2006-01-02"),
 			Provider:                 row.Provider,
 			Model:                    row.Model,
 			InputTokens:              row.InputTokens,
@@ -157,6 +159,61 @@ func (h *Handler) listRuntimeUsage(ctx context.Context, runtimeID pgtype.UUID, t
 			UncostedOutputTokens:     row.UncostedOutputTokens,
 			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
 			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
+		}
+	}
+	return resp, nil
+}
+
+type RuntimeUsageCoverageResponse struct {
+	Date           string `json:"date"`
+	CompletedRuns  int64  `json:"completed_runs"`
+	CompleteRuns   int64  `json:"complete_runs"`
+	OutputOnlyRuns int64  `json:"output_only_runs"`
+	MissingRuns    int64  `json:"missing_runs"`
+}
+
+// GetRuntimeUsageCoverage reports whether completed runs stored complete,
+// output-only, or missing token telemetry. It is separate from GetRuntimeUsage
+// so installed clients that expect the legacy usage array keep their contract.
+func (h *Handler) GetRuntimeUsageCoverage(w http.ResponseWriter, r *http.Request) {
+	runtimeID := chi.URLParam(r, "runtimeId")
+	rt, _, ok := h.requireRuntimeReadAccess(w, r, obsmetrics.RuntimeLookupSourceRuntimeAPI, runtimeID)
+	if !ok {
+		return
+	}
+
+	viewTZ := h.resolveViewingTZ(r)
+	since := parseSinceParamInTZ(r, 90, viewTZ)
+	resp, err := h.listRuntimeUsageCoverage(r.Context(), rt.ID, viewTZ, since)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list usage coverage")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) listRuntimeUsageCoverage(
+	ctx context.Context,
+	runtimeID pgtype.UUID,
+	tz string,
+	since pgtype.Timestamptz,
+) ([]RuntimeUsageCoverageResponse, error) {
+	rows, err := h.Queries.ListRuntimeUsageCoverage(ctx, db.ListRuntimeUsageCoverageParams{
+		RuntimeID: runtimeID,
+		Since:     since,
+		Tz:        tz,
+	})
+	if err != nil {
+		return nil, err
+	}
+	resp := make([]RuntimeUsageCoverageResponse, len(rows))
+	for i, row := range rows {
+		resp[i] = RuntimeUsageCoverageResponse{
+			Date:           row.Date.Time.Format("2006-01-02"),
+			CompletedRuns:  row.CompletedRuns,
+			CompleteRuns:   row.CompleteRuns,
+			OutputOnlyRuns: row.OutputOnlyRuns,
+			MissingRuns:    row.MissingRuns,
 		}
 	}
 	return resp, nil
@@ -193,13 +250,14 @@ func (h *Handler) GetRuntimeTaskActivity(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// RuntimeUsageByAgentResponse is one (agent, provider, model) row of "Cost by
+// RuntimeUsageByAgentResponse is one (agent, UTC pricing date, provider, model) row of "Cost by
 // agent". provider + model stay on the wire because cost is computed
 // client-side from a model pricing table (intentionally not stored server-side
 // so pricing changes don't require a back-fill); provider disambiguates bare
 // model ids that collide across providers. The client groups by agent_id and sums.
 type RuntimeUsageByAgentResponse struct {
 	AgentID          string `json:"agent_id"`
+	PricingDate      string `json:"pricing_date"`
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`
@@ -228,10 +286,16 @@ func (h *Handler) GetRuntimeUsageByAgent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// No date bucketing — tz only sets the cutoff boundary so "last 30
+	// pricing_date is always UTC; tz only sets the cutoff boundary so "last 30
 	// days" means 30 of the viewer's days.
+	//
+	// Exact window, not the N+1 headroom the date-bucketed series carry: these
+	// rows have no viewer-tz date the client could trim on, and the runtime
+	// detail page shows them beside KPIs sliced to exactly `days` calendar
+	// days. At days=1 the headroom would make "Cost by agent" cover today AND
+	// yesterday (see TestRuntimeUsageByAgentUsesExactWindow).
 	viewTZ := h.resolveViewingTZ(r)
-	since := parseSinceParamInTZ(r, 30, viewTZ)
+	since := parseExactSinceParamInTZ(r, 30, viewTZ)
 
 	rows, err := h.Queries.ListRuntimeUsageByAgent(r.Context(), db.ListRuntimeUsageByAgentParams{
 		RuntimeID: rt.ID,
@@ -246,6 +310,7 @@ func (h *Handler) GetRuntimeUsageByAgent(w http.ResponseWriter, r *http.Request)
 	for i, row := range rows {
 		resp[i] = RuntimeUsageByAgentResponse{
 			AgentID:                  uuidToString(row.AgentID),
+			PricingDate:              row.PricingDate.Time.Format("2006-01-02"),
 			Provider:                 row.Provider,
 			Model:                    row.Model,
 			InputTokens:              row.InputTokens,
@@ -264,11 +329,13 @@ func (h *Handler) GetRuntimeUsageByAgent(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// RuntimeUsageByHourResponse is one (hour, model) row. Hours with zero
-// activity are omitted by the SQL — clients fill the gap to render a
+// RuntimeUsageByHourResponse is one (UTC pricing date, viewing hour, provider,
+// model) row. Hours with zero activity are omitted by the SQL — clients fill the gap to render a
 // continuous 0..23 axis. Model is preserved for client-side cost math.
 type RuntimeUsageByHourResponse struct {
+	PricingDate      string `json:"pricing_date"`
 	Hour             int    `json:"hour"`
+	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`
 	OutputTokens     int64  `json:"output_tokens"`
@@ -316,7 +383,9 @@ func (h *Handler) GetRuntimeUsageByHour(w http.ResponseWriter, r *http.Request) 
 	resp := make([]RuntimeUsageByHourResponse, len(rows))
 	for i, row := range rows {
 		resp[i] = RuntimeUsageByHourResponse{
+			PricingDate:              row.PricingDate.Time.Format("2006-01-02"),
 			Hour:                     int(row.Hour),
+			Provider:                 row.Provider,
 			Model:                    row.Model,
 			InputTokens:              row.InputTokens,
 			OutputTokens:             row.OutputTokens,
@@ -342,14 +411,11 @@ func (h *Handler) GetRuntimeUsageByHour(w http.ResponseWriter, r *http.Request) 
 //
 // The cutoff yields N+1 calendar buckets (today-days … today inclusive).
 // The extra day versus a naive "-(days-1)" is deliberate headroom, not an
-// off-by-one:
-//   - Runtime detail's sliceWindow filters `date >= today-days` (closed) and
-//     its prior-window delta reaches back to today-2*days, so the today-days
-//     bucket MUST exist or the oldest bar / KPI delta silently loses data.
-//   - The workspace dashboard re-filters client-side with -(days-1); the one
-//     extra day the backend returns is trimmed there — harmless.
-//
-// Do not "tighten" this to -(days-1): it would break the runtime detail page.
+// off-by-one: both the runtime detail page and the workspace dashboard
+// re-filter date-bucketed series client-side to exactly N days with
+// -(days-1), and runtime detail's prior-window delta reads the trimmed
+// surplus. Endpoints whose rows carry no viewer-tz date cannot trim and use
+// parseExactSinceParamInTZ instead.
 func sinceFromDays(now time.Time, days int, loc *time.Location) time.Time {
 	local := now.In(loc)
 	startOfToday := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
@@ -959,7 +1025,7 @@ func (h *Handler) PublishRuntimeTeardown(ctx context.Context, res service.Runtim
 		// The teardown deletes the runtime's system agents, and a system agent's
 		// chat sessions go with it, so the workspace of a cancelled chat task is
 		// no longer resolvable from the task row. It is this workspace.
-		h.TaskService.BroadcastCancelledTasks(ctx, wsID, res.CancelledTasks)
+		h.TaskService.BroadcastCancelledTasks(ctx, wsID, res.CancelledTasks, res.ChatCreators)
 	}
 	for _, a := range res.UnboundAgents {
 		// agent:status is the generic "this agent changed" broadcast the agent
@@ -1108,6 +1174,12 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Budget rows carry no foreign key (repository rule), so the runtime's
+	// scopes are removed explicitly inside the same transaction.
+	if err := qtx.DeleteRuntimeCostBudgetsForRuntime(r.Context(), rt.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
+		return
+	}
 	if err := qtx.DeleteAgentRuntime(r.Context(), rt.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
 		return
@@ -1315,6 +1387,13 @@ func (h *Handler) UnbindAgentsAndDeleteRuntime(w http.ResponseWriter, r *http.Re
 		}
 		slog.Error("runtime delete teardown failed", "runtime_id", uuidToString(rt.ID), "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to unbind agents")
+		return
+	}
+
+	// Budget rows carry no foreign key (repository rule), so the runtime's
+	// scopes are removed explicitly inside the same transaction.
+	if err := qtx.DeleteRuntimeCostBudgetsForRuntime(r.Context(), rt.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
 		return
 	}
 

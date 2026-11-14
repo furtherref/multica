@@ -378,24 +378,35 @@ func (c *Cache) SyncContext(ctx context.Context, workspaceID string, repos []Rep
 		}
 		if isBareRepo(barePath) {
 			// Already cached — fetch latest.
-			c.logger.Info("repo cache: fetching", "url", repo.URL, "path", barePath)
+			c.logger.Info("repo cache: fetching", "url", redactSecrets(repo.URL), "path", barePath)
 			if err := gitFetchContext(ctx, barePath); err != nil {
-				c.logger.Warn("repo cache: fetch failed", "url", repo.URL, "error", err)
+				c.logger.Warn("repo cache: fetch failed", "url", redactSecrets(repo.URL), "error", err)
 				if firstErr == nil {
 					firstErr = err
 				}
 			}
 		} else {
 			// Not cached — bare clone.
-			c.logger.Info("repo cache: cloning", "url", repo.URL, "path", barePath)
+			c.logger.Info("repo cache: cloning", "url", redactSecrets(repo.URL), "path", barePath)
 			if err := gitCloneBareContext(ctx, repo.URL, barePath); err != nil {
-				c.logger.Error("repo cache: clone failed", "url", repo.URL, "error", err)
+				c.logger.Error("repo cache: clone failed", "url", redactSecrets(repo.URL), "error", err)
 				if firstErr == nil {
 					firstErr = err
 				}
 			}
 		}
 		repoLock.Unlock()
+
+		// Mirror this repo's submodules (recursively) into the cache so per-task
+		// worktrees can initialize them from the local mirror instead of
+		// re-fetching from the remote on every checkout. Done outside repoLock
+		// because submodule mirrors are distinct bare repos with their own
+		// locks. Best-effort: a failure degrades to the agent fetching the
+		// submodule over the network and never blocks the parent repo, so it
+		// does not contribute to firstErr.
+		if isBareRepo(barePath) {
+			c.syncSubmodules(workspaceID, barePath, map[string]bool{barePath: true})
+		}
 	}
 	return firstErr
 }
@@ -404,6 +415,10 @@ func (c *Cache) SyncContext(ctx context.Context, workspaceID string, repos []Rep
 // Returns "" if not cached.
 func (c *Cache) Lookup(workspaceID, url string) string {
 	barePath := c.BarePath(workspaceID, url)
+	repoLock := c.lockForRepo(barePath)
+	repoLock.Lock()
+	defer repoLock.Unlock()
+
 	if isBareRepo(barePath) {
 		return barePath
 	}
@@ -783,10 +798,13 @@ func (c *Cache) CreateWorktree(params WorktreeParams) (*WorktreeResult, error) {
 // lock is held, so a client that times out behind maintenance cannot leave a
 // late, unwanted checkout.
 func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams) (*WorktreeResult, error) {
-	barePath := c.Lookup(params.WorkspaceID, params.RepoURL)
-	if barePath == "" {
-		return nil, fmt.Errorf("repo not found in cache: %s (workspace: %s)", params.RepoURL, params.WorkspaceID)
-	}
+	// barePath is computed directly rather than through Lookup: Lookup takes
+	// the same repoLock below to avoid observing a clone that Sync/CreateWorktree
+	// left mid-write, and calling it here — before this function's own bounded
+	// acquisition — would block on that same lock with no timeout at all,
+	// defeating LockWaitTimeout entirely (a caller already holding the lock
+	// would wedge this call forever instead of returning ErrRepoBusy).
+	barePath := c.BarePath(params.WorkspaceID, params.RepoURL)
 
 	// Serialize concurrent CreateWorktree calls on the same bare repo. Git's
 	// own lockfiles (packed-refs.lock, config.lock, worktree admin dirs)
@@ -806,6 +824,12 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 		return nil, err
 	}
 	defer repoLock.Unlock()
+	// Same consistency guarantee Lookup gives: only trust isBareRepo while
+	// holding repoLock, so a Sync/clone in flight elsewhere can't be observed
+	// mid-write.
+	if !isBareRepo(barePath) {
+		return nil, fmt.Errorf("repo not found in cache: %s (workspace: %s)", params.RepoURL, params.WorkspaceID)
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, context.Cause(ctx)
 	}
@@ -828,7 +852,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 		// loud enough that it's findable in the daemon log. The agent will
 		// receive an older snapshot than the remote head.
 		c.logger.Warn("repo checkout: fetch failed, agent will see possibly stale code",
-			"url", params.RepoURL,
+			"url", redactSecrets(params.RepoURL),
 			"error", err,
 		)
 	}
@@ -917,6 +941,18 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 			return nil, fmt.Errorf("isolate checkout Git identity: %w", err)
 		}
 
+		// Initialize submodules from the local mirror. `git reset --hard` +
+		// `git clean -fd` on the superproject don't touch submodule working
+		// trees, so a reused worktree may carry a stale or dirty submodule;
+		// prepareSubmodules forces it back to the recorded commit. A kept
+		// checkout (MUL-7284) is left exactly as it is, submodules included:
+		// its local work may live inside one.
+		if result.Kept == "" {
+			if err := c.prepareSubmodules(params.WorkspaceID, worktreePath); err != nil {
+				c.logger.Warn("repo checkout: submodule preparation failed (agent may need to init submodules manually)", "error", err)
+			}
+		}
+
 		// Reconcile the Co-authored-by hook and the workspace's recorded
 		// setting. The hook lives in the bare repo's shared hooks dir, so we
 		// must actively remove it when disabled — otherwise a previously
@@ -947,6 +983,12 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 		return nil, fmt.Errorf("isolate checkout Git identity: %w", err)
 	}
 
+	// Initialize submodules from the local mirror (best-effort; on failure the
+	// agent can still run `git submodule update` itself).
+	if err := c.prepareSubmodules(params.WorkspaceID, worktreePath); err != nil {
+		c.logger.Warn("repo checkout: submodule preparation failed (agent may need to init submodules manually)", "error", err)
+	}
+
 	// Reconcile the Co-authored-by hook and the workspace's recorded setting.
 	// See the existing-worktree branch above for why removal is required when
 	// the setting is disabled.
@@ -956,7 +998,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 	}
 
 	c.logger.Info("repo checkout: worktree created",
-		"url", params.RepoURL,
+		"url", redactSecrets(params.RepoURL),
 		"path", worktreePath,
 		"branch", actualBranch,
 		"base", baseRef,
@@ -2095,6 +2137,9 @@ func installCoAuthoredByHookContext(ctx context.Context, worktreePath, statePath
 	if err := writeHookFile(hookPath, prepareCommitMsgHook(statePath)); err != nil {
 		return fmt.Errorf("write prepare-commit-msg hook: %w", err)
 	}
+	if out, err := exec.Command("git", "-C", worktreePath, "config", "core.hooksPath", hooksDir).CombinedOutput(); err != nil {
+		return fmt.Errorf("configure hooks path: %s: %w", strings.TrimSpace(string(out)), err)
+	}
 	return nil
 }
 
@@ -2166,6 +2211,9 @@ func removeCoAuthoredByHookContext(ctx context.Context, worktreePath string) err
 	contents, err := os.ReadFile(hookPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			if err := unsetCoAuthoredByHooksPath(worktreePath, filepath.Dir(hookPath)); err != nil {
+				return err
+			}
 			return nil
 		}
 		return fmt.Errorf("read prepare-commit-msg hook: %w", err)
@@ -2176,6 +2224,23 @@ func removeCoAuthoredByHookContext(ctx context.Context, worktreePath string) err
 	}
 	if err := os.Remove(hookPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove prepare-commit-msg hook: %w", err)
+	}
+	if err := unsetCoAuthoredByHooksPath(worktreePath, filepath.Dir(hookPath)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func unsetCoAuthoredByHooksPath(worktreePath, hooksDir string) error {
+	out, err := exec.Command("git", "-C", worktreePath, "config", "--get", "core.hooksPath").Output()
+	if err != nil {
+		return nil
+	}
+	if strings.TrimSpace(string(out)) != hooksDir {
+		return nil
+	}
+	if out, err := exec.Command("git", "-C", worktreePath, "config", "--unset", "core.hooksPath").CombinedOutput(); err != nil {
+		return fmt.Errorf("unset hooks path: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }
@@ -2285,4 +2350,396 @@ func shortID(uuid string) string {
 		return s[:8]
 	}
 	return s
+}
+
+// credentialURLRe matches the "scheme://userinfo@" prefix of a URL so inline
+// credentials can be stripped from log lines and error messages.
+var credentialURLRe = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.\-]*://)[^/@\s]+@`)
+
+// redactSecrets removes inline credentials (user:password@) from every URL in
+// s. git's combined output prints submodule URLs verbatim on clone failure, and
+// those URLs routinely carry a CI token committed to .gitmodules — so any git
+// output or URL must pass through here before it reaches a log line or a
+// wrapped error. Rewrites "scheme://user:pass@host" to "scheme://***@host";
+// everything else (clean URLs, scp-style git@host:path, local paths) is left
+// intact.
+func redactSecrets(s string) string {
+	return credentialURLRe.ReplaceAllString(s, "${1}***@")
+}
+
+// normalizeSubmoduleURL strips inline credentials (user:password@) from an
+// http(s) submodule URL, returning the form reachable via the daemon's own
+// credential helpers rather than the CI-only token baked into .gitmodules — the
+// daemon (and the agent it sets up) runs outside the CI environment where that
+// token is valid. A bare username with no password (e.g. ssh://git@host, where
+// the username is functional) and non-URL forms (scp-style git@host:path, local
+// paths) are returned unchanged.
+func normalizeSubmoduleURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	if _, hasPassword := u.User.Password(); !hasPassword {
+		return raw
+	}
+	u.User = nil
+	return u.String()
+}
+
+// runGitIn runs `git -C dir <args...>` with the daemon git environment and
+// returns the trimmed combined output alongside any error.
+func runGitIn(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = gitEnv()
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// parseSubmoduleConfig turns the output of
+// `git config ... --get-regexp ^submodule\..*\.<key>$` into a name→value map.
+// Each line is "submodule.<name>.<key> <value>"; the name may contain slashes
+// (it mirrors the submodule path) and is taken verbatim between the
+// "submodule." prefix and the trailing ".<key>".
+func parseSubmoduleConfig(getRegexpOutput, key string) map[string]string {
+	res := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(getRegexpOutput), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		sp := strings.IndexByte(line, ' ')
+		if sp < 0 {
+			continue
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(line[:sp], "submodule."), "."+key)
+		val := strings.TrimSpace(line[sp+1:])
+		if name == "" || val == "" {
+			continue
+		}
+		res[name] = val
+	}
+	return res
+}
+
+// submoduleURLsFromBare reads the submodule URLs declared in a bare repo's
+// default-branch .gitmodules, reading the blob directly so no worktree is
+// needed. Returns nil when the repo has no default branch or no .gitmodules
+// — there is nothing to mirror in that case.
+func submoduleURLsFromBare(barePath string) []string {
+	ref := getRemoteDefaultBranch(barePath)
+	if ref == "" {
+		return nil
+	}
+	cmd := exec.Command("git", "-C", barePath, "config", "--blob", ref+":.gitmodules", "--get-regexp", `^submodule\..*\.url$`)
+	cmd.Env = gitEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		// Missing .gitmodules or no submodule entries: nothing to mirror.
+		return nil
+	}
+	m := parseSubmoduleConfig(string(out), "url")
+	urls := make([]string, 0, len(m))
+	for _, u := range m {
+		urls = append(urls, u)
+	}
+	return urls
+}
+
+// syncSubmodules recursively mirrors every submodule reachable from the bare
+// repo at barePath into the workspace cache, keyed by the same bareDirName
+// scheme as top-level repos so CreateWorktree can later look them up. visited
+// is keyed by mirror path and guards against cycles and re-mirroring a
+// submodule shared by several repos. Best-effort: each failure is logged and
+// skipped so one unreachable submodule never blocks the rest.
+func (c *Cache) syncSubmodules(workspaceID, barePath string, visited map[string]bool) {
+	for _, raw := range submoduleURLsFromBare(barePath) {
+		if raw == "" {
+			continue
+		}
+		// Mirror (and key the cache) on the clean URL: a CI-only inline token
+		// from .gitmodules is unreachable from the daemon, while the clean URL
+		// resolves via the daemon's own credential helpers. bareDirName already
+		// ignores userinfo, so credentialed and clean forms share one entry.
+		u := normalizeSubmoduleURL(raw)
+		subBare := filepath.Join(c.root, workspaceID, bareDirName(u))
+		if visited[subBare] {
+			continue
+		}
+		visited[subBare] = true
+
+		lock := c.lockForRepo(subBare)
+		lock.Lock()
+		var err error
+		if isBareRepo(subBare) {
+			c.logger.Info("repo cache: fetching submodule mirror", "submodule", redactSecrets(u), "path", subBare)
+			err = gitFetch(subBare)
+		} else {
+			c.logger.Info("repo cache: mirroring submodule", "submodule", redactSecrets(u), "path", subBare)
+			err = gitCloneBare(u, subBare)
+		}
+		lock.Unlock()
+		if err != nil {
+			c.logger.Warn("repo cache: submodule mirror failed (agent will fetch it over the network)",
+				"submodule", redactSecrets(u), "error", err)
+			continue
+		}
+		c.syncSubmodules(workspaceID, subBare, visited)
+	}
+}
+
+// prepareSubmodules initializes every submodule of worktreePath from the daemon
+// cache (recursively) and then resets each submodule working tree to a pristine
+// state. It is the entry point used by CreateWorktree.
+func (c *Cache) prepareSubmodules(workspaceID, worktreePath string) error {
+	if err := c.initSubmodulesFromCache(workspaceID, worktreePath); err != nil {
+		return err
+	}
+
+	// Reset and clean every submodule working tree (recursively). A reused
+	// worktree may carry tracked OR untracked leftovers from a previous task in
+	// a submodule: `git clean -fd` on the superproject does not descend into
+	// submodules and `submodule update --force` only restores tracked files, so
+	// without this an untracked file written under e.g. a submodule path by one
+	// task would survive into the next. Run once over the whole tree; mirrors
+	// the `reset --hard` + `clean -fd` the superproject itself gets on reuse.
+	if out, err := runGitIn(worktreePath, "submodule", "foreach", "--recursive", "git reset --hard && git clean -fd"); err != nil {
+		c.logger.Warn("repo checkout: submodule reset/clean failed (non-fatal)", "error", err, "output", redactSecrets(out))
+	}
+	return nil
+}
+
+// initSubmodulesFromCache initializes the submodules of dir — a worktree, or (on
+// recursion) a checked-out submodule — sourcing their objects from the local
+// mirrors populated by Sync so no network fetch is needed per task. It walks the
+// submodule tree level by level; a submodule whose mirror is missing or stale
+// falls back to its real remote.
+//
+// Three URL forms are in play and must not be confused:
+//   - the .gitmodules URL, which may carry a CI-only inline credential token;
+//   - the clean URL (credentials stripped), which is what resolves from the
+//     daemon's environment and is what the submodule's config/origin must end
+//     up pointing at;
+//   - the local mirror path, used purely as clone transport.
+//
+// Mirrors are local paths (file transport). Mirrored submodules are cloned with
+// protocol.file.allow=always, but ONLY on that command and ONLY for the
+// explicit mirrored paths (pass 1). Every other submodule is updated under
+// git's default protocol policy (pass 2), so a crafted .gitmodules file:// URL
+// on a submodule we did not mirror stays blocked instead of riding along on a
+// blanket flag.
+//
+// finalizeSubmoduleURLs (via defer, so it runs even on a mid-way failure)
+// rewrites every submodule's config URL and origin to the clean URL: neither
+// the mirror path nor the CI credential URL may persist in the config the agent
+// will fetch/push against.
+func (c *Cache) initSubmodulesFromCache(workspaceID, dir string) error {
+	subs, err := submoduleEntries(dir)
+	if err != nil {
+		return err
+	}
+	if len(subs) == 0 {
+		return nil
+	}
+
+	// Populate .git/config submodule.<name>.url from .gitmodules so URLs can be
+	// overridden before any clone happens.
+	if out, err := runGitIn(dir, "submodule", "init"); err != nil {
+		return fmt.Errorf("submodule init: %s: %w", redactSecrets(out), err)
+	}
+
+	// Guarantee config URLs and origins end at the clean URL, never the mirror
+	// path or a credential URL — even if we bail out partway through.
+	defer c.finalizeSubmoduleURLs(dir, subs)
+
+	var mirrored []submodule
+	for _, s := range subs {
+		clean := normalizeSubmoduleURL(s.URL)
+		// Point at the clean URL up front so the non-mirrored pass clones from
+		// an address reachable here, not the .gitmodules credential URL.
+		if out, err := runGitIn(dir, "config", "submodule."+s.Name+".url", clean); err != nil {
+			return fmt.Errorf("set submodule url: %s: %w", redactSecrets(out), err)
+		}
+		// Lock-free existence check (not Cache.Lookup): CreateWorktree already
+		// holds the parent repo's lock, and a submodule resolving back to that
+		// bare path would deadlock on Lookup's mutex. A benign race with a
+		// concurrent Sync at worst skips the redirect and falls back to network.
+		mirror := filepath.Join(c.root, workspaceID, bareDirName(clean))
+		if !isBareRepo(mirror) {
+			continue
+		}
+		// Only redirect to a mirror that actually contains the commit this
+		// submodule is pinned to. A stale/empty mirror missing the object would
+		// make pass 1 fail and could leave a half-clone; skipping it here lets
+		// the submodule fall through to the real-remote pass instead, so a
+		// broken cache is never worse than no cache.
+		sha := gitlinkCommit(dir, s.Path)
+		if sha == "" || !gitRefExists(mirror, sha+"^{commit}") {
+			continue
+		}
+		if out, err := runGitIn(dir, "config", "submodule."+s.Name+".url", mirror); err != nil {
+			return fmt.Errorf("override submodule url: %s: %w", redactSecrets(out), err)
+		}
+		mirrored = append(mirrored, s)
+	}
+
+	// Pass 1: clone the mirrored submodules from their local mirrors. file://
+	// transport is enabled ONLY here and ONLY for these explicit paths.
+	if len(mirrored) > 0 {
+		args := []string{"-c", "protocol.file.allow=always", "submodule", "update", "--init", "--force", "--"}
+		for _, s := range mirrored {
+			args = append(args, s.Path)
+		}
+		if out, err := runGitIn(dir, args...); err != nil {
+			// A broken mirror must not be worse than no mirror: log and fall
+			// through to the real-remote pass.
+			c.logger.Warn("repo checkout: mirrored submodule update failed, falling back to real remote", "error", err, "output", redactSecrets(out))
+		}
+		// Re-point the mirrored submodules at their clean URL so pass 2 never
+		// attempts file transport on them (they are already at the recorded
+		// commit, so pass 2 is a no-op for them).
+		for _, s := range mirrored {
+			if out, err := runGitIn(dir, "config", "submodule."+s.Name+".url", normalizeSubmoduleURL(s.URL)); err != nil {
+				return fmt.Errorf("restore submodule url: %s: %w", redactSecrets(out), err)
+			}
+		}
+	}
+
+	// Pass 2: initialize the remaining (non-mirrored) submodules from their clean
+	// real URL under git's default protocol policy. Non-recursive — nested
+	// submodules are handled by the explicit recursion below so each level gets
+	// the same mirror redirect. Best-effort: one unreachable or policy-blocked
+	// submodule must not undo the mirrored ones.
+	if out, err := runGitIn(dir, "submodule", "update", "--init", "--force"); err != nil {
+		c.logger.Warn("repo checkout: non-mirrored submodule update failed", "error", err, "output", redactSecrets(out))
+	}
+
+	// Check each submodule out to the branch its .gitmodules pins (e.g. v4.0.0)
+	// rather than leaving it detached at the recorded gitlink commit. This is
+	// what lets two repos in the same workspace share one submodule URL while
+	// each lands on the branch it configured. Done before recursion so nested
+	// submodules resolve against the branch tip's .gitmodules. A submodule with
+	// no branch — or the special "." (the superproject's branch, which has no
+	// meaning for the submodule's own remote) — keeps the gitlink commit.
+	for _, s := range subs {
+		if s.Branch == "" || s.Branch == "." {
+			continue
+		}
+		subDir := filepath.Join(dir, s.Path)
+		if _, err := os.Stat(filepath.Join(subDir, ".git")); err != nil {
+			continue // not checked out
+		}
+		if !gitRefExists(subDir, "refs/remotes/origin/"+s.Branch) {
+			c.logger.Warn("repo checkout: submodule branch not found, keeping pinned commit", "path", s.Path, "branch", s.Branch)
+			continue
+		}
+		if out, err := runGitIn(subDir, "checkout", "-B", s.Branch, "origin/"+s.Branch); err != nil {
+			c.logger.Warn("repo checkout: submodule branch checkout failed", "path", s.Path, "branch", s.Branch, "error", err, "output", redactSecrets(out))
+		}
+	}
+
+	// Recurse into each checked-out submodule so nested submodules resolve from
+	// their own mirrors too.
+	for _, s := range subs {
+		subDir := filepath.Join(dir, s.Path)
+		if _, err := os.Stat(filepath.Join(subDir, ".git")); err != nil {
+			continue // not checked out (unreachable or policy-blocked submodule)
+		}
+		if err := c.initSubmodulesFromCache(workspaceID, subDir); err != nil {
+			c.logger.Warn("repo checkout: nested submodule preparation failed", "path", s.Path, "error", err)
+		}
+	}
+	return nil
+}
+
+// finalizeSubmoduleURLs points each submodule's config URL and (if checked out)
+// its origin at the clean, locally reachable URL — stripping both the local
+// mirror path used as transport and any CI-only inline credentials from
+// .gitmodules. Best-effort and idempotent; runs via defer so the worktree never
+// ends with a mirror path or a credential URL in submodule config.
+func (c *Cache) finalizeSubmoduleURLs(dir string, subs []submodule) {
+	for _, s := range subs {
+		clean := normalizeSubmoduleURL(s.URL)
+		if out, err := runGitIn(dir, "config", "submodule."+s.Name+".url", clean); err != nil {
+			c.logger.Warn("repo checkout: submodule url finalize failed", "error", err, "output", redactSecrets(out))
+		}
+		subDir := filepath.Join(dir, s.Path)
+		if _, err := os.Stat(filepath.Join(subDir, ".git")); err != nil {
+			continue // not checked out — no origin to rewrite
+		}
+		if out, err := runGitIn(subDir, "remote", "set-url", "origin", clean); err != nil {
+			c.logger.Warn("repo checkout: submodule origin finalize failed", "error", err, "output", redactSecrets(out))
+		}
+	}
+}
+
+// gitlinkCommit returns the commit SHA recorded for the submodule at path in
+// dir's HEAD tree (the gitlink), or "" if it can't be read. ls-tree prints
+// "<mode> commit <sha>\t<path>" for a gitlink entry.
+func gitlinkCommit(dir, path string) string {
+	out, err := runGitIn(dir, "ls-tree", "HEAD", "--", path)
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(out)
+	if len(fields) < 3 || fields[1] != "commit" {
+		return ""
+	}
+	return fields[2]
+}
+
+// submodule describes one .gitmodules entry. Name keys the submodule.<name>.*
+// config; Path is the working-tree location (usually equal to Name); Branch is
+// the optional submodule.<name>.branch the submodule should be checked out to.
+type submodule struct {
+	Name   string
+	Path   string
+	URL    string
+	Branch string
+}
+
+// submoduleEntries returns the submodules declared in dir's .gitmodules, or nil
+// when dir has no .gitmodules at all. Entries without a URL are skipped; a
+// missing path falls back to the submodule name.
+func submoduleEntries(dir string) ([]submodule, error) {
+	gitmodules := filepath.Join(dir, ".gitmodules")
+	if _, err := os.Stat(gitmodules); err != nil {
+		return nil, nil // no submodules
+	}
+	read := func(key string) (map[string]string, error) {
+		cmd := exec.Command("git", "config", "-f", gitmodules, "--get-regexp", `^submodule\..*\.`+key+`$`)
+		cmd.Env = gitEnv()
+		out, err := cmd.Output()
+		if err != nil {
+			// Exit 1 = no matching entries; treat as empty, not an error.
+			if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+				return map[string]string{}, nil
+			}
+			return nil, err
+		}
+		return parseSubmoduleConfig(string(out), key), nil
+	}
+	urls, err := read("url")
+	if err != nil {
+		return nil, fmt.Errorf("read submodule urls: %w", err)
+	}
+	paths, err := read("path")
+	if err != nil {
+		return nil, fmt.Errorf("read submodule paths: %w", err)
+	}
+	branches, err := read("branch")
+	if err != nil {
+		return nil, fmt.Errorf("read submodule branches: %w", err)
+	}
+	subs := make([]submodule, 0, len(urls))
+	for name, u := range urls {
+		if u == "" {
+			continue
+		}
+		path := paths[name]
+		if path == "" {
+			path = name
+		}
+		subs = append(subs, submodule{Name: name, Path: path, URL: u, Branch: branches[name]})
+	}
+	return subs, nil
 }

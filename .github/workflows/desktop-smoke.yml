@@ -12,6 +12,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: macos-latest
+            target: mac
           - os: ubuntu-latest
             target: linux
           - os: windows-latest
@@ -52,11 +54,20 @@ jobs:
         working-directory: apps/desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: node scripts/package.mjs --${{ matrix.target }} --x64 --arm64 --publish never
+        run: node scripts/package.mjs --mode furtherref --${{ matrix.target }} --x64 --arm64 --publish never
 
       - name: Upload Desktop artifacts (${{ matrix.target }})
         uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.target }}
-          path: apps/desktop/dist
+          path: |
+            apps/desktop/dist/**/*.AppImage
+            apps/desktop/dist/**/*.blockmap
+            apps/desktop/dist/**/*.deb
+            apps/desktop/dist/**/*.dmg
+            apps/desktop/dist/**/*.exe
+            apps/desktop/dist/**/*.rpm
+            apps/desktop/dist/**/latest*.yml
+            apps/desktop/dist/**/*.zip
           if-no-files-found: error
+          compression-level: 0

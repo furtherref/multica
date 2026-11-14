@@ -556,6 +556,9 @@ WITH deleted_wakeup_receipts AS (
 ), deleted_wakeups AS (
  DELETE FROM issue_wakeup WHERE workspace_id=$1
 ),
+deleted_child_events AS (
+ DELETE FROM issue_child_event WHERE workspace_id=$1
+),
 deleted_issues AS (
     DELETE FROM issue WHERE issue.workspace_id = $1
 ),
@@ -587,6 +590,10 @@ WHERE autopilot_quota_reservation.workspace_id = $1;
 -- name: DeleteWorkspaceAutopilotQuotaPeriods :exec
 DELETE FROM autopilot_quota_period
 WHERE autopilot_quota_period.workspace_id = $1;
+
+-- name: DeleteWorkspaceRuntimeCostBudgets :exec
+DELETE FROM runtime_cost_budget
+WHERE runtime_cost_budget.workspace_id = $1;
 
 -- name: DeleteWorkspaceAutopilotChildren :exec
 WITH

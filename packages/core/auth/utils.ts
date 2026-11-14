@@ -1,4 +1,19 @@
 /**
+ * Machine-readable error code the server attaches to a 403 response body
+ * when a request was rejected because the acting account is suspended.
+ * See server/internal/handler write path — `{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}`.
+ */
+export const ACCOUNT_SUSPENDED_CODE = "ACCOUNT_SUSPENDED";
+
+/**
+ * StorageAdapter key used to hand off "why did my session end" from the
+ * ApiClient (which detects the rejection) to the login page (which reads it
+ * once, at boot, to render a "your account was suspended" message) without
+ * either module importing the other. Cleared by the login page after read.
+ */
+export const SESSION_ENDED_REASON_KEY = "multica_session_ended_reason";
+
+/**
  * Validate a post-login redirect URL and return it only if safe to follow.
  *
  * Only single-slash relative paths (e.g. `/invite/abc`) are accepted. Returns

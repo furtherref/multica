@@ -198,7 +198,6 @@ describe("pending task queue events", () => {
 
     promotePendingTaskToRunning(qc, {
       task_id: "task-1",
-      agent_id: "agent-1",
       issue_id: "",
       runtime_id: "runtime-1",
       chat_session_id: SESSION,
@@ -231,7 +230,6 @@ describe("pending task queue events", () => {
 
     seedPendingTaskFromQueued(qc, {
       task_id: "task-follow-up",
-      agent_id: "agent-1",
       issue_id: "",
       chat_session_id: SESSION,
       status: "queued",
@@ -253,7 +251,6 @@ describe("pending task queue events", () => {
 
     promotePendingTaskToRunning(qc, {
       task_id: "task-follow-up",
-      agent_id: "agent-1",
       issue_id: "",
       runtime_id: "runtime-1",
       chat_session_id: SESSION,

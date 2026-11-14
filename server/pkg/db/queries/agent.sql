@@ -287,8 +287,14 @@ RETURNING *;
 
 -- name: ListAgentTasks :many
 SELECT * FROM agent_task_queue
-WHERE agent_id = $1
-ORDER BY created_at DESC;
+WHERE agent_id = @agent_id
+  -- Apply visibility before LIMIT so hidden fallbacks cannot end a page early.
+  -- Keep this predicate in sync with handler.visibleTaskHistory.
+  AND NOT (escalation_for_task_id IS NOT NULL AND started_at IS NULL
+           AND status IN ('deferred', 'cancelled'))
+  AND (created_at, id) < (@before_created_at::timestamptz, @before_id::uuid)
+ORDER BY created_at DESC, id DESC
+LIMIT @page_limit;
 
 -- name: CreateAgentTask :one
 -- Fenced against workspace teardown: lock_task_owner_rows (migration 284)
@@ -564,6 +570,11 @@ SELECT
     COALESCE(sqlc.narg('new_task_id')::uuid, gen_random_uuid())
 FROM agent_task_queue p
 WHERE p.id = $1
+  -- Archive (fork status #39): no retry attempt is raised on retired work.
+  -- Callers treat the resulting no-row as "retry suppressed", not an error.
+  AND (p.issue_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM issue i WHERE i.id = p.issue_id AND i.status = 'archive'
+  ))
   AND lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
 ON CONFLICT (issue_id, agent_id, (COALESCE(comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid))) WHERE status IN ('queued', 'dispatched')
        OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -780,6 +791,13 @@ WHERE id = (
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
       )
+      -- Archive (fork status #39) is retired work: a task whose issue was
+      -- archived after enqueue (insert/retry racing the archive cancel) must
+      -- never be claimed. This is the single queued->dispatched transition,
+      -- so the predicate makes every such orphan permanently inert.
+      AND (atq.issue_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM issue i WHERE i.id = atq.issue_id AND i.status = 'archive'
+      ))
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
           WHERE active.agent_id = atq.agent_id
@@ -901,6 +919,12 @@ WHERE id = (
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
       )
+      -- Archive (fork status #39): never re-deliver a task whose issue was
+      -- archived — mirrors the ClaimAgentTask guard so reclaim cannot bypass
+      -- the queued->dispatched chokepoint's invariant.
+      AND (atq.issue_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM issue i WHERE i.id = atq.issue_id AND i.status = 'archive'
+      ))
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
@@ -948,6 +972,12 @@ WHERE id IN (
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
       )
+      -- Archive (fork status #39): never re-deliver a task whose issue was
+      -- archived — mirrors the ClaimAgentTask guard so reclaim cannot bypass
+      -- the queued->dispatched chokepoint's invariant.
+      AND (atq.issue_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM issue i WHERE i.id = atq.issue_id AND i.status = 'archive'
+      ))
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT @max_tasks::int
     FOR UPDATE SKIP LOCKED
@@ -975,12 +1005,20 @@ RETURNING *;
 -- the lock was acquired the daemon flips here). wait_reason is cleared on
 -- the transition so a future read can't conflate "currently waiting" with
 -- "previously waited".
-UPDATE agent_task_queue
+UPDATE agent_task_queue AS atq
 SET status = 'running',
     started_at = now(),
     wait_reason = NULL,
     prepare_lease_expires_at = NULL
-WHERE agent_task_queue.id = $1 AND agent_task_queue.status IN ('dispatched', 'waiting_local_directory')
+WHERE atq.id = $1 AND atq.status IN ('dispatched', 'waiting_local_directory')
+  -- Archive (fork status #39): a task must not START on retired work even if
+  -- it was legitimately dispatched before the archive — the daemon's /start
+  -- rides the same no-rows path as "cancelled between claim and start". The
+  -- handler-side cancel still covers tasks that slip into running within the
+  -- statement-snapshot window.
+  AND (atq.issue_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM issue i WHERE i.id = atq.issue_id AND i.status = 'archive'
+  ))
 RETURNING *;
 
 -- name: LockAgentTaskStartClaim :one
@@ -1784,6 +1822,11 @@ SELECT * FROM agent
 WHERE id = $1
 FOR UPDATE;
 
+-- name: HasTaskForIssue :one
+-- Returns true if the issue has any task in any status. Webhook recovery
+-- treats even a terminal task as proof that ownership moved downstream.
+SELECT EXISTS (SELECT 1 FROM agent_task_queue WHERE issue_id = $1);
+
 -- name: HasActiveTaskForIssue :one
 -- Returns true if there is any queued, dispatched, waiting_local_directory,
 -- or running task for the issue.
@@ -2345,6 +2388,113 @@ WHERE r.runtime_id = ANY(@runtime_ids::uuid[])
   )
 RETURNING *;
 
+-- name: ListDueDeferredTaskAgentsForRuntimes :many
+-- The (agent, runtime) pairs that own at least one deferred task whose fire_at
+-- has passed on one of these runtimes. Read immediately before promotion so a
+-- reached runtime cost budget can retire those rows instead of making them
+-- claimable. Kept deliberately narrow (no fences, no ordering): it only decides
+-- WHICH agents to price, and the promotion query below still owns which rows
+-- may be promoted. Returns nothing on the common path, so an idle claim poll
+-- pays one index probe and skips the budget work entirely.
+--
+-- The join pins a.runtime_id = t.runtime_id, so the runtime returned is both
+-- the one these rows sit on and the one the agent is bound to, and the caller
+-- prices exactly the budget those rows would spend against. A rebound agent's
+-- rows left behind on its old runtime are therefore not this gate's business at
+-- all: they are neither retired by the new runtime's budget nor promoted past
+-- the old runtime's, they simply promote on the old runtime's own terms.
+SELECT DISTINCT t.agent_id, t.runtime_id
+FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id AND a.runtime_id = t.runtime_id
+WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
+  AND t.status = 'deferred'
+  AND t.fire_at <= now();
+
+-- name: FailDueDeferredTasksForAgentOverBudget :many
+-- Retires one agent's due deferred tasks when its runtime cost budget is spent.
+-- Runs BEFORE promotion, so a retired row does not become claimable: a task
+-- failed here was never dispatched and never reached a provider. The reason is
+-- the same wire value the API returns for a refused trigger, so the queue and
+-- the dispatch response name one cause.
+--
+-- This retires EVERY due deferred row of a blocked agent on that runtime,
+-- whether or not this tick would have promoted it. The promotion query below
+-- is strictly narrower — it also needs the runtime online and fresh, an
+-- unoccupied (issue, agent) slot, and at most one row per (issue, agent) — and
+-- that difference is deliberate: a reached budget refuses the work regardless
+-- of runtime state or slot occupancy, so leaving a due row deferred would only
+-- hide a task nobody will ever run until its issue is closed.
+--
+-- runtime_id is the agent's own runtime, taken from
+-- ListDueDeferredTaskAgentsForRuntimes above, never the sweep's whole runtime
+-- set: the budget priced for this agent belongs to that one runtime, so it may
+-- only retire the rows sitting on it.
+--
+-- chat_session_id IS NULL is a hard split, not a filter. A chat row owes its
+-- transcript an assistant outcome that must commit with its own status flip,
+-- so the sweep retires those one at a time through
+-- FailDeferredTaskOverBudget below, under the chat session lock. Letting this
+-- statement touch them too would race the per-row half onto the same rows and
+-- reintroduce exactly the committed-terminal-row-with-no-reply window the
+-- split exists to close.
+UPDATE agent_task_queue
+SET status = 'failed',
+    completed_at = now(),
+    failure_reason = @failure_reason,
+    error = @error,
+    prepare_lease_expires_at = NULL
+WHERE agent_id = @agent_id
+  AND runtime_id = @runtime_id
+  AND status = 'deferred'
+  AND fire_at <= now()
+  AND chat_session_id IS NULL
+RETURNING *;
+
+-- name: ListDueDeferredChatTasksForAgentOverBudget :many
+-- The chat half of the retirement above: one blocked agent's due deferred rows
+-- that belong to a chat session, which the sweep retires row by row so each
+-- status flip commits together with the assistant message it owes the
+-- transcript. Read on the auto-commit handle immediately before those
+-- transactions, so a row listed here may already have moved on by the time its
+-- own transaction runs — FailDeferredTaskOverBudget re-checks the status and
+-- writes nothing when it has.
+SELECT * FROM agent_task_queue
+WHERE agent_id = @agent_id
+  AND runtime_id = @runtime_id
+  AND status = 'deferred'
+  AND fire_at <= now()
+  AND chat_session_id IS NOT NULL
+ORDER BY fire_at;
+
+-- name: FailDeferredTaskOverBudget :one
+-- Retires ONE still-deferred row against a reached runtime cost budget, with
+-- the same column writes as FailDueDeferredTasksForAgentOverBudget above. The
+-- caller runs it inside the transaction that also writes the row's chat
+-- outcome message, holding the chat session lock, so a reader never sees the
+-- turn terminated without its reply and no successor turn can be claimed in
+-- between.
+--
+-- status = 'deferred' is the concurrency fence. The sweep listed this row on
+-- the auto-commit handle; by the time this statement runs the row may have
+-- been promoted, cancelled or superseded. Returning no row then is the correct
+-- outcome — whatever moved it owns its status now — and the caller skips it
+-- rather than overwriting a state this sweep never priced. fire_at needs no
+-- re-check of its own: promotion clears it, which the status check already
+-- catches, and the one statement that pushes a deferred row's fire_at forward
+-- — DeferChatTaskForSealedPendingMedia, which carries no status qualifier —
+-- only ever runs against a task created in its own transaction (createChatTask
+-- seals the input batch and corrects the deferral before that row is visible
+-- to anyone). It can therefore never reach a row this sweep has listed.
+UPDATE agent_task_queue
+SET status = 'failed',
+    completed_at = now(),
+    failure_reason = @failure_reason,
+    error = @error,
+    prepare_lease_expires_at = NULL
+WHERE id = @id
+  AND status = 'deferred'
+RETURNING *;
+
 -- name: PromoteDueDeferredTasksForRuntime :many
 -- Promotion is fenced against the single queued/dispatched slot
 -- idx_one_pending_task_per_issue_agent_thread allows per (issue, agent, thread). A deferred
@@ -2598,7 +2748,10 @@ SELECT
     COUNT(*)::int AS task_count,
     COUNT(*) FILTER (WHERE atq.status = 'failed')::int AS failed_count,
     COUNT(*) FILTER (WHERE atq.status = 'completed')::int AS completed_count,
-    COUNT(*) FILTER (WHERE atq.status = 'cancelled')::int AS cancelled_count
+    COUNT(*) FILTER (WHERE atq.status = 'cancelled')::int AS cancelled_count,
+    COALESCE(SUM(EXTRACT(EPOCH FROM (atq.completed_at - atq.started_at)) * 1000)
+        FILTER (WHERE atq.completed_at > atq.started_at), 0)::float8 AS duration_ms,
+    COUNT(*) FILTER (WHERE atq.completed_at > atq.started_at)::int AS duration_count
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
 WHERE a.workspace_id = $1

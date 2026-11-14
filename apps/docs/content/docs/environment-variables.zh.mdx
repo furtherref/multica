@@ -192,9 +192,19 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 | 插件 | `MULTICA_PLUGIN_API_URL` | 带版本的插件 Public API 完整 Base URL，例如 `https://plugin-api.example.com/v1`；未设置时使用 `MULTICA_PUBLIC_URL` + `/v1` |
 | 插件 | `MULTICA_PLUGIN_DIR` | 开发时用于发布本地插件包的可选绝对目录 |
 
-不配置 `GITHUB_APP_ID` 和私钥时，PR 仍会正常关联、镜像和触发合并转 done，但卡片上不显示 CI 与可合并状态，"从 GitHub 选择"仓库入口也会禁用。
+不配置 `GITHUB_APP_ID` 和私钥时，PR 仍会正常关联、镜像，并在合并后改状态，但卡片上不显示 CI 与可合并状态，"从 GitHub 选择"仓库入口也会禁用。
 
 配置步骤见 [GitHub 集成](/github-integration#自托管配置)、[飞书 Bot](/lark-bot-integration#自托管配置)、[Slack Bot](/slack-bot-integration#自托管配置)和 [Telegram Bot](/telegram-bot-integration#自托管配置)。
+
+### GitHub API token（限流）
+
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `GITHUB_TOKEN` | 空 | 可选 token，给 Multica 自己调 GitHub REST API 的请求做认证，把限额从 60 抬到 5000 次/小时 |
+
+`GITHUB_TOKEN` 和上面的 GitHub App 集成**没有关系**。它给两类 GitHub REST API 调用做认证：**CLI 自更新**的 release 查询（由**守护进程**读取）和从 GitHub 仓库**导入 skill**（由 **server** 读取）。匿名 GitHub API 请求按**来源 IP 限流到 60 次/小时**，多个守护进程或其他工具共用一个出口 IP（NAT / 转发代理）时很容易打满，表现为 `403`——例如 CLI 自更新时的 `fetch release metadata: GitHub API returned 403`。设置 `GITHUB_TOKEN` 后限额提到 **5000 次/小时，且按 token 算、与 IP 无关**。任意能读公开 release 仓库的 token 都行，公开仓库无需特殊 scope。
+
+哪个进程需要就配在哪个进程的环境里——**守护进程**用于 CLI 自更新，**server** 用于 skill 导入——并**重启该进程**，因为 token 是在启动时读取的。
 
 ## 服务端 LLM
 

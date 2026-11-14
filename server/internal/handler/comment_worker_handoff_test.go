@@ -100,6 +100,8 @@ func TestWorkerReplyDelivery(t *testing.T) {
 					content = fmt.Sprintf("[@Squad](mention://squad/%s) %s", squadID, content)
 				}
 				details := post("Evidence: the final reply can arrive after the leader claims its inputs")
+				// The fork canonicalizes mention labels server-side (#65), so the
+				// delivered trigger is the stored text, not the posted `@Squad` label.
 				result := post(content)
 				stored, err := testHandler.Queries.GetAgentTask(ctx, parseUUID(leaderTaskID))
 				if err != nil {
@@ -117,7 +119,7 @@ func TestWorkerReplyDelivery(t *testing.T) {
 				}
 				if state == "queued" {
 					first = claimWorkerReplyRun(t, leaderRuntimeID)
-					if first == nil || first.ID != leaderTaskID || !slices.Contains(first.DeliveredCommentIDs, result.ID) || !slices.Contains(first.DeliveredCommentIDs, details.ID) || first.TriggerCommentContent != content {
+					if first == nil || first.ID != leaderTaskID || !slices.Contains(first.DeliveredCommentIDs, result.ID) || !slices.Contains(first.DeliveredCommentIDs, details.ID) || first.TriggerCommentContent != result.Content {
 						t.Fatal("queued leader must coalesce and receive the worker result")
 					}
 				} else if slices.Contains(first.DeliveredCommentIDs, result.ID) {
@@ -142,7 +144,7 @@ func TestWorkerReplyDelivery(t *testing.T) {
 				if next == nil {
 					t.Fatal("worker result persisted but was neither delivered nor followed by another leader run")
 				}
-				if !next.IsLeaderTask || !slices.Contains(next.DeliveredCommentIDs, result.ID) || !slices.Contains(next.DeliveredCommentIDs, details.ID) || next.TriggerCommentContent != content {
+				if !next.IsLeaderTask || !slices.Contains(next.DeliveredCommentIDs, result.ID) || !slices.Contains(next.DeliveredCommentIDs, details.ID) || next.TriggerCommentContent != result.Content {
 					t.Fatal("follow-up must deliver the result in the squad leader role")
 				}
 				successor, err := testHandler.Queries.GetAgentTask(ctx, parseUUID(next.ID))

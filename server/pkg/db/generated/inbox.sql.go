@@ -423,10 +423,12 @@ WITH eligible_archived AS MATERIALIZED (
     SELECT id FROM comment_anchors
 )
 SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details,
+       w.slug AS workspace_slug,
        iss.status AS issue_status,
        iss.priority AS issue_priority
 FROM inbox_item i
 JOIN selected_ids selected ON selected.id = i.id
+JOIN workspace w ON w.id = i.workspace_id
 LEFT JOIN issue iss ON iss.id = i.issue_id
 ORDER BY i.created_at DESC, i.id DESC
 `
@@ -453,6 +455,7 @@ type ListArchivedInboxItemsRow struct {
 	ActorType     pgtype.Text        `json:"actor_type"`
 	ActorID       pgtype.UUID        `json:"actor_id"`
 	Details       []byte             `json:"details"`
+	WorkspaceSlug string             `json:"workspace_slug"`
 	IssueStatus   pgtype.Text        `json:"issue_status"`
 	IssuePriority pgtype.Text        `json:"issue_priority"`
 }
@@ -503,6 +506,7 @@ func (q *Queries) ListArchivedInboxItems(ctx context.Context, arg ListArchivedIn
 			&i.ActorType,
 			&i.ActorID,
 			&i.Details,
+			&i.WorkspaceSlug,
 			&i.IssueStatus,
 			&i.IssuePriority,
 		); err != nil {
@@ -518,9 +522,11 @@ func (q *Queries) ListArchivedInboxItems(ctx context.Context, arg ListArchivedIn
 
 const listInboxItems = `-- name: ListInboxItems :many
 SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details,
+       w.slug AS workspace_slug,
        iss.status AS issue_status,
        iss.priority AS issue_priority
 FROM inbox_item i
+JOIN workspace w ON w.id = i.workspace_id
 LEFT JOIN issue iss ON iss.id = i.issue_id
 WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
 ORDER BY i.created_at DESC
@@ -548,6 +554,7 @@ type ListInboxItemsRow struct {
 	ActorType     pgtype.Text        `json:"actor_type"`
 	ActorID       pgtype.UUID        `json:"actor_id"`
 	Details       []byte             `json:"details"`
+	WorkspaceSlug string             `json:"workspace_slug"`
 	IssueStatus   pgtype.Text        `json:"issue_status"`
 	IssuePriority pgtype.Text        `json:"issue_priority"`
 }
@@ -577,6 +584,7 @@ func (q *Queries) ListInboxItems(ctx context.Context, arg ListInboxItemsParams) 
 			&i.ActorType,
 			&i.ActorID,
 			&i.Details,
+			&i.WorkspaceSlug,
 			&i.IssueStatus,
 			&i.IssuePriority,
 		); err != nil {

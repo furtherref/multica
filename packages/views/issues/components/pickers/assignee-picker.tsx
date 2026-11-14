@@ -56,6 +56,7 @@ interface AssigneePickerProps {
   open?: boolean;
   onOpenChange?: (v: boolean) => void;
   align?: "start" | "center" | "end";
+  width?: string;
 }
 
 /**
@@ -64,7 +65,9 @@ interface AssigneePickerProps {
  * switches. Uncontrolled callers that bring their own trigger content get a
  * deferred lookalike trigger instead; the picker mounts on first interaction.
  * The default trigger needs `getActorName` (a members/agents subscription
- * itself), so trigger-less callers stay eager.
+ * itself), so callers without their own content — no `trigger`, and no
+ * children inside `triggerRender` (e.g. the create dialog's bare
+ * PillButton) — stay eager.
  */
 export function AssigneePicker(props: AssigneePickerProps) {
   const hasDeferredTriggerContent =
@@ -99,6 +102,7 @@ function AssigneePickerImpl({
   open: controlledOpen,
   onOpenChange: controlledOnOpenChange,
   align,
+  width = "w-64",
 }: AssigneePickerProps) {
   const { t } = useT("issues");
   const [internalOpen, setInternalOpen] = useState(false);
@@ -158,7 +162,7 @@ function AssigneePickerImpl({
         setOpen(v);
         if (!v) setFilter("");
       }}
-      width="w-64"
+      width={width}
       align={align}
       searchable
       searchPlaceholder={t(($) => $.pickers.assignee.search_placeholder)}
@@ -251,7 +255,7 @@ function AssigneePickerImpl({
                 <ActorAvatar actorType="agent" actorId={a.id} size="sm" showStatusDot />
                 <span className={`truncate ${allowed ? "" : "text-muted-foreground"}`}>{a.name}</span>
                 {a.visibility === "private" && (
-                  <Lock className="ml-auto h-3 w-3 text-muted-foreground" />
+                  <Lock className="ml-auto h-3 w-3 shrink-0 text-muted-foreground" />
                 )}
               </PickerItem>
             );

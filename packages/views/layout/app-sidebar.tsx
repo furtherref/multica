@@ -23,8 +23,9 @@ import { Layers,
   ChevronRight,
   LogOut,
   Plus,
-  Check,
+  Shield,
   SquarePen,
+  Check,
   X,
 } from "lucide-react";
 import { WorkspaceAvatar } from "../workspace/workspace-avatar";
@@ -47,6 +48,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  SidebarTrigger,
   useSidebar,
 } from "@multica/ui/components/ui/sidebar";
 import {
@@ -123,6 +125,7 @@ type NavKey =
   | "usage"
   | "runtimes"
   | "skills"
+  | "issueTemplates"
   | "settings";
 
 // Static schema (key only) — labels resolved at render via useT("layout"),
@@ -139,6 +142,7 @@ type NavLabelKey =
   | "usage"
   | "runtimes"
   | "skills"
+  | "issue_templates"
   | "settings";
 
 // Nav icons are NOT declared here: they are derived from each item's
@@ -154,6 +158,9 @@ const workNav: { key: NavKey; labelKey: NavLabelKey }[] = [
   { key: "issues", labelKey: "issues" },
   { key: "projects", labelKey: "projects" },
   { key: "autopilots", labelKey: "autopilots" },
+  // Fork-only: issue templates are authored per workspace and belong with
+  // the work they shape, not with the AI team.
+  { key: "issueTemplates", labelKey: "issue_templates" },
 ];
 
 const aiTeamNav: { key: NavKey; labelKey: NavLabelKey }[] = [
@@ -733,6 +740,17 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                       </DropdownMenuGroup>
                     </>
                   )}
+                  {user?.is_system_admin === true && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuGroup>
+                        <DropdownMenuItem onClick={() => push(paths.admin())}>
+                          <Shield className="h-3.5 w-3.5" />
+                          {t(($) => $.sidebar.system_admin)}
+                        </DropdownMenuItem>
+                      </DropdownMenuGroup>
+                    </>
+                  )}
                   <DropdownMenuSeparator />
                   <DropdownMenuGroup>
                     <DropdownMenuItem variant="destructive" onClick={logout}>
@@ -927,9 +945,12 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
               );
             })}
           </SidebarMenu>
-          {/* Discord fills the strip while visible; once dismissed, help
-              aligns with the navigation icons above. */}
-          <div className="flex items-center gap-1">
+          {/* One utility strip: the Discord link takes the space the help
+              trigger was leaving empty. `justify-between` keeps the sidebar
+              trigger leading and the help trigger trailing once the Discord
+              link is dismissed (or while DISCORD_URL is unset). */}
+          <div className="flex items-center justify-between gap-1">
+            <SidebarTrigger />
             <JoinDiscordCard />
             <HelpLauncher />
           </div>

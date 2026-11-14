@@ -130,6 +130,7 @@ func (q *Queries) GetTaskUsage(ctx context.Context, taskID pgtype.UUID) ([]TaskU
 const listAgentTaskUsage = `-- name: ListAgentTaskUsage :many
 SELECT
     tu.task_id,
+    DATE(tu.created_at AT TIME ZONE 'UTC') AS pricing_date,
     tu.provider,
     tu.model,
     tu.input_tokens,
@@ -151,6 +152,7 @@ type ListAgentTaskUsageParams struct {
 
 type ListAgentTaskUsageRow struct {
 	TaskID           pgtype.UUID `json:"task_id"`
+	PricingDate      pgtype.Date `json:"pricing_date"`
 	Provider         string      `json:"provider"`
 	Model            string      `json:"model"`
 	InputTokens      int64       `json:"input_tokens"`
@@ -164,6 +166,8 @@ type ListAgentTaskUsageRow struct {
 // task history. ListAgentTasks is already access-gated before this query runs;
 // the agent predicate preserves that authorization boundary, while task_ids
 // keeps hydration aligned with the exact response without an N+1 query.
+// pricing_date follows ListIssueTaskUsage so the client prices the
+// agent's history by the same effective-dated rate.
 func (q *Queries) ListAgentTaskUsage(ctx context.Context, arg ListAgentTaskUsageParams) ([]ListAgentTaskUsageRow, error) {
 	rows, err := q.db.Query(ctx, listAgentTaskUsage, arg.AgentID, arg.TaskIds)
 	if err != nil {
@@ -175,6 +179,7 @@ func (q *Queries) ListAgentTaskUsage(ctx context.Context, arg ListAgentTaskUsage
 		var i ListAgentTaskUsageRow
 		if err := rows.Scan(
 			&i.TaskID,
+			&i.PricingDate,
 			&i.Provider,
 			&i.Model,
 			&i.InputTokens,
@@ -509,6 +514,7 @@ func (q *Queries) ListDashboardRunTimeDaily(ctx context.Context, arg ListDashboa
 const listDashboardUsageByAgent = `-- name: ListDashboardUsageByAgent :many
 SELECT
     agent_id,
+    DATE(bucket_hour AT TIME ZONE 'UTC') AS pricing_date,
     LOWER(provider) AS provider,
     model,
     SUM(input_tokens)::bigint        AS input_tokens,
@@ -525,8 +531,8 @@ FROM task_usage_hourly
 WHERE workspace_id = $1
   AND bucket_hour >= $2::timestamptz
   AND ($3::uuid IS NULL OR project_id = $3)
-GROUP BY agent_id, LOWER(provider), model
-ORDER BY agent_id, LOWER(provider), model
+GROUP BY agent_id, DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model
+ORDER BY agent_id, DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model
 `
 
 type ListDashboardUsageByAgentParams struct {
@@ -537,6 +543,7 @@ type ListDashboardUsageByAgentParams struct {
 
 type ListDashboardUsageByAgentRow struct {
 	AgentID                  pgtype.UUID `json:"agent_id"`
+	PricingDate              pgtype.Date `json:"pricing_date"`
 	Provider                 string      `json:"provider"`
 	Model                    string      `json:"model"`
 	InputTokens              int64       `json:"input_tokens"`
@@ -551,8 +558,8 @@ type ListDashboardUsageByAgentRow struct {
 	TaskCount                int32       `json:"task_count"`
 }
 
-// Per-(agent, provider, model) token aggregates from `task_usage_hourly`. No
-// date grouping in the result, so this query takes no `@tz` — the
+// Per-(agent, UTC pricing date, provider, model) token aggregates from
+// `task_usage_hourly`. Pricing dates are UTC, so this query takes no `@tz` — the
 // @since cutoff is a raw timestamptz the Go layer has already computed
 // in the viewer's tz. Model dimension is preserved so the client can
 // compute cost from its per-model pricing table; the client folds rows
@@ -576,6 +583,7 @@ func (q *Queries) ListDashboardUsageByAgent(ctx context.Context, arg ListDashboa
 		var i ListDashboardUsageByAgentRow
 		if err := rows.Scan(
 			&i.AgentID,
+			&i.PricingDate,
 			&i.Provider,
 			&i.Model,
 			&i.InputTokens,
@@ -602,6 +610,7 @@ func (q *Queries) ListDashboardUsageByAgent(ctx context.Context, arg ListDashboa
 const listDashboardUsageDaily = `-- name: ListDashboardUsageDaily :many
 SELECT
     DATE(bucket_hour AT TIME ZONE $2::text) AS date,
+    DATE(bucket_hour AT TIME ZONE 'UTC') AS pricing_date,
     LOWER(provider) AS provider,
     model,
     SUM(input_tokens)::bigint        AS input_tokens,
@@ -618,8 +627,8 @@ FROM task_usage_hourly
 WHERE workspace_id = $1
   AND bucket_hour >= $3::timestamptz
   AND ($4::uuid IS NULL OR project_id = $4)
-GROUP BY DATE(bucket_hour AT TIME ZONE $2::text), LOWER(provider), model
-ORDER BY DATE(bucket_hour AT TIME ZONE $2::text) DESC, LOWER(provider), model
+GROUP BY DATE(bucket_hour AT TIME ZONE $2::text), DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model
+ORDER BY DATE(bucket_hour AT TIME ZONE $2::text) DESC, DATE(bucket_hour AT TIME ZONE 'UTC'), LOWER(provider), model
 `
 
 type ListDashboardUsageDailyParams struct {
@@ -631,6 +640,7 @@ type ListDashboardUsageDailyParams struct {
 
 type ListDashboardUsageDailyRow struct {
 	Date                     pgtype.Date `json:"date"`
+	PricingDate              pgtype.Date `json:"pricing_date"`
 	Provider                 string      `json:"provider"`
 	Model                    string      `json:"model"`
 	InputTokens              int64       `json:"input_tokens"`
@@ -645,7 +655,7 @@ type ListDashboardUsageDailyRow struct {
 	TaskCount                int32       `json:"task_count"`
 }
 
-// Daily per-(date, provider, model) token aggregates for the workspace, served
+// Daily per-(display date, UTC pricing date, provider, model) token aggregates for the workspace, served
 // from the UTC-bucketed `task_usage_hourly` table and
 // sliced to calendar days under the caller-supplied @tz. Optionally
 // scoped to a single project via sqlc.narg('project_id'). Powers the
@@ -678,6 +688,7 @@ func (q *Queries) ListDashboardUsageDaily(ctx context.Context, arg ListDashboard
 		var i ListDashboardUsageDailyRow
 		if err := rows.Scan(
 			&i.Date,
+			&i.PricingDate,
 			&i.Provider,
 			&i.Model,
 			&i.InputTokens,
@@ -704,6 +715,7 @@ func (q *Queries) ListDashboardUsageDaily(ctx context.Context, arg ListDashboard
 const listIssueTaskUsage = `-- name: ListIssueTaskUsage :many
 SELECT
     tu.task_id,
+    DATE(tu.created_at AT TIME ZONE 'UTC') AS pricing_date,
     tu.provider,
     tu.model,
     tu.input_tokens,
@@ -719,6 +731,7 @@ ORDER BY tu.task_id, tu.model
 
 type ListIssueTaskUsageRow struct {
 	TaskID           pgtype.UUID `json:"task_id"`
+	PricingDate      pgtype.Date `json:"pricing_date"`
 	Provider         string      `json:"provider"`
 	Model            string      `json:"model"`
 	InputTokens      int64       `json:"input_tokens"`
@@ -737,6 +750,11 @@ type ListIssueTaskUsageRow struct {
 // longer be priced at all. The execution log sums the rows per task; the usage
 // panel shows them split.
 //
+// pricing_date is the UTC day the usage was recorded, so effective-dated
+// provider rates (Copilot's Sol promotion) price an old run at the rate that
+// applied then, not at today's -- the same contract as the runtime and
+// dashboard usage rows.
+//
 // Ordering is by task then model so the client can group by task_id in one
 // pass. Uses idx_agent_task_queue_issue_id (migration 035) + the task_usage
 // task_id index (migration 032).
@@ -751,6 +769,7 @@ func (q *Queries) ListIssueTaskUsage(ctx context.Context, issueID pgtype.UUID) (
 		var i ListIssueTaskUsageRow
 		if err := rows.Scan(
 			&i.TaskID,
+			&i.PricingDate,
 			&i.Provider,
 			&i.Model,
 			&i.InputTokens,

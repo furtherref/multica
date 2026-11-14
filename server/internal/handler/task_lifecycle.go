@@ -169,6 +169,13 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Archive (fork status #39) retires the issue: a manual rerun must not
+	// raise new agent spend on retired work. Restore the issue first.
+	if issue.Status == "archive" {
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonIssueArchived)
+		return
+	}
+
 	// Body is optional. A zero-length body or `{}` keeps the legacy
 	// assignee-driven rerun behaviour the CLI relies on.
 	var req RerunIssueRequest
@@ -256,6 +263,14 @@ func (h *Handler) RetrySourceContextQuickCreate(w http.ResponseWriter, r *http.R
 	}
 	task, err := h.TaskService.RetrySourceContextQuickCreate(r.Context(), workspaceID, requesterID, taskID, canInvoke)
 	if writeIssueLimitReached(w, err) {
+		return
+	}
+	// A reached runtime cost budget is a refusal the caller can act on (retry
+	// after the period resets), not a 500. Same 409 + budget_exceeded shape the
+	// capture path returns through writeSourceContextError.
+	var budgetErr *service.RuntimeBudgetExceededError
+	if errors.As(err, &budgetErr) {
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonBudgetExceeded)
 		return
 	}
 	if errors.Is(err, service.ErrRerunInvokeNotAllowed) {

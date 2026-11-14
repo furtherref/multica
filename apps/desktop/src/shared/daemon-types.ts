@@ -25,6 +25,8 @@ export interface DaemonStatus {
   profile?: string;
   /** Backend URL the daemon connects to. */
   serverUrl?: string;
+  /** Current effective workspaces root path. */
+  workspacesRoot?: string;
   /**
    * True when a daemon is running but in an environment the app can't control
    * — its reported OS differs from the desktop host's (e.g. a Linux daemon
@@ -40,6 +42,8 @@ export interface DaemonStatus {
 export interface DaemonPrefs {
   autoStart: boolean;
   autoStop: boolean;
+  /** User-configured workspaces root path. Persisted to CLI config.json. */
+  workspacesRoot?: string;
 }
 
 export type LocalRuntimeProbe =

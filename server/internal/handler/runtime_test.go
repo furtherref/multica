@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -24,6 +27,12 @@ func TestRuntimeHandlersRejectMalformedRuntimeID(t *testing.T) {
 			method: "GET",
 			path:   "/api/runtimes/not-a-uuid/usage",
 			handle: testHandler.GetRuntimeUsage,
+		},
+		{
+			name:   "usage coverage",
+			method: "GET",
+			path:   "/api/runtimes/not-a-uuid/usage/coverage",
+			handle: testHandler.GetRuntimeUsageCoverage,
 		},
 		{
 			name:   "task activity",
@@ -290,6 +299,115 @@ func TestListRuntimeUsageByAgent_MergesMixedCaseProvider(t *testing.T) {
 	}
 }
 
+func TestRuntimeUsageAggregatesPreserveUTCPricingDate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := handlerTestRuntimeID(t)
+
+	var agentID, issueID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT id FROM agent
+		WHERE workspace_id = $1 AND runtime_id = $2
+		ORDER BY created_at LIMIT 1
+	`, testWorkspaceID, runtimeID).Scan(&agentID); err != nil {
+		t.Fatalf("select agent: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, title, creator_id, creator_type)
+		VALUES ($1, 'pricing date fixture', $2, 'member')
+		RETURNING id
+	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
+		t.Fatalf("insert issue: %v", err)
+	}
+	t.Cleanup(func() { _, _ = testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
+
+	model := "pricing-date-model"
+	usageTimes := []time.Time{
+		time.Date(2026, 9, 3, 23, 30, 0, 0, time.UTC),
+		time.Date(2026, 9, 4, 0, 30, 0, 0, time.UTC),
+	}
+	var taskIDs []string
+	for i, usageAt := range usageTimes {
+		var taskID string
+		if err := testPool.QueryRow(ctx, `
+			INSERT INTO agent_task_queue (
+				agent_id, issue_id, runtime_id, status, created_at, started_at, completed_at
+			) VALUES ($1, $2, $3, 'completed', $4, $4, $4)
+			RETURNING id
+		`, agentID, issueID, runtimeID, usageAt).Scan(&taskID); err != nil {
+			t.Fatalf("insert task %d: %v", i, err)
+		}
+		taskIDs = append(taskIDs, taskID)
+		if _, err := testPool.Exec(ctx, `
+			INSERT INTO task_usage (
+				task_id, provider, model, input_tokens, output_tokens, created_at, updated_at
+			) VALUES ($1, 'copilot', $2, $3, 0, $4, $4)
+		`, taskID, model, int64(100+i), usageAt); err != nil {
+			t.Fatalf("insert task usage %d: %v", i, err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, taskID := range taskIDs {
+			_, _ = testPool.Exec(ctx, `DELETE FROM task_usage WHERE task_id = $1`, taskID)
+			_, _ = testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+		}
+		_, _ = testPool.Exec(ctx, `DELETE FROM task_usage_hourly WHERE runtime_id = $1 AND model = $2`, runtimeID, model)
+	})
+	if _, err := testPool.Exec(ctx, `
+		SELECT rollup_task_usage_hourly_window($1::timestamptz, $2::timestamptz)
+	`, usageTimes[0].Add(-time.Hour), usageTimes[1].Add(time.Hour)); err != nil {
+		t.Fatalf("roll up usage: %v", err)
+	}
+
+	type pricedRow struct {
+		Date        string `json:"date"`
+		PricingDate string `json:"pricing_date"`
+		Provider    string `json:"provider"`
+		Model       string `json:"model"`
+	}
+	assertPricingDates := func(name string, rows []pricedRow) {
+		t.Helper()
+		var got []string
+		for _, row := range rows {
+			if row.Model == model {
+				if row.Provider != "copilot" {
+					t.Errorf("%s provider = %q, want copilot", name, row.Provider)
+				}
+				got = append(got, row.PricingDate)
+			}
+		}
+		slices.Sort(got)
+		if len(got) != 2 || got[0] != "2026-09-03" || got[1] != "2026-09-04" {
+			t.Errorf("%s pricing dates = %v, want [2026-09-03 2026-09-04]; rows=%+v", name, got, rows)
+		}
+	}
+	call := func(name string, handler http.HandlerFunc, requestPath string, runtimeParam bool) {
+		t.Helper()
+		req := newRequest(http.MethodGet, requestPath, nil)
+		if runtimeParam {
+			req = withURLParam(req, "runtimeId", runtimeID)
+		}
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status = %d: %s", name, w.Code, w.Body.String())
+		}
+		var rows []pricedRow
+		if err := json.NewDecoder(w.Body).Decode(&rows); err != nil {
+			t.Fatalf("decode %s: %v", name, err)
+		}
+		assertPricingDates(name, rows)
+	}
+
+	call("runtime daily", testHandler.GetRuntimeUsage, "/api/runtimes/"+runtimeID+"/usage?days=365&tz=Asia/Shanghai", true)
+	call("runtime by-agent", testHandler.GetRuntimeUsageByAgent, "/api/runtimes/"+runtimeID+"/usage/by-agent?days=365&tz=Asia/Shanghai", true)
+	call("runtime by-hour", testHandler.GetRuntimeUsageByHour, "/api/runtimes/"+runtimeID+"/usage/by-hour?days=365&tz=Asia/Shanghai", true)
+	call("dashboard daily", testHandler.GetDashboardUsageDaily, "/api/dashboard/usage/daily?days=365&tz=Asia/Shanghai", false)
+	call("dashboard by-agent", testHandler.GetDashboardUsageByAgent, "/api/dashboard/usage/by-agent?days=365&tz=Asia/Shanghai", false)
+}
+
 // TestListRuntimeUsageBucketsByViewerTimezone proves the runtime trend reads
 // bucket the day boundary in the VIEWER's tz (the argument passed to
 // listRuntimeUsage). The viewer tz is Asia/Shanghai; assertions only pass if
@@ -472,5 +590,68 @@ func TestRuntimeHeatmapEndpointsUseViewerTZ(t *testing.T) {
 				t.Fatalf("%s: expected 200, got %d: %s", c.name, w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// TestRuntimeUsageByAgentUsesExactWindow pins the by-agent cutoff to exactly
+// `days` calendar days. The runtime detail page shows this rollup beside KPIs
+// the client trims to `-(days-1)`; the rollup carries only a UTC pricing_date,
+// so the client cannot trim it the same way and the server must close the
+// window itself. At days=1 the N+1 headroom the date-bucketed series keep
+// would make "Cost by agent" cover today AND yesterday. Sibling of
+// TestDashboardPerAgentRollupsUseExactWindow.
+func TestRuntimeUsageByAgentUsesExactWindow(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	var runtimeID, agentID string
+	dbfx.QueryRow(t, `SELECT id FROM agent_runtime WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&runtimeID)
+	dbfx.QueryRow(t, `SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID)
+	issueID := dbfx.Issue(t, "by-agent exact window test")
+
+	// Pin the clock the cutoff reads so the fixtures below are placed
+	// relative to the same instant the handler computes "start of today" from.
+	now := pinDayWindowClock(t, time.Now().UTC())
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	const windowModel = "by-agent-exact-window-model"
+	dbfx.Cleanup(t, `DELETE FROM task_usage WHERE model = $1`, windowModel)
+	seed := func(at time.Time, input int64) {
+		taskID := dbfx.Task(t, agentID, testutil.Cols{
+			"issue_id":   issueID,
+			"runtime_id": runtimeID,
+			"status":     "completed",
+			"created_at": at,
+		})
+		dbfx.Exec(t, `
+			INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, created_at)
+			VALUES ($1, 'exact-window-test', $2, $3, 0, $4)
+		`, taskID, windowModel, input, at)
+	}
+	seed(now, 1000)                             // today
+	seed(startOfToday.Add(-12*time.Hour), 7777) // noon yesterday
+
+	seededTokens := func(days int) int64 {
+		req := newRequest("GET", "/api/runtimes/"+runtimeID+"/usage/by-agent?days="+strconv.Itoa(days)+"&tz=UTC", nil)
+		req = withURLParam(req, "runtimeId", runtimeID)
+		var rows []RuntimeUsageByAgentResponse
+		testutil.Call(t, testHandler.GetRuntimeUsageByAgent, req).Want(http.StatusOK).JSON(&rows)
+		var n int64
+		for _, r := range rows {
+			if r.Model == windowModel {
+				n += r.InputTokens
+			}
+		}
+		return n
+	}
+
+	// days=1 means "today". The rollup must not reach yesterday.
+	if got := seededTokens(1); got != 1000 {
+		t.Errorf("days=1 by-agent: want today's 1000 tokens only, got %d", got)
+	}
+	// days=2 is today plus yesterday, and no further.
+	if got := seededTokens(2); got != 8777 {
+		t.Errorf("days=2 by-agent: want 8777 (today + yesterday), got %d", got)
 	}
 }

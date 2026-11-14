@@ -1,14 +1,23 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { useCustomPricingStore } from "@multica/core/runtimes/custom-pricing-store";
-import type { AgentRuntime, RuntimeUsage } from "@multica/core/types";
+import type {
+  AgentRuntime,
+  RuntimeUsage,
+  RuntimeUsageCoverage,
+} from "@multica/core/types";
 
 import {
   addDaysIso,
   aggregateByDate,
   aggregateByWeek,
   aggregateCostByModel,
+  aggregateCostByOwner,
+  aggregateCostByOwnerModel,
+  NO_OWNER_KEY,
   cacheHitRatePercent,
   collectUnmappedModels,
+  collectActiveCustomPricingModels,
+  aggregateUsageCoverage,
   computeCostInWindow,
   estimateCost,
   estimateCostBreakdown,
@@ -128,6 +137,103 @@ describe("estimateCost", () => {
     expect(cost).toBeCloseTo(11.5, 5);
   });
 
+  it("prices Copilot GPT-5.6 Sol at the promotional rate through 2026-09-03", () => {
+    const cost = estimateCost({
+      ...zeroUsage,
+      provider: "copilot",
+      model: "gpt-5.6-sol",
+      pricing_date: "2026-09-03",
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 1_000_000,
+      cache_write_tokens: 1_000_000,
+    });
+
+    expect(cost).toBeCloseTo(2 + 10 + 0.2 + 2.5, 5);
+  });
+
+  it("prices Copilot GPT-5.6 Sol at the standard rate from 2026-09-04", () => {
+    const cost = estimateCost({
+      ...zeroUsage,
+      provider: "Copilot",
+      model: "gpt-5.6-sol",
+      pricing_date: "2026-09-04",
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 1_000_000,
+      cache_write_tokens: 1_000_000,
+    });
+
+    expect(cost).toBeCloseTo(4 + 20 + 0.4 + 5, 5);
+  });
+
+  it("keeps the OpenAI API price for the same model outside Copilot", () => {
+    const cost = estimateCost({
+      ...zeroUsage,
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      pricing_date: "2026-09-04",
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 1_000_000,
+      cache_write_tokens: 1_000_000,
+    });
+
+    expect(cost).toBeCloseTo(5 + 30 + 0.5 + 6.25, 5);
+  });
+
+  it("uses Copilot Terra and Luna cache-write rates", () => {
+    expect(
+      estimateCost({
+        ...zeroUsage,
+        provider: "copilot",
+        model: "gpt-5.6-terra",
+        pricing_date: "2026-09-04",
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        cache_read_tokens: 1_000_000,
+        cache_write_tokens: 1_000_000,
+      }),
+    ).toBeCloseTo(2 + 12 + 0.2 + 2.5, 5);
+    expect(
+      estimateCost({
+        ...zeroUsage,
+        provider: "copilot",
+        model: "gpt-5.6-luna",
+        pricing_date: "2026-09-04",
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        cache_read_tokens: 1_000_000,
+        cache_write_tokens: 1_000_000,
+      }),
+    ).toBeCloseTo(0.2 + 1.2 + 0.02 + 0.25, 5);
+  });
+
+  it("selects Copilot long-context pricing only from an explicit request-size signal", () => {
+    const base = {
+      ...zeroUsage,
+      provider: "copilot",
+      model: "gpt-5.6-terra",
+      pricing_date: "2026-09-04",
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 1_000_000,
+      cache_write_tokens: 1_000_000,
+    };
+
+    expect(estimateCost({ ...base, request_input_tokens: 272_000 })).toBeCloseTo(
+      2 + 12 + 0.2 + 2.5,
+      5,
+    );
+    expect(estimateCost({ ...base, request_input_tokens: 272_001 })).toBeCloseTo(
+      4 + 18 + 0.4 + 5,
+      5,
+    );
+    // A whole task can aggregate many requests. Its 1M total must not be used
+    // as though one request crossed GitHub's threshold.
+    expect(estimateCost(base)).toBeCloseTo(2 + 12 + 0.2 + 2.5, 5);
+  });
+
   it("strips dated snapshots before resolving (gpt-5-2025-08-07 → gpt-5)", () => {
     const cost = estimateCost({
       ...zeroUsage,
@@ -186,6 +292,47 @@ describe("estimateCost", () => {
       cache_write_tokens: 1_000_000,
     });
     expect(cost).toBeCloseTo(2 + 10 + 0.2 + 2.5, 5);
+  });
+
+  it("prices Copilot-reported Opus 4.8 fast mode at the official 2x premium tier", () => {
+    // GitHub Copilot reports fast-mode usage as `claude-opus-4.8-fast`
+    // (dotted, provider "copilot"). Fast mode is the same model at premium
+    // pricing — $10/$50 per MTok per the official fast-mode doc — with the
+    // standard cache multipliers (0.1x read / 1.25x write) stacking on the
+    // fast base rate.
+    const cost = estimateCost({
+      ...zeroUsage,
+      model: "claude-opus-4.8-fast",
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 1_000_000,
+      cache_write_tokens: 1_000_000,
+    });
+    expect(cost).toBeCloseTo(10 + 50 + 1 + 12.5, 5);
+    expect(isModelPriced("claude-opus-4.8-fast", "copilot")).toBe(true);
+    // Priced bare id → self-resolving, so the by-model row and the unmapped
+    // banner stop showing the provider-qualified `copilot/…` key.
+    expect(
+      collectUnmappedModels([
+        {
+          ...zeroUsage,
+          model: "claude-opus-4.8-fast",
+          provider: "copilot",
+        } as unknown as RuntimeUsage,
+      ]),
+    ).toEqual([]);
+  });
+
+  it("prices Opus 4.7 fast mode at its own 6x premium tier, not the 4.8 rate", () => {
+    // Deprecated upstream (removal 2026-07-24) but historical usage rows
+    // keep flowing through the dashboard; $30/$150 per MTok officially.
+    const cost = estimateCost({
+      ...zeroUsage,
+      model: "claude-opus-4.7-fast",
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+    });
+    expect(cost).toBeCloseTo(30 + 150, 5);
   });
 
   it("prices the provider-prefixed Anthropic form (anthropic/claude-sonnet-4.6)", () => {
@@ -317,14 +464,18 @@ describe("estimateCost", () => {
     ).toBeCloseTo(1.75 + 14, 5);
   });
 
-  it("prices the gpt-5.6 series per OpenAI's official cache-aware rates", () => {
+  it("prices current Codex models per OpenAI's official cache-aware rates", () => {
     // Official announcement rates. 5.6 is the first OpenAI generation to bill
-    // cache writes separately: cacheRead = 0.1x input, cacheWrite = 1.25x
+    // cache writes separately: cacheRead generally = 0.1x input (GPT-6.1
+    // Sol uses 0.05x), cacheWrite = 1.25x
     // input. Cover every model x every token category so a wrong cache rate
     // can't hide behind an input-only assertion. `total` is 1M of each of the
     // four categories priced at its own rate.
     const cases = [
       { model: "gpt-6-astra", input: 10, cacheRead: 1, cacheWrite: 12.5, output: 50, total: 73.5 },
+      { model: "gpt-6.1-sol", input: 2, cacheRead: 0.1, cacheWrite: 2.5, output: 10, total: 14.6 },
+      { model: "gpt-6-sol", input: 2, cacheRead: 0.2, cacheWrite: 2.5, output: 10, total: 14.7 },
+      { model: "gpt-6-luna", input: 0.1, cacheRead: 0.01, cacheWrite: 0.125, output: 0.5, total: 0.735 },
       { model: "gpt-5.6-sol", input: 5, cacheRead: 0.5, cacheWrite: 6.25, output: 30, total: 41.75 },
       { model: "gpt-5.6-terra", input: 2.5, cacheRead: 0.25, cacheWrite: 3.125, output: 15, total: 20.875 },
       { model: "gpt-5.6-luna", input: 1, cacheRead: 0.1, cacheWrite: 1.25, output: 6, total: 8.35 },
@@ -352,6 +503,13 @@ describe("estimateCost", () => {
           output_tokens: 1_000_000,
         }),
       ).toBeCloseTo(c.total, 5);
+    }
+  });
+
+  it("resolves current Codex routing prefixes and context tags", () => {
+    for (const model of ["openai:gpt-6.1-sol", "openai/gpt-6.1-sol", "gpt-6.1-sol[1m]"]) {
+      expect(isModelPriced(model, "codex")).toBe(true);
+      expect(estimateCost({ ...zeroUsage, provider: "codex", model, cache_read_tokens: 1_000_000 })).toBeCloseTo(0.1, 5);
     }
   });
 
@@ -383,6 +541,10 @@ describe("estimateCost", () => {
     expect(isModelPriced("gpt-5-6-sol")).toBe(false);
     expect(isModelPriced("gpt-6-astra")).toBe(true);
     expect(isModelPriced("gpt-6-astra-pro")).toBe(false);
+    expect(isModelPriced("gpt-6.1-sol-pro")).toBe(false);
+    expect(isModelPriced("gpt-6-1-sol")).toBe(false);
+    expect(isModelPriced("gpt-6-sol-high")).toBe(false);
+    expect(isModelPriced("gpt-6-luna-pro")).toBe(false);
     expect(
       estimateCost({
         ...zeroUsage,
@@ -1034,6 +1196,72 @@ describe("user-supplied custom pricing", () => {
     ).toBeCloseTo(3, 5); // maintained input rate, not the 999 override
   });
 
+  it("reports only custom prices that are active in the selected rows", () => {
+    useCustomPricingStore.getState().setCustomPricing("acme/custom-model", {
+      input: 1,
+      output: 2,
+      cacheRead: 0.1,
+      cacheWrite: 1,
+    });
+    useCustomPricingStore.getState().setCustomPricing("unused/model", {
+      input: 1,
+      output: 2,
+      cacheRead: 0.1,
+      cacheWrite: 1,
+    });
+    useCustomPricingStore.getState().setCustomPricing("claude-sonnet-4-6", {
+      input: 999,
+      output: 999,
+      cacheRead: 999,
+      cacheWrite: 999,
+    });
+
+    expect(
+      collectActiveCustomPricingModels([
+        {
+          ...zeroUsage,
+          provider: "acme",
+          model: "custom-model",
+          input_tokens: 1,
+        },
+        {
+          ...zeroUsage,
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          input_tokens: 1,
+        },
+      ]),
+    ).toEqual(["acme/custom-model"]);
+  });
+
+  it("does not count a custom price as active when nothing was estimated with it", () => {
+    useCustomPricingStore.getState().setCustomPricing("acme/custom-model", {
+      input: 1,
+      output: 2,
+      cacheRead: 0.1,
+      cacheWrite: 1,
+    });
+
+    expect(
+      collectActiveCustomPricingModels([
+        // Provider-priced in full: estimateCost never consults the override.
+        {
+          ...zeroUsage,
+          provider: "acme",
+          model: "custom-model",
+          input_tokens: 5_000,
+          cost_usd_ticks: 1_500,
+          uncosted_input_tokens: 0,
+          uncosted_output_tokens: 0,
+          uncosted_cache_read_tokens: 0,
+          uncosted_cache_write_tokens: 0,
+        },
+        // No tokens at all: nothing to price.
+        { ...zeroUsage, provider: "acme", model: "custom-model" },
+      ]),
+    ).toEqual([]);
+  });
+
   it("falls back to a stripped dated snapshot in the custom store", () => {
     useCustomPricingStore.getState().setCustomPricing("brand-new-model", {
       input: 2,
@@ -1163,6 +1391,161 @@ describe("user-supplied custom pricing", () => {
   });
 });
 
+describe("aggregateCostByOwner", () => {
+  // Owner resolution only needs id + owner_id from the agent list; the
+  // aggregate function's param is typed on that Pick so the fixtures stay
+  // honest about what the fold actually reads.
+  const agents = [
+    { id: "a-1", owner_id: "u-1" },
+    { id: "a-2", owner_id: "u-1" },
+    { id: "a-3", owner_id: null },
+  ];
+
+  function byAgentRow(agentId: string, inputTokens: number) {
+    return {
+      agent_id: agentId,
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      ...zeroUsage,
+      input_tokens: inputTokens,
+      task_count: 1,
+    };
+  }
+
+  it("returns an empty list for no rows", () => {
+    expect(aggregateCostByOwner([], agents)).toEqual([]);
+  });
+
+  it("folds rows from multiple agents of the same owner into one row", () => {
+    const rows = [byAgentRow("a-1", 1_000_000), byAgentRow("a-2", 1_000_000)];
+    const byOwner = aggregateCostByOwner(rows, agents);
+    expect(byOwner).toHaveLength(1);
+    expect(byOwner[0]?.key).toBe("u-1");
+    expect(byOwner[0]?.tokens).toBe(2_000_000);
+    // claude-sonnet-4-6 input is $3/M → two 1M-input agents = $6.
+    expect(byOwner[0]?.cost).toBeCloseTo(6, 5);
+    expect(byOwner[0]?.taskCount).toBe(2);
+  });
+
+  it("buckets ownerless agents under NO_OWNER_KEY", () => {
+    const rows = [byAgentRow("a-3", 1_000_000)];
+    const byOwner = aggregateCostByOwner(rows, agents);
+    expect(byOwner).toHaveLength(1);
+    expect(byOwner[0]?.key).toBe(NO_OWNER_KEY);
+    expect(byOwner[0]?.cost).toBeCloseTo(3, 5);
+  });
+
+  it("treats an empty-string owner_id as ownerless", () => {
+    // listAgents is not zod-parsed, so defend against "" arriving where the
+    // Go server would normally send null — it must not mint a phantom
+    // member bucket keyed on "".
+    const rows = [byAgentRow("a-empty", 1_000_000)];
+    const byOwner = aggregateCostByOwner(
+        rows,
+      [{ id: "a-empty", owner_id: "" }],
+    );
+    expect(byOwner).toHaveLength(1);
+    expect(byOwner[0]?.key).toBe(NO_OWNER_KEY);
+  });
+
+  it("buckets rows from deleted agents under NO_OWNER_KEY instead of dropping them", () => {
+    // The server keeps usage rows for agents that were later deleted; those
+    // rows have no match in the workspace agent list and must not vanish
+    // from the cost breakdown (the #4640 lesson upstream).
+    const rows = [byAgentRow("a-gone", 1_000_000), byAgentRow("a-3", 1_000_000)];
+    const byOwner = aggregateCostByOwner(rows, agents);
+    expect(byOwner).toHaveLength(1);
+    expect(byOwner[0]?.key).toBe(NO_OWNER_KEY);
+    expect(byOwner[0]?.tokens).toBe(2_000_000);
+    expect(byOwner[0]?.taskCount).toBe(2);
+  });
+
+  it("sorts owners by cost desc", () => {
+    const rows = [byAgentRow("a-3", 1_000_000), byAgentRow("a-1", 3_000_000)];
+    const byOwner = aggregateCostByOwner(rows, agents);
+    expect(byOwner.map((r) => r.key)).toEqual(["u-1", NO_OWNER_KEY]);
+  });
+});
+
+describe("aggregateCostByOwnerModel", () => {
+  const agents = [
+    { id: "a-1", owner_id: "u-1" },
+    { id: "a-2", owner_id: "u-1" },
+    { id: "a-3", owner_id: null },
+  ];
+
+  function byAgentRow(
+    agentId: string,
+    model: string,
+    inputTokens: number,
+    provider = "anthropic",
+  ) {
+    return {
+      agent_id: agentId,
+      provider,
+      model,
+      ...zeroUsage,
+      input_tokens: inputTokens,
+      task_count: 1,
+    };
+  }
+
+  it("returns an empty map for no rows", () => {
+    expect(aggregateCostByOwnerModel([], agents).size).toBe(0);
+  });
+
+  it("folds the same model across an owner's agents into one model row", () => {
+    const rows = [
+      byAgentRow("a-1", "claude-sonnet-4-6", 1_000_000),
+      byAgentRow("a-2", "claude-sonnet-4-6", 1_000_000),
+    ];
+    const models = aggregateCostByOwnerModel(rows, agents).get("u-1");
+    expect(models).toHaveLength(1);
+    expect(models?.[0]?.key).toBe("claude-sonnet-4-6");
+    expect(models?.[0]?.tokens).toBe(2_000_000);
+    expect(models?.[0]?.cost).toBeCloseTo(6, 5);
+    expect(models?.[0]?.taskCount).toBe(2);
+  });
+
+  it("sorts an owner's models by cost desc and sums to the owner total", () => {
+    const rows = [
+      byAgentRow("a-1", "claude-haiku-4-5", 1_000_000),
+      byAgentRow("a-2", "claude-sonnet-4-6", 1_000_000),
+    ];
+    const models = aggregateCostByOwnerModel(rows, agents).get("u-1") ?? [];
+    expect(models.map((m) => m.key)).toEqual(["claude-sonnet-4-6", "claude-haiku-4-5"]);
+    const owner = aggregateCostByOwner(rows, agents)[0];
+    const sum = models.reduce((acc, m) => acc + m.cost, 0);
+    expect(sum).toBeCloseTo(owner?.cost ?? -1, 5);
+  });
+
+  it("buckets ownerless and deleted agents under NO_OWNER_KEY", () => {
+    const rows = [
+      byAgentRow("a-3", "claude-sonnet-4-6", 1_000_000),
+      byAgentRow("a-gone", "claude-sonnet-4-6", 1_000_000),
+    ];
+    const map = aggregateCostByOwnerModel(rows, agents);
+    expect([...map.keys()]).toEqual([NO_OWNER_KEY]);
+    expect(map.get(NO_OWNER_KEY)?.[0]?.tokens).toBe(2_000_000);
+  });
+
+  it("groups models with the same key the By-model tab uses", () => {
+    // A generic id stays provider-qualified so two providers' "auto" do not
+    // merge; the grouping must match aggregateCostByModel exactly.
+    const rows = [
+      byAgentRow("a-1", "auto", 1_000, "cursor"),
+      byAgentRow("a-1", "auto", 1_000, "copilot"),
+    ];
+    const models = aggregateCostByOwnerModel(rows, agents).get("u-1") ?? [];
+    const byModel = aggregateCostByModel(
+      rows.map((r) => ({ ...r, runtime_id: "r-1", date: "2026-05-01" })),
+    );
+    expect(models.map((m) => m.key).toSorted()).toEqual(
+      byModel.map((m) => m.key).toSorted(),
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Calendar helpers + weekly aggregation. All of these run on YYYY-MM-DD
 // strings (the wire shape of RuntimeUsage.date) and on a runtime-supplied
@@ -1249,12 +1632,43 @@ describe("sliceWindow (timezone-aware)", () => {
       makeUsage("2026-05-19"),
       makeUsage("2026-05-20"),
     ];
+    // 7 calendar days ending today (May 14..20): May 13 is outside.
     const { filtered } = sliceWindow(usage, 7, "Asia/Shanghai");
-    expect(filtered.map((u) => u.date)).toEqual([
-      "2026-05-13",
-      "2026-05-19",
-      "2026-05-20",
-    ]);
+    expect(filtered.map((u) => u.date)).toEqual(["2026-05-19", "2026-05-20"]);
+  });
+
+  it("covers exactly N calendar days, not N+1", () => {
+    vi.setSystemTime(new Date("2026-05-20T12:00:00Z"));
+    const usage = [
+      makeUsage("2026-05-13"),
+      makeUsage("2026-05-14"),
+      makeUsage("2026-05-20"),
+    ];
+    const { filtered, prevFiltered } = sliceWindow(usage, 7, "UTC");
+    expect(filtered.map((u) => u.date)).toEqual(["2026-05-14", "2026-05-20"]);
+    expect(prevFiltered.map((u) => u.date)).toEqual(["2026-05-13"]);
+  });
+
+  it("1d means today only, with yesterday as the prior window", () => {
+    vi.setSystemTime(new Date("2026-05-20T12:00:00Z"));
+    const usage = [
+      makeUsage("2026-05-18"),
+      makeUsage("2026-05-19"),
+      makeUsage("2026-05-20"),
+    ];
+    const { filtered, prevFiltered } = sliceWindow(usage, 1, "UTC");
+    expect(filtered.map((u) => u.date)).toEqual(["2026-05-20"]);
+    expect(prevFiltered.map((u) => u.date)).toEqual(["2026-05-19"]);
+  });
+
+  it("1d follows the viewer's calendar day across the midnight edge", () => {
+    // 23:00 UTC on May 19 is already May 20 in Shanghai: the 1d window must
+    // hold May 20 only, and must not pull in May 19 as "the last 24 hours".
+    vi.setSystemTime(new Date("2026-05-19T23:00:00Z"));
+    const usage = [makeUsage("2026-05-19"), makeUsage("2026-05-20")];
+    const { filtered, prevFiltered } = sliceWindow(usage, 1, "Asia/Shanghai");
+    expect(filtered.map((u) => u.date)).toEqual(["2026-05-20"]);
+    expect(prevFiltered.map((u) => u.date)).toEqual(["2026-05-19"]);
   });
 
   it("returns the immediately prior window of equal length", () => {
@@ -1265,9 +1679,41 @@ describe("sliceWindow (timezone-aware)", () => {
       makeUsage("2026-05-15"),
       makeUsage("2026-05-19"),
     ];
+    // Current: May 13..19. Prior: May 6..12.
     const { filtered, prevFiltered } = sliceWindow(usage, 7, "UTC");
     expect(filtered.map((u) => u.date)).toEqual(["2026-05-15", "2026-05-19"]);
     expect(prevFiltered.map((u) => u.date)).toEqual(["2026-05-08"]);
+  });
+});
+
+describe("aggregateUsageCoverage", () => {
+  function row(
+    date: string,
+    complete: number,
+    outputOnly: number,
+    missing: number,
+  ): RuntimeUsageCoverage {
+    return {
+      date,
+      completed_runs: complete + outputOnly + missing,
+      complete_runs: complete,
+      output_only_runs: outputOnly,
+      missing_runs: missing,
+    };
+  }
+
+  it("sums complete, output-only, and missing completed runs", () => {
+    expect(
+      aggregateUsageCoverage([
+        row("2026-08-27", 2, 3, 4),
+        row("2026-08-28", 5, 6, 7),
+      ]),
+    ).toEqual({
+      completedRuns: 27,
+      completeRuns: 7,
+      outputOnlyRuns: 9,
+      missingRuns: 11,
+    });
   });
 });
 

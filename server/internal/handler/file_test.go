@@ -29,8 +29,7 @@ import (
 )
 
 // createHandlerTestChatSession seeds a chat_session row owned by testUserID
-// targeting the given agent and returns the session UUID. Cleanup runs after
-// the test. Used by attachment / chat tests that need an existing session.
+// targeting the given agent and returns the session UUID.
 func createHandlerTestChatSession(t *testing.T, agentID string) string {
 	t.Helper()
 
@@ -327,6 +326,60 @@ func TestUploadFileResolvesWorkspaceViaSlugHeader(t *testing.T) {
 	}
 }
 
+// TestUploadFileOverridesOfficeContentType is a regression test for the office
+// preview: OOXML files (.docx/.xlsx/.pptx) are ZIP containers, so
+// http.DetectContentType sniffs their bytes as application/zip. The extension
+// override must persist the real office MIME instead, otherwise the preview
+// modal's type label reads "application/zip" for an Excel file.
+func TestUploadFileOverridesOfficeContentType(t *testing.T) {
+	origStorage := testHandler.Storage
+	testHandler.Storage = &mockStorage{}
+	defer func() { testHandler.Storage = origStorage }()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "Sheet.xlsx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ZIP local-file-header magic — what every OOXML file starts with, and what
+	// makes http.DetectContentType return application/zip.
+	part.Write([]byte("PK\x03\x04 fake xlsx bytes"))
+	writer.Close()
+
+	req := httptest.NewRequest("POST", "/api/upload-file", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-User-ID", testUserID)
+	req.Header.Set("X-Workspace-Slug", handlerTestWorkspaceSlug)
+
+	w := httptest.NewRecorder()
+	testHandler.UploadFile(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UploadFile xlsx: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	const wantCT = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	var gotCT string
+	if err := testPool.QueryRow(
+		context.Background(),
+		`SELECT content_type FROM attachment WHERE workspace_id = $1 AND filename = $2`,
+		testWorkspaceID, "Sheet.xlsx",
+	).Scan(&gotCT); err != nil {
+		t.Fatalf("query content_type: %v", err)
+	}
+	if gotCT != wantCT {
+		t.Errorf("stored content_type = %q, want %q (must not be application/zip)", gotCT, wantCT)
+	}
+
+	if _, err := testPool.Exec(
+		context.Background(),
+		`DELETE FROM attachment WHERE workspace_id = $1 AND filename = $2`,
+		testWorkspaceID, "Sheet.xlsx",
+	); err != nil {
+		t.Fatalf("cleanup attachment: %v", err)
+	}
+}
+
 // TestUploadFileResolvesWorkspaceViaIDHeaderStill confirms the legacy path
 // (CLI / daemon clients sending X-Workspace-ID as a UUID) still works after
 // the refactor. Prevents a regression in the CLI/daemon compat branch.
@@ -368,7 +421,7 @@ func TestUploadFileResolvesWorkspaceViaIDHeaderStill(t *testing.T) {
 
 // TestUploadFile_AttachesToChatSession verifies that a multipart upload with
 // a chat_session_id form field creates an attachment row linked to that chat
-// session (chat_message_id remains NULL — it is back-filled on send).
+// session. chat_message_id remains NULL until the message is sent.
 func TestUploadFile_AttachesToChatSession(t *testing.T) {
 	origStorage := testHandler.Storage
 	testHandler.Storage = &mockStorage{}
@@ -418,7 +471,6 @@ func TestUploadFile_AttachesToChatSession(t *testing.T) {
 		t.Fatal("expected non-empty url")
 	}
 
-	// Verify the DB row directly.
 	var dbSession, dbMessage *string
 	if err := testPool.QueryRow(
 		context.Background(),
@@ -440,8 +492,8 @@ func TestUploadFile_AttachesToChatSession(t *testing.T) {
 }
 
 // TestUploadFile_RejectsForeignChatSession verifies a chat_session in another
-// workspace (or owned by another user) is rejected with 403/404, preventing
-// cross-tenant attachment binding.
+// workspace or owned by another user is rejected, preventing cross-tenant
+// attachment binding.
 func TestUploadFile_RejectsForeignChatSession(t *testing.T) {
 	origStorage := testHandler.Storage
 	testHandler.Storage = &mockStorage{}
@@ -451,7 +503,6 @@ func TestUploadFile_RejectsForeignChatSession(t *testing.T) {
 	writer := multipart.NewWriter(&body)
 	part, _ := writer.CreateFormFile("file", "evil.txt")
 	part.Write([]byte("payload"))
-	// Random non-existent UUID.
 	writer.WriteField("chat_session_id", "00000000-0000-0000-0000-0000deadbeef")
 	writer.Close()
 
@@ -682,8 +733,66 @@ func TestAttachmentToResponse_NonCloudFrontUsesDownloadEndpoint(t *testing.T) {
 	if resp.URL != "http://rustfs:9000/test-bucket/private.txt" {
 		t.Fatalf("stored url changed: %q", resp.URL)
 	}
-	if resp.DownloadURL != "/api/attachments/"+id+"/download" {
-		t.Fatalf("download_url = %q, want unified endpoint", resp.DownloadURL)
+	// The download endpoint resolves workspace context from the attachment row
+	// itself (loadAttachmentForDownload), so the URL stays clean — no
+	// workspace_id query param. The preview modal can load it directly through
+	// a media element (<img>/<iframe>/<video>/<audio>) that cannot send the
+	// X-Workspace-Slug header.
+	wantDownload := "/api/attachments/" + id + "/download"
+	if resp.DownloadURL != wantDownload {
+		t.Fatalf("download_url = %q, want %q", resp.DownloadURL, wantDownload)
+	}
+}
+
+// TestDownloadAttachment_MetadataURLBareNavigationPassesMiddleware reproduces
+// the attachment-preview path: a <img src={download_url}> load carries no
+// custom headers (only the session cookie → X-User-ID), so the workspace must
+// be resolvable from the metadata download_url alone. Without the embedded
+// workspace_id this returns 400 "workspace_id or workspace_slug is required".
+func TestDownloadAttachment_MetadataURLBareNavigationPassesMiddleware(t *testing.T) {
+	store := &mockStorage{}
+	origStorage := testHandler.Storage
+	origCfg := testHandler.cfg
+	origSigner := testHandler.CFSigner
+	testHandler.Storage = store
+	testHandler.cfg.AttachmentDownloadMode = "proxy"
+	testHandler.CFSigner = nil
+	t.Cleanup(func() {
+		testHandler.Storage = origStorage
+		testHandler.cfg = origCfg
+		testHandler.CFSigner = origSigner
+	})
+
+	key := "downloads/metadata-nav.txt"
+	body := []byte("metadata download body")
+	store.put(key, body)
+	id := seedAttachmentURL(t, "https://s3.example.com/test-bucket/"+key, "metadata-nav.txt", "text/plain", int64(len(body)))
+
+	att, err := testHandler.Queries.GetAttachment(context.Background(), db.GetAttachmentParams{
+		ID:          parseUUID(id),
+		WorkspaceID: parseUUID(testWorkspaceID),
+	})
+	if err != nil {
+		t.Fatalf("GetAttachment: %v", err)
+	}
+	// Signed mode is what a bare navigation needs: it pre-binds authorization
+	// into DownloadURL, which is the whole point of this test.
+	downloadURL := testHandler.attachmentToResponse(att, attachmentURLModeSigned).DownloadURL
+
+	req := httptest.NewRequest("GET", downloadURL, nil)
+	req.Header.Set("X-User-ID", testUserID)
+	w := httptest.NewRecorder()
+
+	newDownloadRouter().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != string(body) {
+		t.Fatalf("body = %q, want %q", got, body)
+	}
+	if req.Header.Get("X-Workspace-ID") != "" || req.Header.Get("X-Workspace-Slug") != "" {
+		t.Fatalf("metadata navigation test must not set custom workspace headers")
 	}
 }
 
@@ -1637,7 +1746,8 @@ func TestGetAttachmentContent_NotFound(t *testing.T) {
 
 // isTextPreviewable is the whitelist linkpin between the proxy and the
 // client-side dispatcher. Regress against the most common content types so
-// drifting one of the lists alone fails loud.
+// drifting one of the lists alone fails loud. The same table runs against the
+// client in packages/views/editor/utils/preview.test.ts — change both.
 func TestIsTextPreviewable(t *testing.T) {
 	t.Helper()
 	cases := []struct {
@@ -1651,6 +1761,12 @@ func TestIsTextPreviewable(t *testing.T) {
 		{"plain text", "text/plain", "log.txt", true},
 		{"json by mime", "application/json", "data.json", true},
 		{"yaml by ext", "application/octet-stream", "config.yml", true},
+		{"csv by ext", "application/octet-stream", "report.csv", true},
+		{"tsv by ext", "application/octet-stream", "export.tsv", true},
+		{"json lines by ext", "application/octet-stream", "events.jsonl", true},
+		{"ndjson by ext", "application/octet-stream", "events.ndjson", true},
+		{"ndjson by mime", "application/x-ndjson", "events", true},
+		{"log by ext", "application/octet-stream", "server.log", true},
 		{"go source", "text/plain", "main.go", true},
 		{"typescript", "application/octet-stream", "index.ts", true},
 		{"html", "text/html", "page.html", true},

@@ -475,8 +475,6 @@
       "workspace_notes_placeholder": "Ajoutez le contexte que cet agent doit toujours avoir.\n\n# Exemple\nNotre dépôt principal est github.com/acme/platform.\nRédige les tâches en anglais même quand nous discutons en français.\nNous ne déployons pas le vendredi."
     },
     "env": {
-      "intro_readonly": "Injectées dans le processus de l'agent au lancement. Seuls les propriétaires et administrateurs de l'espace de travail peuvent lire ou modifier les valeurs ; chaque affichage et chaque modification sont consignés dans le journal d'audit de l'espace de travail.",
-      "empty_readonly": "Aucune variable d'environnement configurée.",
       "intro_prefix": "Injectées dans le processus de l'agent au lancement (par exemple ",
       "intro_separator": ", ",
       "intro_suffix": ").",
@@ -500,6 +498,7 @@
       "not_revealed_title_other": "{{count}} variables configurées",
       "not_revealed_empty": "Aucune variable d'environnement configurée.",
       "not_revealed_hint": "Les valeurs restent masquées jusqu'à ce que vous les affichiez. Chaque affichage et chaque modification sont consignés dans le journal d'audit de l'espace de travail.",
+      "no_permission_hint": "Seul le propriétaire de l'agent ou un propriétaire/administrateur de l'espace de travail peut afficher et modifier ces valeurs.",
       "reveal_action": "Afficher et modifier",
       "revealing": "Affichage…",
       "reveal_failed_toast": "Échec du chargement des valeurs d'environnement",
@@ -834,6 +833,11 @@
     "copy_all": "Tout copier",
     "copy_filtered": "Copier la sélection filtrée",
     "copied": "Copié",
+    "load_pending": "Chargement de la transcription complète. Le contenu actuel peut être incomplet.",
+    "load_incomplete": "Impossible de charger la transcription complète. Le contenu actuel peut être incomplet.",
+    "retry": "Réessayer",
+    "diff_unified": "Unifié",
+    "diff_split": "Côte à côte",
     "waiting_events": "En attente d'événements...",
     "no_data": "Aucune donnée d'exécution enregistrée.",
     "sort_chronological": "Plus anciens d'abord",
@@ -850,6 +854,7 @@
     "status_cancelled": "Annulée",
     "status_waiting": "En attente",
     "trigger_initial": "Exécution initiale",
+    "trigger_text": "Déclencheur",
     "trigger_comment": "Depuis un commentaire",
     "trigger_autopilot": "Automatisation",
     "trigger_retry": "Relance",
@@ -910,7 +915,8 @@
     "tool_kind_command": "Commandes",
     "tool_kind_write": "Modifications",
     "tool_kind_read": "Lectures",
-    "tool_kind_misc": "Autres"
+    "tool_kind_misc": "Autres",
+    "trigger_wakeup": "Réveil"
   },
   "task_failure": {
     "cancelled_by_system": "Annulée par le système",
@@ -929,6 +935,7 @@
       "environment_prepare_failed": "Impossible de préparer l'environnement d'exécution",
       "runtime_access_denied": "Cet agent ne peut pas s'exécuter sur son runtime privé et n'a donc pas pu répondre. Passez le runtime en public, ou réassociez/copiez l'agent vers un runtime que son propriétaire peut utiliser.",
       "invalid_task_identity": "Identité d'exécution incohérente",
+      "budget_exceeded": "Budget de coût du runtime atteint",
       "agent_error_provider_auth_or_access": "Échec de l'authentification auprès du fournisseur",
       "agent_error_provider_quota_limit": "Quota du fournisseur épuisé",
       "agent_error_provider_capacity_or_rate_limit": "Limite de requêtes du fournisseur atteinte",

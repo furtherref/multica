@@ -1,4 +1,4 @@
-import { githubUrl, discordUrl } from "../components/shared";
+import { githubUrl } from "../components/shared";
 import type { LandingDict } from "./types";
 
 export function createZhDict(
@@ -23,7 +23,7 @@ export function createZhDict(
     headlineLine2: "\u4e0d\u662f\u4eba\u7c7b\u3002",
     subheading:
       "Multica 是一个源码公开的平台，\u5c06\u7f16\u7801 智能体 \u53d8\u6210\u771f\u6b63\u7684\u961f\u53cb\u3002\u5206\u914d\u4efb\u52a1\u3001\u8ddf\u8e2a\u8fdb\u5ea6\u3001\u79ef\u7d2f\u6280\u80fd\u2014\u2014\u5728\u4e00\u4e2a\u5730\u65b9\u7ba1\u7406\u4f60\u7684\u4eba\u7c7b + 智能体 \u56e2\u961f\u3002",
-    cta: "免费开始",
+    cta: "登录",
     downloadDesktop: "下载桌面端",
     talkToSales: "联系商务",
     worksWith: "支持 20+ 种 AI 编程工具",
@@ -126,15 +126,14 @@ export function createZhDict(
   },
 
   howItWorks: {
-    label: "\u5f00\u59cb\u4f7f\u7528",
+    label: "接入流程",
     headlineMain: "\u62db\u52df\u4f60\u7684\u7b2c\u4e00\u4e2a AI \u5458\u5de5",
     headlineFaded: "\u53ea\u9700\u4e00\u5c0f\u65f6\u3002",
     steps: [
       {
-        title: allowSignup ? "注册并创建您的工作空间" : "登录到您的工作空间",
-        description: allowSignup
-          ? "输入您的邮箱，验证代码后即可使用。工作空间会自动创建——无需设置向导或配置表单。"
-          : "输入您的邮箱，验证代码后即可登录到您的工作空间——无需设置向导或配置表单。",
+        title: "登录到您的工作空间",
+        description:
+          "输入您的邮箱，验证代码后即可登录到您的工作空间——无需设置向导或配置表单。",
       },
       {
         title: "\u5b89\u88c5 CLI \u5e76\u8fde\u63a5\u4f60\u7684\u673a\u5668",
@@ -152,7 +151,7 @@ export function createZhDict(
           "从指派人下拉菜单中选择你的 智能体——就像指派给同事一样。task 自动入队、领取、执行。实时观看进度。",
       },
     ],
-    cta: "\u5f00\u59cb\u4f7f\u7528",
+    cta: "登录",
     ctaGithub: "\u5728 GitHub \u4e0a\u67e5\u770b",
     ctaDocs: "\u9605\u8bfb\u6587\u6863",
   },
@@ -235,7 +234,7 @@ export function createZhDict(
   footer: {
     tagline:
       "\u4eba\u7c7b + 智能体 团队的项目管理。源码公开、可自托管、\u4e3a\u672a\u6765\u7684\u5de5\u4f5c\u65b9\u5f0f\u800c\u5efa\u3002",
-    cta: "\u5f00\u59cb\u4f7f\u7528",
+    cta: "登录",
     groups: {
       product: {
         label: "\u4ea7\u54c1",
@@ -252,8 +251,6 @@ export function createZhDict(
         links: [
           { label: "\u6587\u6863", href: docsHref },
           { label: "API", href: githubUrl },
-          { label: "X (Twitter)", href: "https://x.com/MulticaAI" },
-          { label: "Discord", href: discordUrl },
         ],
       },
       company: {
@@ -300,7 +297,6 @@ export function createZhDict(
       contacts: [
         { label: "商业授权与合作", linkLabel: "联系商务", href: "/contact-sales" },
         { label: "授权规则", linkLabel: "授权说明", href: "/licensing" },
-        { label: "社区与支持", linkLabel: "Discord", href: discordUrl },
         { label: "源代码与问题反馈", linkLabel: "GitHub", href: githubUrl },
       ],
     },
@@ -378,7 +374,7 @@ export function createZhDict(
       {
         heading: "获取商业授权",
         paragraphs: [
-          "通过[联系商务](/contact-sales)告诉我们你的使用场景，我们会在三个工作日内回复。不确定自己的情况是否需要授权？可以在 [Discord](" + discordUrl + ") 上问我们，也可以通过同一个表单咨询。",
+          "通过[联系商务](/contact-sales)告诉我们你的使用场景，我们会在三个工作日内回复。不确定自己的情况是否需要授权？可以通过同一个表单咨询。",
         ],
       },
     ],
@@ -507,6 +503,70 @@ export function createZhDict(
       fixes: "问题修复",
     },
     entries: [
+      {
+        version: "0.6.1",
+        date: "2026-10-01",
+        title: "运行累计花费曲线、Issues 列表更快、工作区切换更稳",
+        changes: [],
+        features: [
+          "运行图表会跟着鼠标走，运行之间的空闲时段也看得到。",
+          "Issue 侧栏用一条曲线显示这个 Issue 的累计花费。",
+          "命令行可以把 Issue 标记为重复，并保留与原 Issue 的关联。",
+        ],
+        improvements: [
+          "运行来去时 Issues 列表更稳，「工作中的智能体」筛选也更快。",
+        ],
+        fixes: [
+          "Codex 的模型列表里能选到 GPT-6.1 Sol，花费也按当前价格统计。",
+          "用量额度用完时会显示为服务商限额，不再提示凭据有问题。",
+          "关掉浮动聊天窗口后，快捷键照常可用，草稿也还在。",
+          "Windows 上工作区目录换过位置，仓库检出也能正常完成。",
+          "从聊天里切换工作区会停在目标工作区，会话和项目的选择也保留。",
+        ],
+      },
+      {
+        version: "0.6.0",
+        date: "2026-09-28",
+        title: "条件唤醒、搜索秒回、交付物浏览、全新设置页面",
+        changes: [],
+        features: [
+          "Issue 可以在状态变化、子 Issue 完成或 PR 变动时唤醒智能体。",
+          "唤醒可以设置到期时间，也能看到每次检查的记录。",
+          "Issue 和项目搜索在网页端和桌面端秒回结果。",
+          "回复运行中的智能体时，可以追加到当前运行、排队新运行或重启它。",
+          "追加的回复有没有被智能体收到，现在有回执可看。",
+          "Issue 的交付物集中在一个侧栏里，能看版本和详情。",
+          "附件以网格排列，HTML、Markdown、CSV、JSON、YAML 都能就地预览。",
+          "Mermaid 图会完整显示，可以放大细看，图片也能一键复制。",
+          "Issue 上能看到运行的时间线，以及失败和取消的状态。",
+          "关联的 PR 全部合并后，Issue 会按你设定的方式自动流转。",
+          "在列表旁边就能预览 Issue，不用离开当前页面。",
+          "企业微信的通知会按每个人自己的语言发送。",
+          "模型里可以选到 Claude Opus 5.5 和 GPT-6 Sol/Luna。",
+          "挑选仓库时能看到它的项目描述。",
+        ],
+        improvements: [
+          "设置按个人、工作区和当前设备重新分好，还能直接搜索。",
+          "智能体的任务历史可以翻页，并会汇总花掉的时间。",
+          "桌面端的返回、前进和侧栏开关都收到了左侧。",
+          "MCP 页面能看到每个服务分配给了多少智能体。",
+        ],
+        fixes: [
+          "保存过的模型设置不会再被还原。",
+          "Hermes 的任务会按你选的设置运行。",
+          "MCP 工具的输入参数会完整显示。",
+          "Telegram 里引用的附件会和你的消息一起交给智能体。",
+          "企业微信不会再对同一条消息回复两次。",
+          "不同插件里同名的工具不会再互相顶掉。",
+          "用 Issue 标识打开的链接会展开对应的评论。",
+          "移动端打开项目会直接看到它的 Issue 列表。",
+          "全选之后，选中的 Issue 会被全部删除。",
+          "运行状态显示得更准确。",
+          "保存视图后会沿用你输入的名字。",
+          "唤醒菜单的选项显示正常。",
+          "PR 那一行会完整显示改动量，检查进行中时转圈提示。",
+        ],
+      },
       {
         version: "0.5.3",
         date: "2026-09-24",
@@ -2304,7 +2364,6 @@ export function createZhDict(
         features: [
           "Lark 里的话题消息现在会回到原话题中，团队讨论更容易保持上下文",
           "小队负责人现在可以在成员列表里看到成员技能，分配任务时更容易选对人",
-          "Discord 入口已加入官网页脚、帮助菜单、README，以及可关闭的应用侧边栏卡片",
         ],
         improvements: [
           "任务顶部的智能体活动状态现在悬停即可展开，更方便快速查看当前进展",

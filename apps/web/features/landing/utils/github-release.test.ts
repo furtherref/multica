@@ -37,7 +37,7 @@ function releasePayload(overrides: {
   return {
     tag_name: overrides.tag,
     published_at: "2026-08-17T10:00:00Z",
-    html_url: `https://github.com/multica-ai/multica/releases/tag/${overrides.tag}`,
+    html_url: `https://github.com/furtherref/multica/releases/tag/${overrides.tag}`,
     prerelease: overrides.prerelease ?? false,
     draft: overrides.draft ?? false,
     assets: overrides.assets ?? [],

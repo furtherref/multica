@@ -19,6 +19,16 @@
     "toast_deleted": "已删除任务",
     "toast_delete_failed": "删除任务失败"
   },
+  "issue_status_confirm": {
+    "title": "确认变更 issue 状态？",
+    "description_cancelled": "该 issue 将被标记为已取消。取消操作可保留当前状态。",
+    "description_archive": "该 issue 将被移动到已归档。取消操作可保留当前状态。",
+    "description_cancelled_batch": "{{count}} 个已选 issue 将被标记为已取消。取消操作可保留当前状态。",
+    "description_archive_batch": "{{count}} 个已选 issue 将被移动到已归档。取消操作可保留当前状态。",
+    "cancel": "取消",
+    "confirm": "确认",
+    "confirming": "确认中..."
+  },
   "feedback": {
     "title": "反馈",
     "placeholder": "聊聊你的体验、遇到的 bug，或想看到的功能...",
@@ -149,6 +159,7 @@
     "description_placeholder": "添加描述...",
     "more_options_aria": "更多选项",
     "title_required": "请输入标题后再创建",
+    "project_required": "请选择项目后再创建",
     "submit": "创建任务",
     "submitting": "创建中...",
     "toast_created": "已创建任务",
@@ -209,6 +220,19 @@
     "customize_fields": "自定义字段...",
     "custom_properties": "自定义属性",
     "remove_parent": "移除父级",
+    "template": {
+      "trigger": "套用 Issue 模板",
+      "title": "选择模板",
+      "description": "选择后会把模板的 issue 标题和内容带入当前表单。",
+      "empty_title": "还没有 Issue模板",
+      "empty_description": "先到配置里的 Issue模板 页面创建模板。",
+      "manage": "前往 Issue模板",
+      "apply_failed": "套用 Issue模板 失败",
+      "confirm_title": "覆盖当前标题和内容？",
+      "confirm_description": "套用模板会替换当前已输入的 issue 标题和内容，其他字段不会改变。",
+      "confirm_cancel": "取消",
+      "confirm_apply": "确认覆盖"
+    },
     "set_parent_picker": {
       "title": "设置父任务",
       "description": "搜索一个任务设为父级"

@@ -244,25 +244,6 @@ func TestRenewSessionToken_MintsSessionIDForLegacyToken(t *testing.T) {
 	}
 }
 
-// Renewal is the one place a live session's lifetime is decided after login,
-// so the disabled-user check has to live there too — otherwise disabling an
-// abusive account leaves their session renewing itself forever.
-func TestRenewSessionToken_RejectsDisabledUser(t *testing.T) {
-	// One of the ids on the standing emergency denylist.
-	var disabledID string
-	for id := range temporarilyDisabledUserIDs {
-		disabledID = id
-		break
-	}
-	claims := sessionClaims(t, time.Now().Add(time.Hour), "sid-1")
-	claims["sub"] = disabledID
-
-	_, _, err := RenewSessionToken(claims)
-	if err != ErrTemporarilyDisabledUser {
-		t.Fatalf("err = %v, want ErrTemporarilyDisabledUser", err)
-	}
-}
-
 func TestRenewSessionToken_RejectsClaimsWithoutSubject(t *testing.T) {
 	_, _, err := RenewSessionToken(jwt.MapClaims{"email": "nobody@multica.ai"})
 	if err != ErrNotSessionToken {

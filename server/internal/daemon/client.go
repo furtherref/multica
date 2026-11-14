@@ -213,6 +213,7 @@ func daemonCommonCapabilities() []string {
 		protocol.DaemonCapabilityRPCV1,
 		protocol.DaemonCapabilityPlatformSkillV1,
 		protocol.DaemonCapabilityCheckoutKeepsWorkV1,
+		protocol.DaemonCapabilityJoinedWakeupsV1,
 	}
 }
 
@@ -614,6 +615,18 @@ type TaskMessageData struct {
 func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages []TaskMessageData) error {
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/messages", taskID), map[string]any{
 		"messages": messages,
+	}, nil)
+}
+
+// ReportTaskActivity broadcasts a transient, non-persisted activity hint
+// (e.g. "reconnecting") for a running task so the UI can show it in place.
+// afterSeq is the current message-sequence frontier, used by the frontend to
+// drop the hint if a later message has already arrived (the activity POST is
+// async and can be reordered behind a batched message report).
+func (c *Client) ReportTaskActivity(ctx context.Context, taskID, activity string, afterSeq int) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/activity", taskID), map[string]any{
+		"activity":  activity,
+		"after_seq": afterSeq,
 	}, nil)
 }
 

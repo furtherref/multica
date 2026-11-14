@@ -11,8 +11,8 @@
  *     are compared structurally so it'd *appear* to work, but binding cache
  *     mutation to a foreign key factory invites silent drift the moment
  *     either side adjusts its key shape.
- *   - Mobile has a smaller cache surface (no taskMessages live timeline in
- *     v1, no per-user pending-tasks aggregate).
+ *   - Mobile has a smaller cache surface (no per-user pending-tasks aggregate).
+ *     Task transcript scope and cache writes live in task-message-scopes.ts.
  *
  * Cache shapes (the design contract):
  *   - chatKeys.sessions(wsId)       → ChatSession[]
@@ -31,7 +31,6 @@ import type {
   ChatQuickActionsPayload,
   ChatSession,
   ChatSessionDeletedPayload,
-  TaskMessagePayload,
   TaskQueuedPayload,
   TaskDispatchPayload,
 } from "@multica/core/types";
@@ -294,36 +293,4 @@ export function seedAcceptedPendingTask(
     },
   );
   invalidatePendingTask(qc, payload.chat_session_id);
-}
-
-// =====================================================
-// Task messages (live timeline, keyed by taskId)
-// =====================================================
-
-/**
- * Append a `task:message` payload into the per-task timeline cache.
- *
- * - De-dupes on `seq` (server may re-emit on flaky network).
- * - Sorts by `seq` ASC after insert so reordered late-arriving rows still
- *   render in execution order.
- * - Creates the cache entry on first event (empty default), so the timeline
- *   is visible even before the user opens the assistant bubble that drives
- *   the lazy fetch.
- *
- * Mirrors `packages/core/realtime/use-realtime-sync.ts` ~675-689 (web's
- * single global handler). Mobile attaches per-session via
- * `use-chat-session-realtime` instead — see the WS strategy note in
- * `apps/mobile/CLAUDE.md` for why mobile prefers per-record mounts.
- */
-export function appendTaskMessage(
-  qc: QueryClient,
-  payload: TaskMessagePayload,
-) {
-  qc.setQueryData<TaskMessagePayload[]>(
-    chatKeys.taskMessages(payload.task_id),
-    (old = []) => {
-      if (old.some((m) => m.seq === payload.seq)) return old;
-      return [...old, payload].sort((a, b) => a.seq - b.seq);
-    },
-  );
 }

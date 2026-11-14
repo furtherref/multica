@@ -34,6 +34,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/llm"
+	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -528,7 +529,20 @@ func main() {
 			switch relayMode {
 			case "legacy":
 				relayReadRedis = newNamedRedisClient(opts, "realtime-read")
-				relay = realtime.NewRedisRelayWithClientsAndConfig(hub, relayWriteRedis, relayReadRedis, relayConfig.RetentionConfig())
+				legacy := realtime.NewRedisRelayWithClientsAndConfig(hub, relayWriteRedis, relayReadRedis, relayConfig.RetentionConfig())
+				// Suspension revocations (daemon:runtimes_revoked) must reach
+				// every node in EVERY relay mode. They publish to the FIXED
+				// daemon control scope, which any relay carrying a daemon
+				// deliverer consumes unconditionally (see RedisRelay.Start) —
+				// per-runtime wakeup shard streams still have no legacy
+				// consumer, so wakeup hints remain best-effort local-only in
+				// this mode, exactly as before.
+				legacy.SetDaemonRuntimeDeliverer(daemonHub)
+				relay = legacy
+				// Control-only: wakeup hints stay local (publishing them
+				// would grow one never-consumed stream key per task — the
+				// legacy relay only consumes the fixed control scope).
+				daemonWakeup = daemonws.NewControlOnlyRelayNotifier(daemonHub, legacy)
 				slog.Info("daemon websocket wakeup: Redis fanout disabled in legacy realtime relay mode")
 			case "dual":
 				shardedReadRedis = newNamedRedisClient(opts, "realtime-read-sharded")
@@ -608,7 +622,9 @@ func main() {
 	defer analyticsClient.Close()
 
 	queries := db.New(pool)
-	hub.SetAuthorizer(newScopeAuthorizer(queries))
+	scopeAuthorizer := newScopeAuthorizer(queries)
+	hub.SetAuthorizer(scopeAuthorizer)
+	hub.SetVisibleAgentResolver(scopeAuthorizer)
 	// Order matters: subscriber listeners must register BEFORE notification listeners.
 	// The notification listener queries the subscriber table to determine recipients,
 	// so subscribers must be written first within the same synchronous event dispatch.
@@ -702,6 +718,34 @@ func main() {
 	// create a second wrapper around the same primary pool.
 	h.ReadSelector = dbreader.New(h.Queries, replicaQueries, readRecorder)
 	h.PRRefresh.SetReadSelector(h.ReadSelector)
+
+	// Cross-node suspension kick: the router wires h.DisconnectUser to the
+	// LOCAL hub, but in a multi-node deployment a suspended user's sockets
+	// can live on other nodes. Publishing the suspended control frame
+	// through the relay reaches every node, and each node's fanoutUser
+	// recognizes it and evicts SERVER-SIDE (see realtime.Hub.fanoutUser) —
+	// enforcement does not depend on the client honoring auth_error. The
+	// publish error is RETURNED so the suspend endpoint refuses to report
+	// success when remote nodes were never told (the kick is re-derivable,
+	// so the admin's idempotent retry re-runs it).
+	h.DisconnectUser = func(userID string) error {
+		hub.DisconnectUser(userID)
+		if relay == nil {
+			return nil
+		}
+		return relay.PublishWithID(
+			realtime.ScopeUser, userID, "",
+			realtime.AccountSuspendedFrame(), ulid.Make().String(),
+		)
+	}
+	// Same story for daemon sockets: the router wires
+	// DisconnectDaemonRuntimes to the LOCAL daemon hub; when the relay
+	// notifier is active, route through it so the revocation also severs
+	// daemon WebSockets held by other nodes (daemonws.Hub interprets the
+	// daemon:runtimes_revoked control frame and evicts locally).
+	if notifier, ok := daemonWakeup.(*daemonws.RelayNotifier); ok {
+		h.DisconnectDaemonRuntimes = notifier.DisconnectRuntimes
+	}
 
 	// Reconciled race recoveries in the batched scheduler reuse the same
 	// daemon:register refresh the sync transition path publishes. Wired before
@@ -825,8 +869,14 @@ func main() {
 	// not fit). Crash recovery, occurrence-level idempotency, lease
 	// theft, and retry are all reused from the manager + sys_cron_executions
 	// — there is no separate goroutine for scheduled Autopilot anymore.
+	if err := schedulerMgr.Register(scheduler.SearchIndexChangePruneJob(queries)); err != nil {
+		slog.Warn("scheduler: failed to register search index change prune job", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.IssueWakeupJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register issue wakeups", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
+		slog.Error("scheduler: register child-done sweep", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)

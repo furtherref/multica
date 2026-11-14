@@ -273,6 +273,9 @@ const (
 	// RuntimeLookupSourceTask covers task analytics context and the usage
 	// provider backfill.
 	RuntimeLookupSourceTask = "task"
+	// RuntimeLookupSourceBudgetNotice is the runtime-owner lookup behind a
+	// runtime cost budget refusal notice.
+	RuntimeLookupSourceBudgetNotice = "budget_notice"
 	// RuntimeLookupSourceOther is the catch-all for an unclassified call site.
 	RuntimeLookupSourceOther = "other"
 )
@@ -306,6 +309,7 @@ func AllRuntimeLookupSources() []string {
 		RuntimeLookupSourceAutopilot,
 		RuntimeLookupSourceSourceContext,
 		RuntimeLookupSourceTask,
+		RuntimeLookupSourceBudgetNotice,
 		RuntimeLookupSourceOther,
 	}
 }

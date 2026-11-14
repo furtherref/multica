@@ -29,10 +29,15 @@ vi.mock("../issues/hooks", () => ({
 vi.mock("../i18n", async () => {
   const editor = (await import("../locales/en/editor.json")).default;
   const chat = (await import("../locales/en/chat.json")).default;
+  const common = (await import("../locales/en/common.json")).default;
+  const bundles: Record<string, Record<string, unknown>> = {
+    chat: chat as Record<string, unknown>,
+    common: common as Record<string, unknown>,
+  };
   return {
     useT: (ns?: string) => ({
       t: (select: (bundle: Record<string, unknown>) => string) =>
-        select((ns === "chat" ? chat : editor) as Record<string, unknown>),
+        select(ns ? (bundles[ns] ?? (editor as Record<string, unknown>)) : (editor as Record<string, unknown>)),
     }),
     useTimeAgo: () => "just now",
   };
@@ -205,8 +210,10 @@ async function expectMermaidRendered(container: HTMLElement) {
   await waitFor(() => {
     expect(mermaidLeaf(container)).not.toBeNull();
   });
+  // Rendered, not still loading: the diagram's sandboxed frame carries the SVG.
   await waitFor(() => {
-    expect(mermaidLeaf(container)?.querySelector("svg")).not.toBeNull();
+    const frame = mermaidLeaf(container)?.querySelector<HTMLIFrameElement>(".mermaid-diagram-frame");
+    expect(frame?.srcdoc).toContain("<svg");
   });
   // Not a plain code block: the fence was upgraded.
   expect(container.querySelector("code.hljs")).toBeNull();

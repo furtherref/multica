@@ -362,8 +362,6 @@
       "workspace_notes_placeholder": "このエージェントが常に知っておくべきことを書きます。\n\n# 例\nメインリポジトリは github.com/acme/platform です。\nチャットが日本語でも、タスクは英語で書いてください。\n金曜日はデプロイしません。"
     },
     "env": {
-      "intro_readonly": "エージェントプロセスの起動時に注入されます。値の読み取りや編集ができるのはワークスペースのオーナーと admin のみで、すべての表示と編集はワークスペースの監査ログに記録されます。",
-      "empty_readonly": "設定された環境変数はありません。",
       "intro_prefix": "エージェントプロセスの起動時に注入されます（例: ",
       "intro_separator": ", ",
       "intro_suffix": "）。",
@@ -386,6 +384,7 @@
       "not_revealed_title_other": "変数 {{count}} 件を設定済み",
       "not_revealed_empty": "設定された環境変数はありません。",
       "not_revealed_hint": "値は表示するまでマスクされます。すべての表示と編集はワークスペースの監査ログに記録されます。",
+      "no_permission_hint": "エージェントのオーナーまたはワークスペースのオーナー / 管理者のみが、これらの値を表示・編集できます。",
       "reveal_action": "表示して編集",
       "revealing": "表示中...",
       "reveal_failed_toast": "環境変数の値を読み込めませんでした",
@@ -717,10 +716,15 @@
     "copy_all": "すべてコピー",
     "copy_filtered": "フィルター結果をコピー",
     "copied": "コピーしました",
+    "load_pending": "全文を読み込み中です。現在の内容は不完全な可能性があります。",
+    "load_incomplete": "全文を読み込めませんでした。現在の内容は不完全な可能性があります。",
+    "retry": "再試行",
     "waiting_events": "イベントを待機中...",
     "no_data": "記録された実行データがありません。",
     "sort_chronological": "古い順",
     "sort_newest_first": "新しい順",
+    "diff_unified": "Unified",
+    "diff_split": "Split",
     "show_all": "すべて表示",
     "patch_truncated": "...（切り詰め済み）",
     "patch_body_truncated": "...（本文を切り詰めました）",
@@ -733,6 +737,7 @@
     "status_cancelled": "キャンセル",
     "status_waiting": "待機中",
     "trigger_initial": "初回実行",
+    "trigger_text": "トリガー",
     "trigger_comment": "コメントから",
     "trigger_autopilot": "オートパイロット",
     "trigger_retry": "再試行",
@@ -789,7 +794,8 @@
     "tool_kind_command": "コマンド",
     "tool_kind_write": "編集",
     "tool_kind_read": "読み取り",
-    "tool_kind_misc": "その他"
+    "tool_kind_misc": "その他",
+    "trigger_wakeup": "起動"
   },
   "task_failure": {
     "cancelled_by_system": "システムによってキャンセルされました",
@@ -808,6 +814,7 @@
       "environment_prepare_failed": "実行環境を準備できませんでした",
       "runtime_access_denied": "このエージェントはプライベートランタイムで実行できないため、返信できませんでした。ランタイムを公開にするか、所有者が利用できるランタイムへエージェントを再設定/コピーしてください。",
       "invalid_task_identity": "実行のエージェント情報が一致しません",
+      "budget_exceeded": "ランタイムの費用予算の上限に達しました",
       "agent_error_provider_auth_or_access": "プロバイダーの認証に失敗しました",
       "agent_error_provider_quota_limit": "プロバイダーのクォータを使い切りました",
       "agent_error_provider_capacity_or_rate_limit": "プロバイダーによるレート制限",

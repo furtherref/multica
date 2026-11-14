@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -34,6 +36,17 @@ const fixtureSessionError = `{"type":"session.error","data":{"errorType":"rate_l
 const fixtureEphemeral = `{"type":"session.mcp_servers_loaded","data":{"servers":[{"name":"github-mcp-server","status":"connected","source":"builtin"}]},"id":"330ac6bb-b2db-435e-8082-686face58a72","timestamp":"2026-04-16T08:43:34.803Z","parentId":"fe20d689-31ec-492c-9eb5-57a0d0834d70","ephemeral":true}`
 
 const fixtureSessionStart = `{"type":"session.start","data":{"sessionId":"35059dc3-d928-4ffb-8616-b78938621d85","selectedModel":"claude-sonnet-4","context":{"cwd":"/tmp"}},"id":"ss-1","timestamp":"2026-04-16T08:43:34.000Z"}`
+
+// Newer Copilot CLI builds (observed on v1.0.70) omit selectedModel from
+// session.start when the run doesn't pass --model — the model is only
+// revealed later on tool.execution_complete events.
+const fixtureSessionStartNoModel = `{"type":"session.start","data":{"sessionId":"35059dc3-d928-4ffb-8616-b78938621d85","context":{"cwd":"/tmp"}},"id":"ss-1","timestamp":"2026-04-16T08:43:34.000Z"}`
+
+// Real Copilot CLI v1.0.70 assistant.message: newer builds stamp the model
+// directly on the message event that carries outputTokens. A default-model
+// no-tool run emits no session.start at all, so this field is the only
+// model signal on such streams.
+const fixtureAssistantMessageV1070 = `{"type":"assistant.message","data":{"messageId":"ffaa165a-30dc-4d28-b594-c982c2350b66","model":"claude-opus-4.8","content":"pong","toolRequests":[],"interactionId":"f6401bea-7dd3-4a69-bf51-046dea1aeb6a","turnId":"0","outputTokens":4,"requestId":"ED27:15BAC8:E86D82:FF215A:6A59F7B3","clientRequestId":"00000-91ab96f7-acf5-4c34-823a-47d871217923","serviceRequestId":"861ec382-1a7a-41f7-ada8-947b521275b4","apiCallId":"msg_011Cd7QQ7ZuosU57rQ7pTbSv"},"id":"a4b89bdd-86ff-4f14-a0f9-b5bde3e4354c","timestamp":"2026-07-17T09:36:54.298Z","parentId":"1bab961b-056f-4045-92be-96bbc6b79092"}`
 
 const fixtureReasoning = `{"type":"assistant.reasoning","data":{"content":"Let me think about this..."},"id":"r-1","timestamp":"2026-04-16T08:43:37.000Z","parentId":"p-1"}`
 
@@ -237,7 +250,9 @@ func TestCopilotParseSessionError(t *testing.T) {
 // simulateCopilotEventLoop feeds JSONL lines through handleCopilotEvent —
 // the exact same function used in production — and collects the results.
 func simulateCopilotEventLoop(t *testing.T, lines []string) ([]Message, string, string, map[string]TokenUsage) {
-	return simulateCopilotEventLoopWithModel(t, lines, "copilot")
+	// Empty seed model mirrors a task whose agent has no explicit model
+	// configured — the daemon passes opts.Model == "" through.
+	return simulateCopilotEventLoopWithModel(t, lines, "")
 }
 
 func simulateCopilotEventLoopWithModel(t *testing.T, lines []string, seedModel string) ([]Message, string, string, map[string]TokenUsage) {
@@ -353,15 +368,16 @@ func TestCopilotEventLoopToolUseFlow(t *testing.T) {
 		t.Fatalf("expected tool result to contain 'file1.go', got %q", toolResult.Output)
 	}
 
-	// After tool.execution_complete with model, activeModel should be updated.
-	if _, ok := usage["claude-opus-4.6"]; ok {
-		// outputTokens from assistant.message came BEFORE tool.execution_complete,
-		// so they should be under "copilot", not "claude-opus-4.6".
-		t.Log("model attribution is correct: assistant.message tokens go under initial model")
+	// The assistant.message tokens arrive BEFORE tool.execution_complete
+	// reveals the real model, but a Copilot -p run uses a single model for
+	// the whole session, so pending tokens must be re-attributed to the
+	// first real model observed — never left under the "copilot" placeholder.
+	if _, ok := usage["copilot"]; ok {
+		t.Fatal("expected no tokens under the 'copilot' placeholder once a real model is known")
 	}
-	u := usage["copilot"]
+	u := usage["claude-opus-4.6"]
 	if u.OutputTokens != 112 {
-		t.Fatalf("expected 112 outputTokens under 'copilot', got %d", u.OutputTokens)
+		t.Fatalf("expected 112 outputTokens under 'claude-opus-4.6', got %d", u.OutputTokens)
 	}
 }
 
@@ -518,11 +534,14 @@ func TestCopilotEventLoopMultiTurnUsage(t *testing.T) {
 
 	_, _, _, usage := simulateCopilotEventLoop(t, lines)
 
-	if u := usage["copilot"]; u.OutputTokens != 112 {
-		t.Fatalf("expected 112 tokens under 'copilot', got %d", u.OutputTokens)
+	// Turn 0 tokens arrived before the model was known; once
+	// tool.execution_complete reveals it, they are folded into the real
+	// model together with turn 1's tokens.
+	if _, ok := usage["copilot"]; ok {
+		t.Fatal("expected no tokens under the 'copilot' placeholder once a real model is known")
 	}
-	if u := usage["claude-opus-4.6"]; u.OutputTokens != 106 {
-		t.Fatalf("expected 106 tokens under 'claude-opus-4.6', got %d", u.OutputTokens)
+	if u := usage["claude-opus-4.6"]; u.OutputTokens != 218 {
+		t.Fatalf("expected 218 tokens under 'claude-opus-4.6', got %d", u.OutputTokens)
 	}
 }
 
@@ -754,6 +773,83 @@ func TestCopilotEventLoopSessionStartSetsModel(t *testing.T) {
 	}
 }
 
+func TestCopilotEventLoopPendingTokensReattributedToFirstRealModel(t *testing.T) {
+	t.Parallel()
+	// session.start without selectedModel (Copilot CLI v1.0.70 with no
+	// --model), then first-turn tokens, then tool.execution_complete finally
+	// reveals the real model. The buffered first-turn tokens must be folded
+	// into that model instead of staying under the "copilot" placeholder.
+	lines := []string{
+		fixtureSessionStartNoModel,
+		fixtureTurnStart,
+		fixtureAssistantMessageWithTools, // 112 outputTokens, model not yet known
+		fixtureToolExecComplete,          // reveals model "claude-opus-4.6"
+		fixtureResult,
+	}
+
+	_, _, _, usage := simulateCopilotEventLoop(t, lines)
+
+	if _, ok := usage["copilot"]; ok {
+		t.Fatal("expected no tokens under the 'copilot' placeholder once a real model is known")
+	}
+	u, ok := usage["claude-opus-4.6"]
+	if !ok {
+		t.Fatal("expected tokens under 'claude-opus-4.6'")
+	}
+	if u.OutputTokens != 112 {
+		t.Fatalf("expected 112 outputTokens under 'claude-opus-4.6', got %d", u.OutputTokens)
+	}
+}
+
+func TestCopilotEventLoopAssistantMessageModelAttributesTokens(t *testing.T) {
+	t.Parallel()
+	// Copilot CLI v1.0.70 default-model no-tool run: no session.start event
+	// at all, and the only model signal is the model field on
+	// assistant.message itself. Tokens must land under that model, not the
+	// "copilot" placeholder.
+	lines := []string{
+		fixtureTurnStart,
+		fixtureAssistantMessageV1070, // 4 outputTokens, model "claude-opus-4.8"
+		fixtureResult,
+	}
+
+	_, _, _, usage := simulateCopilotEventLoop(t, lines)
+
+	if _, ok := usage["copilot"]; ok {
+		t.Fatal("expected no tokens under the 'copilot' placeholder when assistant.message carries the model")
+	}
+	u, ok := usage["claude-opus-4.8"]
+	if !ok {
+		t.Fatal("expected tokens under 'claude-opus-4.8'")
+	}
+	if u.OutputTokens != 4 {
+		t.Fatalf("expected 4 outputTokens under 'claude-opus-4.8', got %d", u.OutputTokens)
+	}
+}
+
+func TestCopilotEventLoopNoModelEventsFallsBackToPlaceholder(t *testing.T) {
+	t.Parallel()
+	// A run where no event ever reveals the model (no selectedModel, no tool
+	// calls): tokens have nowhere better to go, so they fall back to the
+	// "copilot" placeholder bucket at finalize time.
+	lines := []string{
+		fixtureSessionStartNoModel,
+		fixtureTurnStart,
+		fixtureAssistantMessage, // 5 outputTokens
+		fixtureResult,
+	}
+
+	_, _, _, usage := simulateCopilotEventLoop(t, lines)
+
+	u, ok := usage["copilot"]
+	if !ok {
+		t.Fatal("expected fallback usage entry under 'copilot'")
+	}
+	if u.OutputTokens != 5 {
+		t.Fatalf("expected 5 outputTokens under 'copilot', got %d", u.OutputTokens)
+	}
+}
+
 func TestCopilotEventLoopSeedModelFromOpts(t *testing.T) {
 	t.Parallel()
 	// No session.start — seed model comes from opts.Model (simulated via seedModel param).
@@ -932,7 +1028,6 @@ func TestCopilotEventLoopToolOnlyTurnClearsPendingDelta(t *testing.T) {
 }
 
 func TestCopilotExecuteSurfacesStderrOnNonZeroResult(t *testing.T) {
-	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fixture is POSIX-only")
 	}
@@ -951,7 +1046,7 @@ func TestCopilotExecuteSurfacesStderrOnNonZeroResult(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -1112,4 +1207,333 @@ func TestBuildCopilotArgsBlocksResumeAndACP(t *testing.T) {
 			t.Fatalf("blocked --yolo should have been filtered: %v", args)
 		}
 	}
+}
+
+// ── MCP config wiring ──
+
+// startCopilotMcpFixture writes a fake copilot CLI that dumps its argv (one
+// per line) to argsDump and, when it sees --additional-mcp-config, copies the
+// referenced config file to mcpDump before the temp file is cleaned up.
+func startCopilotMcpFixture(t *testing.T) (fakePath, argsDump, mcpDump string) {
+	t.Helper()
+	dir := t.TempDir()
+	fakePath = filepath.Join(dir, "copilot")
+	argsDump = filepath.Join(dir, "args.txt")
+	mcpDump = filepath.Join(dir, "mcp.json")
+	script := "#!/bin/sh\n" +
+		"prev=\"\"\n" +
+		"for a in \"$@\"; do\n" +
+		"  printf '%s\\n' \"$a\" >> \"" + argsDump + "\"\n" +
+		"  if [ \"$prev\" = \"--additional-mcp-config\" ]; then\n" +
+		"    cat \"${a#@}\" > \"" + mcpDump + "\"\n" +
+		"  fi\n" +
+		"  prev=\"$a\"\n" +
+		"done\n" +
+		"printf '%s\\n' '{\"type\":\"result\",\"sessionId\":\"sess-mcp\",\"exitCode\":0}'\n"
+	writeTestExecutable(t, fakePath, []byte(script))
+	return fakePath, argsDump, mcpDump
+}
+
+func runCopilotExecute(t *testing.T, fakePath string, opts ExecOptions) Result {
+	t.Helper()
+	backend, err := New("copilot", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new copilot backend: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt", opts)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+	select {
+	case result, ok := <-session.Result:
+		if !ok {
+			t.Fatal("result channel closed without a value")
+		}
+		return result
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+	return Result{}
+}
+
+func TestCopilotExecutePassesAdditionalMcpConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath, argsDump, mcpDump := startCopilotMcpFixture(t)
+	mcpConfig := json.RawMessage(`{"mcpServers":{"fetch":{"command":"uvx","args":["mcp-server-fetch"]}}}`)
+
+	result := runCopilotExecute(t, fakePath, ExecOptions{McpConfig: mcpConfig})
+	if result.Status != "completed" {
+		t.Fatalf("expected status=completed, got %q (error=%q)", result.Status, result.Error)
+	}
+
+	rawArgs, err := os.ReadFile(argsDump)
+	if err != nil {
+		t.Fatalf("read args dump: %v", err)
+	}
+	args := strings.Split(strings.TrimSpace(string(rawArgs)), "\n")
+	var configPath string
+	for i, a := range args {
+		if a == "--additional-mcp-config" {
+			if i+1 >= len(args) {
+				t.Fatalf("--additional-mcp-config has no value: %v", args)
+			}
+			val := args[i+1]
+			if !strings.HasPrefix(val, "@") {
+				t.Fatalf("expected @-prefixed file path after --additional-mcp-config, got %q", val)
+			}
+			configPath = strings.TrimPrefix(val, "@")
+		}
+	}
+	if configPath == "" {
+		t.Fatalf("expected --additional-mcp-config in args, got %v", args)
+	}
+
+	dumped, err := os.ReadFile(mcpDump)
+	if err != nil {
+		t.Fatalf("read mcp dump: %v", err)
+	}
+	var got, want map[string]any
+	if err := json.Unmarshal(dumped, &got); err != nil {
+		t.Fatalf("unmarshal dumped mcp config: %v", err)
+	}
+	if err := json.Unmarshal(mcpConfig, &want); err != nil {
+		t.Fatalf("unmarshal expected mcp config: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mcp config mismatch: got %v, want %v", got, want)
+	}
+
+	// The daemon owns the temp file; it must be removed once the run ends.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected temp mcp config %q to be cleaned up", configPath)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestCopilotExecuteOmitsAdditionalMcpConfigWhenUnset(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath, argsDump, _ := startCopilotMcpFixture(t)
+
+	result := runCopilotExecute(t, fakePath, ExecOptions{})
+	if result.Status != "completed" {
+		t.Fatalf("expected status=completed, got %q (error=%q)", result.Status, result.Error)
+	}
+
+	rawArgs, err := os.ReadFile(argsDump)
+	if err != nil {
+		t.Fatalf("read args dump: %v", err)
+	}
+	if strings.Contains(string(rawArgs), "--additional-mcp-config") {
+		t.Fatalf("expected no --additional-mcp-config without McpConfig, got:\n%s", rawArgs)
+	}
+}
+
+// ── Reasoning-effort tests ──
+
+// copilotHelpFixture mirrors the real `copilot --help` output of CLI
+// 1.0.70: the choices list is quoted and wrapped across lines by the
+// help formatter.
+const copilotHelpFixture = `Usage: copilot [options]
+
+Options:
+  --model <model>                       Set the AI model to use
+  --effort, --reasoning-effort <level>  Set the reasoning effort level (choices:
+                                        "none", "minimal", "low", "medium",
+                                        "high", "xhigh", "max")
+  --enable-reasoning-summaries          Request reasoning summaries for OpenAI
+                                        models
+`
+
+func TestBuildCopilotArgsInjectsEffort(t *testing.T) {
+	t.Parallel()
+
+	args := buildCopilotArgs("hi", ExecOptions{ThinkingLevel: "high"}, slog.Default())
+
+	var found bool
+	for i, a := range args {
+		if a == "--reasoning-effort" {
+			if i+1 >= len(args) || args[i+1] != "high" {
+				t.Fatalf("expected --reasoning-effort followed by high, got %v", args)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected --reasoning-effort flag when ThinkingLevel is set, got args=%v", args)
+	}
+}
+
+func TestBuildCopilotArgsOmitsEffortWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	args := buildCopilotArgs("hi", ExecOptions{}, slog.Default())
+	for _, a := range args {
+		if a == "--reasoning-effort" || a == "--effort" {
+			t.Fatalf("expected no effort flag when ThinkingLevel is empty, got args=%v", args)
+		}
+	}
+}
+
+func TestBuildCopilotArgsBlocksUserEffortOverride(t *testing.T) {
+	t.Parallel()
+
+	args := buildCopilotArgs("hi", ExecOptions{
+		ThinkingLevel: "high",
+		CustomArgs:    []string{"--effort", "low", "--reasoning-effort", "minimal"},
+	}, slog.Default())
+
+	for _, a := range args {
+		if a == "--effort" {
+			t.Fatalf("custom-arg --effort should have been filtered: %v", args)
+		}
+		if a == "low" || a == "minimal" {
+			t.Fatalf("custom-arg effort value should have been filtered: %v", args)
+		}
+	}
+	count := 0
+	for _, a := range args {
+		if a == "--reasoning-effort" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one --reasoning-effort (the injected one), got %d in %v", count, args)
+	}
+}
+
+func TestParseCopilotEffortHelp(t *testing.T) {
+	t.Parallel()
+
+	levels := parseCopilotEffortHelp(copilotHelpFixture)
+	expected := []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+	if len(levels) != len(expected) {
+		t.Fatalf("expected %d levels, got %d: %v", len(expected), len(levels), levels)
+	}
+	for i, l := range levels {
+		if l != expected[i] {
+			t.Errorf("level[%d]: expected %q, got %q", i, expected[i], l)
+		}
+	}
+}
+
+func TestParseCopilotEffortHelp_Missing(t *testing.T) {
+	t.Parallel()
+
+	levels := parseCopilotEffortHelp("no effort line here")
+	if len(levels) != 0 {
+		t.Fatalf("expected nil for missing effort line, got %v", levels)
+	}
+}
+
+func TestCopilotEffortLevelsFromHelp_DriftedFormatFallsBackToFullSuperset(t *testing.T) {
+	t.Parallel()
+
+	// Flag advertised but the choices list no longer parses — the help
+	// format drifted. Offer the last known good superset rather than
+	// hiding the picker.
+	drifted := "Options:\n  --effort, --reasoning-effort <level>  Set the reasoning effort level\n"
+	levels := copilotEffortLevelsFromHelp(drifted)
+	expected := []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+	if len(levels) != len(expected) {
+		t.Fatalf("expected full superset %v, got %v", expected, levels)
+	}
+	for i, l := range levels {
+		if l != expected[i] {
+			t.Errorf("level[%d]: expected %q, got %q", i, expected[i], l)
+		}
+	}
+}
+
+func TestCopilotEffortLevelsFromHelp_PreEffortCLIReturnsNoLevels(t *testing.T) {
+	t.Parallel()
+
+	// A CLI that predates --reasoning-effort must advertise no levels:
+	// otherwise the daemon would inject a flag the binary rejects,
+	// hard-failing every task for an agent with a persisted level.
+	levels := copilotEffortLevelsFromHelp("Options:\n  --model <model>  Set the AI model to use\n")
+	if len(levels) != 0 {
+		t.Fatalf("expected no levels for pre-effort CLI, got %v", levels)
+	}
+}
+
+func TestAnnotateCopilotThinking(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary requires a POSIX shell")
+	}
+
+	fake := writeFakeCopilotHelpBinary(t)
+	resetCopilotThinkingCacheForTests()
+	defer resetCopilotThinkingCacheForTests()
+
+	models := []Model{
+		{ID: "gpt-5.5", Provider: "openai"},
+		{ID: "claude-opus-4.7", Provider: "anthropic"},
+	}
+	annotateCopilotThinking(context.Background(), models, NewCommand(fake, nil))
+
+	for _, m := range models {
+		if m.Thinking == nil {
+			t.Fatalf("model %s: expected Thinking to be populated", m.ID)
+		}
+		if got := len(m.Thinking.SupportedLevels); got != 7 {
+			t.Fatalf("model %s: expected 7 levels, got %d: %v", m.ID, got, m.Thinking.SupportedLevels)
+		}
+		if m.Thinking.SupportedLevels[6].Value != "max" || m.Thinking.SupportedLevels[6].Label != "Max" {
+			t.Errorf("model %s: expected last level max/Max, got %+v", m.ID, m.Thinking.SupportedLevels[6])
+		}
+		if m.Thinking.SupportedLevels[6-2].Value != "high" {
+			t.Errorf("model %s: expected level order preserved, got %+v", m.ID, m.Thinking.SupportedLevels)
+		}
+		// Copilot's effective default varies per model and plan; an empty
+		// DefaultLevel makes the UI render the generic "Default" option.
+		if m.Thinking.DefaultLevel != "" {
+			t.Errorf("model %s: expected empty DefaultLevel, got %q", m.ID, m.Thinking.DefaultLevel)
+		}
+	}
+}
+
+// TestCopilotAdvertisedLevelsArePersistable pins the catalog → API
+// contract: every effort token copilot discovery can label must pass the
+// server's Create/Update gate, otherwise the picker offers a level the
+// server 400s on save.
+func TestCopilotAdvertisedLevelsArePersistable(t *testing.T) {
+	t.Parallel()
+	for effort := range copilotEffortLabel {
+		if !IsKnownThinkingValue("copilot", effort) {
+			t.Errorf("Copilot advertises effort %q but IsKnownThinkingValue rejects it", effort)
+		}
+	}
+}
+
+// writeFakeCopilotHelpBinary writes a small shell script that mimics
+// `copilot --help` with the wrapped, quoted choices list of CLI 1.0.70.
+func writeFakeCopilotHelpBinary(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "copilot")
+	script := "#!/bin/sh\n" +
+		"cat <<'EOF'\n" +
+		copilotHelpFixture +
+		"EOF\n"
+	writeTestExecutable(t, path, []byte(script))
+	return path
 }

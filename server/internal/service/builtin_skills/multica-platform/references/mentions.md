@@ -158,6 +158,12 @@ not injected into an already running prompt. Different threads queue independent
   leader is): blocked with `target_unavailable` and `runtime_offline`
   respectively. Both are checked only AFTER the invoke gate, so a caller who may
   not invoke the target never learns its state.
+- **An archived issue:** NO mention on it triggers anything — every
+  `@agent`/`@squad` target is blocked with `issue_archived` up front, before any
+  per-target gate runs, until the issue is restored to an active status. done
+  and cancelled issues stay mentionable; archive requires an explicit restore.
+  The block surfaces in the composer preview and post-send outcomes with
+  `reason_code: "issue_archived"` so the user is warned.
 - **A private agent you cannot invoke:** blocked — the mention path applies the
   invoke gate to both `@agent` and `@squad`. That is the *run* gate, not the
   *see* gate: a workspace admin who can open a private agent in the UI still may

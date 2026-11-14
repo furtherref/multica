@@ -1,0 +1,35 @@
+{
+  "page": {
+    "title": "Comptes",
+    "description": "Gérez les comptes utilisateur de l'ensemble du déploiement Multica."
+  },
+  "sidebar": {
+    "console": "Administration système"
+  },
+  "users": {
+    "section_title": "Utilisateurs · {{count}}",
+    "search_placeholder": "Rechercher par nom ou e-mail",
+    "filter_label": "Statut",
+    "filter_all": "Tous",
+    "filter_active": "Actifs",
+    "filter_suspended": "Suspendus",
+    "suspended_badge": "Suspendu",
+    "unknown_status_badge": "Statut inconnu",
+    "actions_menu_aria": "Plus d'actions",
+    "self_badge": "Vous",
+    "suspend_action": "Suspendre le compte",
+    "restore_action": "Restaurer le compte",
+    "suspend_title": "Suspendre {{name}}",
+    "suspend_description": "Une fois suspendu, {{name}} ne pourra plus se connecter à Multica, ses sessions actives expireront à sa prochaine requête et les tâches en cours seront annulées. Vous pouvez restaurer ce compte à tout moment.",
+    "restore_title": "Restaurer {{name}}",
+    "restore_description": "{{name}} pourra de nouveau se connecter à Multica.",
+    "confirm_cancel": "Annuler",
+    "confirm_action": "Confirmer",
+    "toast_suspended": "Compte suspendu",
+    "toast_suspend_failed": "Échec de la suspension du compte",
+    "toast_restored": "Compte restauré",
+    "toast_restore_failed": "Échec de la restauration du compte",
+    "empty": "Aucun utilisateur ne correspond à votre recherche"
+  },
+  "back_to_workspace": "Retour à l'espace de travail"
+}

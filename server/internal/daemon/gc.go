@@ -666,11 +666,14 @@ func (d *Daemon) gcDecisionIssueResult(taskDir string, meta *execenv.GCMeta, res
 // the legacy seven-value `status` enum, which the server keeps populated for
 // exactly this reason and which fails closed on its own. Full cleanup is
 // irreversible, so a lookup that did not really answer must not read as one.
+//
+// The fork's `archive` status (#39) arrives as category `closed`; a fork server
+// predating MUL-7364 reports it verbatim in `status`, where it is terminal too.
 func issueGCLifecycle(result IssueGCCheckResult) (terminal, recognized bool) {
 	if issuestatus.IsCategory(result.Category) {
 		return result.Category == issuestatus.CategoryDone || result.Category == issuestatus.CategoryClosed, true
 	}
-	return result.Status == issuestatus.Done || result.Status == issuestatus.Cancelled,
+	return result.Status == issuestatus.Done || result.Status == issuestatus.Cancelled || result.Status == issuestatus.Archive,
 		isKnownIssueStatus(result.Status)
 }
 
@@ -685,9 +688,13 @@ func issueGCLifecycle(result IssueGCCheckResult) (terminal, recognized bool) {
 // statuses keep making correct decisions against an upgraded server. A daemon
 // that wants the lifecycle reads `category` instead — see issueGCLifecycle.
 // Pinned by TestIssueGCChecksReportWireStatusNotRawCustomStatus.
+//
+// `archive` (fork status #39) is listed too: the fork's server keeps it raw in
+// this field, and omitting it would keep an archived issue's environment alive
+// past the completed-task TTL on a daemon without category support.
 func isKnownIssueStatus(status string) bool {
 	switch status {
-	case "backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled":
+	case "backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled", "archive":
 		return true
 	default:
 		return false

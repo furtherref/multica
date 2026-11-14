@@ -160,6 +160,7 @@
   },
   "picker": {
     "no_project": "Aucun projet",
+    "project_required": "Projet requis",
     "empty": "Aucun projet pour l'instant",
     "search_placeholder": "Rechercher des projets...",
     "clear_aria": "Effacer le projet"

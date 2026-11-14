@@ -84,6 +84,7 @@ const {
   mockAgents,
   mockSquads,
   mockOpenModal,
+  mockGetPersistedCreateMode,
   mockToastSuccess,
   mockClipboardWrite,
   mockTimeline,
@@ -128,6 +129,7 @@ const {
     }>,
   },
   mockOpenModal: vi.fn(),
+  mockGetPersistedCreateMode: vi.fn(),
   mockToastSuccess: vi.fn(),
   mockClipboardWrite: vi.fn(() => Promise.resolve()),
   mockTimeline: { current: [] as Array<Record<string, unknown>> },
@@ -173,6 +175,7 @@ vi.mock("../common/actor-avatar", () => ({
 vi.mock("@multica/core/issues/stores", () => {
   const EMPTY: Array<{ id: string; visitedAt: number }> = [];
   return {
+    getPersistedCreateMode: mockGetPersistedCreateMode,
     useRecentIssuesStore: (
       selector?: (state: {
         byWorkspace: Record<string, typeof mockRecentItems.current>;
@@ -222,6 +225,7 @@ vi.mock("@multica/core/paths", async (importOriginal) => ({
     usage: () => "/ws-test/usage",
     runtimes: () => "/ws-test/runtimes",
     skills: () => "/ws-test/skills",
+    issueTemplates: () => "/ws-test/issue-templates",
     settings: () => "/ws-test/settings",
     issueDetail: (id: string) => `/ws-test/issues/${id}`,
     memberDetail: (id: string) => `/ws-test/members/${id}`,
@@ -256,7 +260,7 @@ function resolveIssue(key: readonly unknown[]) {
   // issueDetailOptions key shape: ["issues", wsId, "detail", id]
   if (key[0] === "issues" && key[2] === "detail") {
     const id = key[3];
-    return mockAllIssues.current.find((i) => i.id === id);
+    return mockAllIssues.current.find((i) => i.id === id || i.identifier === id);
   }
   return undefined;
 }
@@ -324,6 +328,7 @@ describe("SearchCommand", () => {
     mockGetShareableUrl.mockReset().mockImplementation((p: string) => `https://app.multica/${p}`);
     mockMembers.current = [];
     mockOpenModal.mockReset();
+    mockGetPersistedCreateMode.mockReset().mockReturnValue("manual");
     mockToastSuccess.mockReset();
     mockClipboardWrite.mockReset().mockResolvedValue(undefined);
     mockTimeline.current = [];
@@ -583,7 +588,7 @@ describe("SearchCommand", () => {
     expect(screen.getByText("MUL-2")).toBeInTheDocument();
   });
 
-  it("shows New Issue / New Project under Commands and triggers the modal store", async () => {
+  it("shows New Issue / New Project under Commands and opens the persisted create mode", async () => {
     const user = userEvent.setup();
     renderSearch();
 
@@ -704,6 +709,31 @@ describe("SearchCommand", () => {
     expect(mockResolvedCollapseAll).toHaveBeenCalledWith("issue-1");
     expect(mockCommentExpandAll).not.toHaveBeenCalled();
     expect(useSearchStore.getState().open).toBe(false);
+  });
+
+  it("folds comments under the issue UUID when the URL carries the identifier", async () => {
+    const user = userEvent.setup();
+    mockPathname.current = "/ws-test/issues/MUL-42";
+    mockAllIssues.current = [
+      { id: "issue-1", identifier: "MUL-42", title: "Demo", status: "todo" },
+    ];
+    mockTimeline.current = [
+      { type: "comment", id: "root-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T01:00:00Z", parent_id: null },
+    ];
+    renderSearch();
+
+    const input = screen.getByPlaceholderText("Type a command or search...");
+    await user.type(input, "fold");
+
+    const foldItem = await screen.findByText(
+      (_, el) => el?.textContent === "Fold All Comments" && el?.tagName === "SPAN",
+    );
+    await user.click(foldItem);
+
+    await waitFor(() => {
+      expect(mockCommentCollapseAll).toHaveBeenCalledWith("issue-1", ["root-1"]);
+    });
+    expect(mockResolvedCollapseAll).toHaveBeenCalledWith("issue-1");
   });
 
   it("unfolds all comments and expands resolved threads", async () => {

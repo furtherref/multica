@@ -80,7 +80,9 @@
     "quick_create_failed": "Échec de la création avec un agent",
     "quick_create_unconfirmed": "Création avec un agent non confirmée",
     "autopilot_paused": "Automatisation en pause",
-    "autopilot_quota_exceeded": "Limite d'exécutions d'automatisation atteinte"
+    "children_done": "Sous-tâches terminées",
+    "autopilot_quota_exceeded": "Limite d'exécutions d'automatisation atteinte",
+    "runtime_budget_exceeded": "Budget de coût du runtime atteint"
   },
   "labels": {
     "set_status_to": "Statut défini sur",
@@ -94,7 +96,9 @@
     "reacted_to_comment": "A réagi {{emoji}} à votre commentaire",
     "created_with_agent": "Créé avec un agent : {{identifier}}",
     "failed_with_detail": "Échec : {{detail}}",
-    "autopilot_quota_blocked": "Exécution bloquée car la limite a été atteinte"
+    "autopilot_quota_blocked": "Exécution bloquée car la limite a été atteinte",
+    "children_done_stage": "Sous-tâches de l’étape {{stage}} terminées",
+    "runtime_budget_blocked": "Les nouvelles exécutions sont refusées jusqu'à la réinitialisation de la période"
   },
   "toasts": {
     "source_context_retry_started": "Nouvelle tentative démarrée avec le contexte d'origine",

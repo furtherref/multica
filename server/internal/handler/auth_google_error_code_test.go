@@ -227,7 +227,7 @@ func TestGoogleLoginActionableErrorMapping(t *testing.T) {
 		wantCode  string
 		wantError string
 	}{
-		{"account disabled", auth.ErrTemporarilyDisabledUser, "account_disabled", "account disabled"},
+		{"account suspended", auth.ErrAccountSuspended, auth.AccountSuspendedCode, auth.AccountSuspendedMessage},
 		{"signup prohibited", ErrSignupProhibited, "signup_prohibited", ErrSignupProhibited.Error()},
 		{"email not allowed", ErrEmailNotAllowed, "email_not_allowed", ErrEmailNotAllowed.Error()},
 		{"wrapped signup restriction", fmt.Errorf("signup: %w", ErrEmailNotAllowed), "email_not_allowed", ErrEmailNotAllowed.Error()},
@@ -306,7 +306,7 @@ func TestGoogleLoginSuccessfulExistingUser(t *testing.T) {
 	// Exercise the issued JWT through the same middleware that accepts browser sessions.
 	meReq := httptest.NewRequest(http.MethodGet, "/users/me", nil)
 	meReq.AddCookie(authCookie)
-	protected := middleware.Auth(h.Queries, nil, nil, nil)(http.HandlerFunc(h.GetMe))
+	protected := middleware.Auth(h.Queries, nil, nil, nil, nil)(http.HandlerFunc(h.GetMe))
 	var me UserResponse
 	testutil.Call(t, protected.ServeHTTP, meReq).Want(http.StatusOK).JSON(&me)
 	if me.ID != userID || me.Email != email {

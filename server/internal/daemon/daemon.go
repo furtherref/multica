@@ -31,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/internal/selfexec"
+	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
@@ -664,6 +665,8 @@ type Daemon struct {
 
 	runner             taskRunner    // executes agent tasks; set to d.runTask by New(), overridable in tests
 	cancelPollInterval time.Duration // how often handleTask polls for server-side cancellation; overridable in tests
+	// Zero uses the production grace period; tests can bound silent fake backends.
+	cancelledResultWait time.Duration
 	// taskSlotWait is the brief semaphore wait before the capacity backoff.
 	// New sets the production default; tests shorten it to reach that branch.
 	taskSlotWait time.Duration
@@ -3317,8 +3320,9 @@ func (d *Daemon) workspaceLastRepoSyncErr(workspaceID string) string {
 }
 
 // workspaceCoAuthoredByEnabled returns whether the Co-authored-by hook should
-// be installed for the given workspace. Defaults to true when either setting
-// is absent (new workspaces, older servers that don't send settings).
+// be installed for the given workspace. Defaults to false when the setting is
+// absent (new workspaces, older servers that don't send settings) — fork
+// preference, see furtherref/multica#31.
 //
 // The hook is gated by BOTH the GitHub master switch (`github_enabled`) and
 // the dedicated co-author switch (`co_authored_by_enabled`) so flipping the
@@ -3329,20 +3333,20 @@ func (d *Daemon) workspaceCoAuthoredByEnabled(workspaceID string) bool {
 	defer d.mu.Unlock()
 	ws, ok := d.workspaces[workspaceID]
 	if !ok || len(ws.settings) == 0 {
-		return true // default: enabled
+		return false // default: disabled
 	}
 	var s struct {
 		GitHubEnabled       *bool `json:"github_enabled"`
 		CoAuthoredByEnabled *bool `json:"co_authored_by_enabled"`
 	}
 	if err := json.Unmarshal(ws.settings, &s); err != nil {
-		return true // default: enabled when payload is malformed
+		return false // default: disabled when payload is malformed
 	}
 	if s.GitHubEnabled != nil && !*s.GitHubEnabled {
 		return false
 	}
 	if s.CoAuthoredByEnabled == nil {
-		return true // default: enabled
+		return false // default: disabled
 	}
 	return *s.CoAuthoredByEnabled
 }
@@ -5694,6 +5698,13 @@ func (d *Daemon) watchTaskCancellation(ctx context.Context, taskID string, pollI
 			close(cancelled)
 			return true
 		}
+		// Immediate first check handles a task that was already terminal when
+		// the watcher started. The distinct post-/start launch boundary is
+		// checked synchronously inside runTask; this goroutine may otherwise
+		// observe "dispatched" before /start and sleep for a full poll interval.
+		if check() {
+			return
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -5851,11 +5862,16 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 
 	// Report usage before any early return — the agent accumulates tokens
 	// whether the task completes, errors, or is cancelled mid-run by the poll
-	// goroutine. Both claude.go and codex.go populate result.Usage even when
-	// runCtx is cancelled, so dropping this on the cancelled path silently
-	// under-reports billing.
+	// goroutine. Backends can return their final accounting after cancellation;
+	// executeAndDrain preserves it through a bounded cleanup wait, so dropping
+	// it here would still silently under-report billing.
 	if len(result.Usage) > 0 {
-		if usageErr := d.client.ReportTaskUsage(ctx, task.ID, result.Usage); usageErr != nil {
+		// Cancellation ends execution, not accounting. Keep context values but
+		// give this final write its own bounded lifetime, including on shutdown.
+		usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		usageErr := d.client.ReportTaskUsage(usageCtx, task.ID, result.Usage)
+		usageCancel()
+		if usageErr != nil {
 			taskLog.Warn("report task usage failed", "error", usageErr)
 		}
 	}
@@ -6806,11 +6822,15 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 		return "", false
 	}
 
-	root, err := filepath.EvalSymlinks(workspacesRoot)
+	// util.ResolveSymlinks, not filepath.EvalSymlinks: on Windows the latter
+	// cannot pass through a directory junction, so a junctioned workspaces
+	// root silently declined every reuse and each follow-up lost its session
+	// (#8946).
+	root, err := util.ResolveSymlinks(workspacesRoot)
 	if err != nil {
 		return "", false
 	}
-	workdir, err := filepath.EvalSymlinks(task.PriorWorkDir)
+	workdir, err := util.ResolveSymlinks(task.PriorWorkDir)
 	if err != nil {
 		return "", false
 	}
@@ -7256,11 +7276,12 @@ func (d *Daemon) lockReusablePriorEnvRoot(ctx context.Context, task Task, localA
 		return nil, "", nil, false, nil
 	}
 	priorRoot := filepath.Dir(workDir)
-	// workDir came back through EvalSymlinks, so the root it is measured
-	// against has to be resolved the same way — otherwise a symlinked
-	// workspaces root (macOS /tmp -> /private/tmp, a home on a linked volume)
-	// makes the two look unrelated and every reuse is refused.
-	canonicalWorkspacesRoot, err := filepath.EvalSymlinks(d.cfg.WorkspacesRoot)
+	// workDir came back through util.ResolveSymlinks, so the root it is
+	// measured against has to be resolved the same way — otherwise a symlinked
+	// workspaces root (macOS /tmp -> /private/tmp, a home on a linked volume,
+	// a Windows junction to another drive) makes the two look unrelated and
+	// every reuse is refused.
+	canonicalWorkspacesRoot, err := util.ResolveSymlinks(d.cfg.WorkspacesRoot)
 	if err != nil {
 		return nil, "", nil, false, nil
 	}
@@ -7547,13 +7568,14 @@ func resolveTaskModelSelection(
 
 	// service_tier is catalog-owned and currently Codex-only. As with
 	// thinking_level, stale or incompatible persisted values degrade to the
-	// runtime default instead of failing the task. Catalog lookup errors pass
-	// through so a transient discovery failure does not silently disable a
-	// previously valid user choice.
+	// runtime default instead of failing the task. A catalog that cannot
+	// validate — a lookup error, or a fallback catalog standing in for a
+	// failed discovery — passes the value through, so a discovery failure does
+	// not silently disable a previously valid user choice (MUL-7691).
 	if sel.ServiceTier != "" {
 		ok, err := agent.ValidateServiceTierWith(loadCatalog, provider, sel.Model, sel.ServiceTier)
 		if err != nil {
-			taskLog.Warn("service_tier: catalog lookup failed; passing through",
+			taskLog.Warn("service_tier: catalog cannot validate; passing through",
 				"provider", provider,
 				"model", sel.Model,
 				"service_tier", sel.ServiceTier,
@@ -7569,21 +7591,22 @@ func resolveTaskModelSelection(
 		}
 	}
 	// Per-model guard: the server validates the literal token against the
-	// provider's enum, but per-model gaps (Claude's `xhigh` on a non-Opus
-	// model, Codex's per-model `supported_reasoning_levels`) only resolve
-	// here, against the daemon's local CLI catalog. Invalid combinations
-	// log a warning and drop the level rather than failing the task, so a
-	// stale persisted value never blocks execution. An empty model is
-	// resolved by ValidateThinkingLevelWith to the provider's default model so
-	// default-model tasks aren't misjudged — except for codex, whose empty
+	// provider's enum, but per-model gaps (Codex's per-model
+	// `supported_reasoning_levels`, Claude's per-model `supportedEffortLevels`)
+	// only resolve here, against the daemon's local CLI catalog. Invalid
+	// combinations log a warning and drop the level rather than failing the
+	// task, so a stale persisted value never blocks execution. An empty model
+	// is resolved by ValidateThinkingLevelWith to the provider's default model
+	// so default-model tasks aren't misjudged — except for codex, whose empty
 	// model follows config.toml (any model) and so fails closed, dropping the
-	// level here without a catalog read at all. Discovery errors fail open for
-	// resolved models: if we can't list models, we keep the persisted level
-	// and let the CLI object.
+	// level here without a catalog read at all. Only a verified catalog can
+	// drop a level: on a lookup error or a fallback/empty catalog we keep the
+	// persisted level and let the CLI object, unless the binary itself has no
+	// such effort flag (MUL-7691).
 	if sel.ThinkingLevel != "" {
 		ok, err := agent.ValidateThinkingLevelWith(loadCatalog, provider, sel.Model, sel.ThinkingLevel)
 		if err != nil {
-			taskLog.Warn("thinking_level: catalog lookup failed; passing through",
+			taskLog.Warn("thinking_level: catalog cannot validate; passing through",
 				"provider", provider,
 				"model", sel.Model,
 				"thinking_level", sel.ThinkingLevel,
@@ -7986,10 +8009,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var hermesSessionStore string
 	if provider == "hermes" {
 		// Resolve from the argv hermes will actually parse — launch prefix,
-		// `acp`, then the filtered custom args — which agent.HermesLaunchArgv
+		// the filtered custom args, then `acp` — which agent.HermesLaunchArgv
 		// assembles the same way the backend does. A custom runtime profile's
 		// fixed_args are the launch prefix now, so they are scanned before
-		// custom_args, and the backend's own `acp` token sits between them and
+		// custom_args, and the backend's own `acp` token closes the argv and
 		// participates in the scan. Approximating that argv reads a different
 		// profile than the process does, and the overlay ends up seeded from
 		// the wrong home (GH #7046).
@@ -8405,6 +8428,31 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	stopPrepareLease()
 	prepareComplete = true
 	cancelPrepare()
+
+	// The asynchronous watcher starts before runTask so it can interrupt env
+	// preparation, but that means its immediate read may see "dispatched" and
+	// sleep through the critical post-/start launch boundary. Re-read status
+	// synchronously here: if archive/cancel won the race, do not create model
+	// spend by invoking the provider. Transient read errors remain best-effort
+	// and fall through to the watcher, matching shouldInterruptAgent's policy.
+	if status, statusErr := d.client.GetTaskStatus(ctx, task.ID); shouldInterruptAgent(status, statusErr) {
+		if env.LocalDirectory {
+			if cleanupErr := execenv.CleanupSidecars(env.RootDir); cleanupErr != nil {
+				taskLog.Warn("cancelled task sidecar cleanup failed (non-fatal)", "error", cleanupErr)
+			}
+		}
+		taskLog.Info("task terminal after start; skipping provider launch", "status", status, "error", statusErr)
+		resultStatus := status
+		if resultStatus == "" {
+			resultStatus = "cancelled"
+		}
+		return TaskResult{
+			Status:  resultStatus,
+			Comment: "task cancelled before provider launch",
+			WorkDir: env.WorkDir,
+			EnvRoot: env.RootDir,
+		}, nil
+	}
 	_ = d.client.ReportProgress(ctx, task.ID, fmt.Sprintf("Launching %s", provider), 1, 2)
 
 	// usesCustomProfileCommand is the same provenance the backend receives as
@@ -8560,8 +8608,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// The overlay is authoritative once built, so nothing on the command line
 	// may re-point HERMES_HOME out of it. Both argv regions are stripped
 	// together, against the same assembled argv the resolver read: a selection
-	// can straddle them (a prefix ending in a bare `-p` captures the backend's
-	// `acp`), which per-region stripping cannot see.
+	// can straddle them (a prefix ending in a bare `-p` captures the first
+	// custom arg), which per-region stripping cannot see.
 	var hermesOverlayCustomArgs []string
 	hermesOverlayActive := provider == "hermes" && env != nil && env.HermesHome != ""
 	if hermesOverlayActive {
@@ -8853,22 +8901,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		"agent_error", result.Error,
 	)
 
-	// Convert agent usage map to task usage entries.
-	var usageEntries []TaskUsageEntry
-	for model, u := range result.Usage {
-		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.CostUSDTicks <= 0 {
-			continue
-		}
-		usageEntries = append(usageEntries, TaskUsageEntry{
-			Provider:         provider,
-			Model:            model,
-			InputTokens:      u.InputTokens,
-			OutputTokens:     u.OutputTokens,
-			CacheReadTokens:  u.CacheReadTokens,
-			CacheWriteTokens: u.CacheWriteTokens,
-			CostUSDTicks:     u.CostUSDTicks,
-		})
-	}
+	usageEntries := taskUsageEntries(provider, result.Usage)
 
 	// MUL-5305: withhold a Codex session whose rollout never reached the per-issue
 	// store, for ANY terminal state — including `completed`, since a completed
@@ -9078,6 +9111,28 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			FailureReason: failureReason,
 		}, nil
 	}
+}
+
+func taskUsageEntries(provider string, usage map[string]agent.TokenUsage) []TaskUsageEntry {
+	// Nil, not empty, when nothing was reported: runTask hands this straight to
+	// TaskResult.Usage, whose "no usage" value is nil.
+	var entries []TaskUsageEntry
+	for model, u := range usage {
+		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 &&
+			u.CacheWriteTokens == 0 && u.CostUSDTicks <= 0 {
+			continue
+		}
+		entries = append(entries, TaskUsageEntry{
+			Provider:         provider,
+			Model:            model,
+			InputTokens:      u.InputTokens,
+			OutputTokens:     u.OutputTokens,
+			CacheReadTokens:  u.CacheReadTokens,
+			CacheWriteTokens: u.CacheWriteTokens,
+			CostUSDTicks:     u.CostUSDTicks,
+		})
+	}
+	return entries
 }
 
 // shouldRetryWithFreshSession reports whether a failed run that requested
@@ -9509,6 +9564,10 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		}
 
 		var sessionPinned atomic.Bool
+		// lastActivity dedupes transient activity hints (e.g. "reconnecting"):
+		// publish only when the activity changes, and reset on any real message
+		// so a later reconnect re-publishes and the UI drops the in-place hint.
+		lastActivity := ""
 		for {
 			select {
 			case msg, ok := <-session.Messages:
@@ -9528,6 +9587,12 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 				// can't be misattributed to backend silence.
 				observedAt := time.Now().UTC()
 				lastActivityAt.Store(observedAt.UnixNano())
+				// A real (non-status) message means the agent made progress —
+				// clear any transient activity hint so a later reconnect
+				// re-publishes and the UI drops the in-place "reconnecting".
+				if msg.Type != agent.MessageStatus {
+					lastActivity = ""
+				}
 				switch msg.Type {
 				case agent.MessageStatus:
 					// Persist the session/work_dir as soon as the backend
@@ -9559,6 +9624,24 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 							defer cancel()
 							if err := d.client.PinTaskSession(pinCtx, taskID, sid, wd); err != nil {
 								taskLog.Debug("pin session failed", "error", err)
+							}
+						}()
+					}
+					// Transient activity hint (e.g. "reconnecting" while the
+					// backend retries its upstream): broadcast in place, never
+					// persisted to the transcript. Deduped via lastActivity so a
+					// burst of reconnect notifications collapses to one publish.
+					if msg.Status == "reconnecting" && lastActivity != msg.Status {
+						lastActivity = msg.Status
+						activity := msg.Status
+						// Capture the current seq frontier so the frontend can
+						// drop this hint if a later message beats it to the client.
+						afterSeq := int(msgSeq.Load())
+						go func() {
+							actCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+							defer cancel()
+							if err := d.client.ReportTaskActivity(actCtx, taskID, activity, afterSeq); err != nil {
+								taskLog.Debug("report task activity failed", "error", err)
 							}
 						}()
 					}
@@ -9735,14 +9818,49 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		}
 	}
 
+	// stoppedResult keeps a stopped run's final accounting (fork #105): a
+	// cancelled, timed-out or watchdog-stopped backend still spent tokens, so
+	// give it a bounded grace to report its result while shutting down, then
+	// re-tag that result with the stop disposition. A backend that hands over
+	// a terminal boundary already had its window in awaitTerminalResult, so
+	// handedOver skips a second wait.
+	stoppedResult := func(status, reason string, handedOver bool) agent.Result {
+		var result agent.Result
+		if !handedOver {
+			// A drain deadline is a child of agentCtx and does not cancel the
+			// backend by itself. Stop it before waiting for its final accounting.
+			agentCancel()
+			result = d.waitForCancelledAgentResult(session.Result, taskLog)
+		}
+		result.Status = status
+		result.Error = reason
+		return result
+	}
+	cancelledReason := "task cancelled by upstream context (server cancel or daemon shutdown)"
+	timeoutReason := "agent did not produce result within drain timeout"
+
+	// Sample before selecting: cancellation already observable here wins even
+	// if the result is ready too, unless the backend proves the result is its
+	// authoritative outcome. A cancellation observed only during transcript
+	// flushing must not rewrite an already received backend result.
+	stopErr := drainCtx.Err()
 	select {
-	case result := <-session.Result:
+	case result, ok := <-session.Result:
 		stopWatchdog()
+		watchdogFired := idleWatchdogFired.Load()
 		waitForDrain()
-		// terminalObserved outranks a watchdog that fired anyway: if the backend
-		// had already read its authoritative result, this is the real outcome and
-		// re-tagging it would report a completed run as a hang.
-		if idleWatchdogFired.Load() && !terminalObserved() {
+		if !ok {
+			// A closed channel carries no outcome of its own, so it must never
+			// read as success; a stop observed alongside it still names the cause.
+			result = agent.Result{Status: "failed"}
+		} else if terminalObserved() {
+			// terminalObserved outranks a watchdog that fired anyway: if the
+			// backend had already read its authoritative result, this is the real
+			// outcome and re-tagging it would report a completed run as a hang.
+			return result, toolCount.Load(), nil
+		}
+		switch {
+		case watchdogFired:
 			// The backend's wait goroutine (e.g. claude.go) translates the
 			// SIGKILL we delivered via agentCancel into Status="aborted".
 			// Re-tag it as "idle_watchdog" so runTask routes the
@@ -9752,6 +9870,14 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			if result.Error == "" {
 				result.Error = idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load()))
 			}
+		case errors.Is(stopErr, context.Canceled):
+			result.Status = "cancelled"
+			result.Error = cancelledReason
+		case errors.Is(stopErr, context.DeadlineExceeded):
+			result.Status = "timeout"
+			result.Error = timeoutReason
+		case !ok:
+			result.Error = "agent result channel closed without a result"
 		}
 		return result, toolCount.Load(), nil
 	case <-drainCtx.Done():
@@ -9792,10 +9918,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 				}
 				return result, toolCount.Load(), nil
 			}
-			return agent.Result{
-				Status: "idle_watchdog",
-				Error:  idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load())),
-			}, toolCount.Load(), nil
+			return stoppedResult("idle_watchdog", idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load())), handsOverTerminal), toolCount.Load(), nil
 		}
 		// Distinguish external cancellation (e.g. server-initiated cancel
 		// because the issue was reassigned, or the user invoked CancelTask)
@@ -9803,18 +9926,19 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		// upstream runCtx fired runCancel(); context.DeadlineExceeded is the
 		// drain deadline expiring on its own.
 		if errors.Is(drainCtx.Err(), context.Canceled) {
-			if result, _, authoritative := awaitTerminalResult("upstream_context"); authoritative {
+			result, delivered, authoritative := awaitTerminalResult("upstream_context")
+			if authoritative {
 				return result, toolCount.Load(), nil
 			}
-			return agent.Result{
-				Status: "cancelled",
-				Error:  "task cancelled by upstream context (server cancel or daemon shutdown)",
-			}, toolCount.Load(), nil
+			if delivered {
+				// Not the run's outcome, but still its accounting.
+				result.Status = "cancelled"
+				result.Error = cancelledReason
+				return result, toolCount.Load(), nil
+			}
+			return stoppedResult("cancelled", cancelledReason, handsOverTerminal), toolCount.Load(), nil
 		}
-		return agent.Result{
-			Status: "timeout",
-			Error:  "agent did not produce result within drain timeout",
-		}, toolCount.Load(), nil
+		return stoppedResult("timeout", timeoutReason, false), toolCount.Load(), nil
 	}
 }
 
@@ -9986,14 +10110,29 @@ func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {
 	}
 	for model, u := range b {
 		existing := merged[model]
+		// Copilot can recover a provider quote from one failed attempt and
+		// token-only usage from the fresh retry. A partial quote cannot price
+		// the merged row: downstream treats every token on a priced row as
+		// already paid for. Fall back to estimating all tokens in that case.
+		// Never discard a cost-only operand; it cannot be reconstructed from
+		// token counts. This fallback is limited to token-bearing operands.
+		mixedPricing := usageHasTokenCounts(existing) && usageHasTokenCounts(u) &&
+			((existing.CostUSDTicks > 0) != (u.CostUSDTicks > 0))
 		existing.InputTokens += u.InputTokens
 		existing.OutputTokens += u.OutputTokens
 		existing.CacheReadTokens += u.CacheReadTokens
 		existing.CacheWriteTokens += u.CacheWriteTokens
 		existing.CostUSDTicks += u.CostUSDTicks
+		if mixedPricing {
+			existing.CostUSDTicks = 0
+		}
 		merged[model] = existing
 	}
 	return merged
+}
+
+func usageHasTokenCounts(u agent.TokenUsage) bool {
+	return u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheReadTokens > 0 || u.CacheWriteTokens > 0
 }
 
 // repoDataToInfo converts daemon RepoData to repocache RepoInfo.

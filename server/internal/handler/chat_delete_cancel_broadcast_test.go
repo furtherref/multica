@@ -84,6 +84,9 @@ func TestDeleteChatSession_BroadcastsTaskCancelled(t *testing.T) {
 	if e.TaskID != taskID {
 		t.Errorf("task id = %q, want %q", e.TaskID, taskID)
 	}
+	if e.RecipientUserID != testUserID {
+		t.Errorf("recipient user id = %q, want deleted session creator %q", e.RecipientUserID, testUserID)
+	}
 	// The channel adapters find their conversation through the session id, so a
 	// payload without it reaches them as an issue task and is ignored. The row
 	// still carries it because the cancel returned it before the delete; the

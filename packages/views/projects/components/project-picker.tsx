@@ -21,6 +21,7 @@ export function ProjectPicker({
   onUpdate,
   triggerRender,
   align = "start",
+  required = false,
   defaultOpen = false,
   open: controlledOpen,
   onOpenChange,
@@ -30,6 +31,7 @@ export function ProjectPicker({
   onUpdate: (updates: Partial<UpdateIssueRequest>) => void;
   triggerRender?: React.ReactElement;
   align?: "start" | "center" | "end";
+  required?: boolean;
   /** Open the dropdown on first mount. Used by progressive-disclosure
    *  sidebars so a newly-added field immediately enters edit state. */
   defaultOpen?: boolean;
@@ -82,17 +84,24 @@ export function ProjectPicker({
         onSearchChange={setFilter}
         triggerRender={resolvedTriggerRender}
         trigger={
-          current ? (
-            <>
-              <ProjectIcon project={current} size="sm" />
-              <span className="truncate">{current.title}</span>
-            </>
-          ) : (
-            <>
-              <FolderKanban className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="truncate">{t(($) => $.picker.no_project)}</span>
-            </>
-          )
+          <>
+            {current ? (
+              <>
+                <ProjectIcon project={current} size="sm" />
+                <span className="truncate">{current.title}</span>
+              </>
+            ) : (
+              <>
+                <FolderKanban className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">{t(($) => $.picker.no_project)}</span>
+              </>
+            )}
+            {required && (
+              <span aria-label={t(($) => $.picker.project_required)} className="text-destructive">
+                *
+              </span>
+            )}
+          </>
         }
       >
         {/* "No project" — always the first row, search active or not, and the
