@@ -70,6 +70,7 @@ const (
 	ReasonSelfTriggerSuppressed = dispatch.ReasonSelfTriggerSuppressed
 	ReasonIssueInTriage         = dispatch.ReasonIssueInTriage
 	ReasonIssueArchived         = dispatch.ReasonIssueArchived
+	ReasonDuplicateSameDay      = dispatch.ReasonDuplicateSameDay
 	ReasonInternalError         = dispatch.ReasonInternalError
 )
 
@@ -138,6 +139,8 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "the run couldn't be attributed to a responsible member"
 	case ReasonAlreadyActive:
 		return "a run is already active for this target"
+	case ReasonDuplicateSameDay:
+		return "this autopilot already created its issue today"
 	case ReasonIssueInTriage:
 		return "the issue is in Triage and has no owner to run yet; accept it out of Triage first"
 	case ReasonIssueArchived:

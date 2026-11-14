@@ -99,6 +99,13 @@ const (
 	// ReasonIssueLimitReached means a create_issue Autopilot was admitted for a
 	// run, but Cloud's effective workspace issue-count limit blocked the issue.
 	ReasonIssueLimitReached ReasonCode = "issue_limit_reached"
+	// ReasonDuplicateSameDay means a create_issue Autopilot configured with
+	// issue_dedup_policy='per_day' already created its issue earlier in the
+	// trigger's local calendar day, so this firing was skipped rather than
+	// producing a second identical issue (RIC-2291). Distinct from
+	// already_active: that is a run still in flight, this is the day's work
+	// already having happened — including having already finished.
+	ReasonDuplicateSameDay ReasonCode = "duplicate_same_day"
 	// ReasonBudgetExceeded: the target's runtime has a cost budget (total or
 	// for the agent owner) whose current period is spent. The run is not
 	// queued; the user triggers it again after the period resets. Reveals

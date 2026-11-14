@@ -296,3 +296,112 @@ func TestValidateIssueTitleTemplate(t *testing.T) {
 		})
 	}
 }
+
+// TestAutopilotLocalDayWindow pins the "same day" boundary to the trigger's
+// timezone rather than UTC: a 20:00 Asia/Shanghai firing is still the same
+// local day as an earlier 08:00 one, even though UTC has already rolled over.
+func TestAutopilotLocalDayWindow(t *testing.T) {
+	cases := []struct {
+		name      string
+		triggered time.Time
+		// planned is the run's canonical occurrence; zero means "not a
+		// scheduled occurrence" and exercises the wall-clock fallback.
+		planned   time.Time
+		timezone  string
+		wantStart time.Time
+		wantEnd   time.Time
+	}{
+		{
+			name:      "shanghai evening stays on the local day",
+			triggered: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC), // 20:00 +08
+			timezone:  "Asia/Shanghai",
+			wantStart: time.Date(2026, 11, 4, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60)),
+			wantEnd:   time.Date(2026, 11, 5, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60)),
+		},
+		{
+			name:      "utc afternoon is the same utc day",
+			triggered: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC),
+			timezone:  "UTC",
+			wantStart: time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC),
+			wantEnd:   time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:      "utc late evening already belongs to the next shanghai day",
+			triggered: time.Date(2026, 11, 4, 17, 0, 0, 0, time.UTC), // 01:00 +08 next day
+			timezone:  "Asia/Shanghai",
+			wantStart: time.Date(2026, 11, 5, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60)),
+			wantEnd:   time.Date(2026, 11, 6, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60)),
+		},
+		{
+			name:      "unknown timezone falls back to utc",
+			triggered: time.Date(2026, 11, 4, 22, 0, 0, 0, time.UTC),
+			timezone:  "Not/AZone",
+			wantStart: time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC),
+			wantEnd:   time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			// A scheduled slot that fires late (or is replayed after an
+			// outage) belongs to the day of the SLOT, not the day of the
+			// dispatch. planned_at wins over the wall clock.
+			name:      "planned occurrence wins over dispatch time",
+			triggered: time.Date(2026, 11, 4, 9, 30, 0, 0, time.UTC),
+			planned:   time.Date(2026, 11, 3, 23, 0, 0, 0, time.UTC), // 07:00 +08 on the 4th
+			timezone:  "Asia/Shanghai",
+			wantStart: time.Date(2026, 11, 4, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60)),
+			wantEnd:   time.Date(2026, 11, 5, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60)),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run := db.AutopilotRun{TriggeredAt: pgtype.Timestamptz{Time: tc.triggered, Valid: true}}
+			if !tc.planned.IsZero() {
+				run.PlannedAt = pgtype.Timestamptz{Time: tc.planned, Valid: true}
+			}
+			start, end := autopilotLocalDayWindow(run, tc.timezone)
+			if !start.Equal(tc.wantStart) {
+				t.Fatalf("day start = %s, want %s", start, tc.wantStart)
+			}
+			if !end.Equal(tc.wantEnd) {
+				t.Fatalf("day end = %s, want %s", end, tc.wantEnd)
+			}
+			// The window must always be exactly one local day, so a DST
+			// transition day neither leaks nor double-counts an hour.
+			if got, want := end.Sub(start), 24*time.Hour; got != want {
+				t.Fatalf("window length = %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+// TestValidateIssueDedupPolicy locks the accepted set and, importantly, that an
+// omitted policy normalizes to the historic "off" behaviour so no existing
+// autopilot silently changes dedup semantics.
+func TestValidateIssueDedupPolicy(t *testing.T) {
+	strPtr := func(s string) *string { return &s }
+
+	cases := []struct {
+		name   string
+		raw    *string
+		want   string
+		wantOK bool
+	}{
+		{name: "omitted is off", raw: nil, want: "off", wantOK: true},
+		{name: "empty string is off", raw: strPtr(""), want: "off", wantOK: true},
+		{name: "explicit off", raw: strPtr("off"), want: "off", wantOK: true},
+		{name: "per_day", raw: strPtr("per_day"), want: "per_day", wantOK: true},
+		{name: "whitespace tolerated", raw: strPtr("  per_day  "), want: "per_day", wantOK: true},
+		{name: "typo rejected", raw: strPtr("perday"), want: "off", wantOK: false},
+		{name: "wrong case rejected", raw: strPtr("PER_DAY"), want: "off", wantOK: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ValidateIssueDedupPolicy(tc.raw)
+			if ok != tc.wantOK {
+				t.Fatalf("ValidateIssueDedupPolicy(%v) ok = %v, want %v", tc.raw, ok, tc.wantOK)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("ValidateIssueDedupPolicy(%v) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}

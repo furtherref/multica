@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -431,5 +432,99 @@ func TestDispatchAutopilotForPlanRecoversPartialRun(t *testing.T) {
 				t.Fatalf("expected exactly 1 live row at (trigger, planned_at) after recovery, got %d", liveRows)
 			}
 		})
+	}
+}
+
+// TestDispatchAutopilotPerDayDedupCreatesOneIssuePerDay locks the RIC-2291
+// contract for autopilots configured with issue_dedup_policy='per_day':
+//
+//   - Two firings the same local day produce ONE issue, even though they render
+//     distinct titles (the recent-duplicate guard would not have caught this).
+//   - The second firing is recorded as `skipped` with reason_code
+//     duplicate_same_day, so the operator sees why nothing happened.
+//   - A firing on a later local day still creates a new issue.
+//
+// The day the fixture lives in is chosen far enough back that the real
+// today-anchored runs of this test stay self-contained, and the run's
+// trigger instant — not wall-clock now — is what the guard reads.
+func TestDispatchAutopilotPerDayDedupCreatesOneIssuePerDay(t *testing.T) {
+	ctx := context.Background()
+	queries := db.New(testPool)
+	bus := events.New()
+	taskSvc := service.NewTaskService(queries, testPool, nil, bus)
+	autopilotSvc := service.NewAutopilotService(queries, testPool, bus, taskSvc)
+
+	var agentID string
+	if err := testPool.QueryRow(ctx,
+		`SELECT id::text FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
+		testWorkspaceID,
+	).Scan(&agentID); err != nil {
+		t.Fatalf("load fixture agent: %v", err)
+	}
+
+	ap, err := queries.CreateAutopilot(ctx, db.CreateAutopilotParams{
+		WorkspaceID:   parseUUID(testWorkspaceID),
+		Title:         "Per day dedup guard",
+		Description:   pgtype.Text{String: "Per day dedup guard test", Valid: true},
+		AssigneeType:  "agent",
+		AssigneeID:    parseUUID(agentID),
+		Status:        "active",
+		ExecutionMode: "create_issue",
+		// Deliberately a static template: the guard must key on the DAY, not
+		// on the rendered title.
+		IssueTitleTemplate: pgtype.Text{String: "Per day dedup issue", Valid: true},
+		IssueDedupPolicy:   pgtype.Text{String: "per_day", Valid: true},
+		CreatedByType:      "member",
+		CreatedByID:        parseUUID(testUserID),
+	})
+	if err != nil {
+		t.Fatalf("CreateAutopilot: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = testPool.Exec(bg, `DELETE FROM autopilot WHERE id = $1`, ap.ID)
+		_, _ = testPool.Exec(bg, `DELETE FROM issue WHERE workspace_id = $1 AND origin_type = 'autopilot' AND origin_id = $2`, testWorkspaceID, ap.ID)
+	})
+
+	trigger := seedAutopilotScheduleTrigger(t, queries, ap)
+
+	// Noon and 20:00 on the same local (UTC) day, two months back so the test
+	// never collides with real history.
+	day := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	first, err := autopilotSvc.DispatchAutopilotForPlan(ctx, ap, trigger, "schedule", nil, day.Add(12*time.Hour))
+	if err != nil {
+		t.Fatalf("first DispatchAutopilotForPlan: %v", err)
+	}
+	if first == nil || !first.IssueID.Valid {
+		t.Fatalf("first dispatch = %+v, want issue_created with issue_id", first)
+	}
+	second, err := autopilotSvc.DispatchAutopilotForPlan(ctx, ap, trigger, "schedule", nil, day.Add(20*time.Hour))
+	if err != nil {
+		t.Fatalf("second DispatchAutopilotForPlan (same day): %v", err)
+	}
+	if second == nil || second.ReasonCode.String != string(dispatch.ReasonDuplicateSameDay) {
+		t.Fatalf("second dispatch = %+v, want reason_code %q", second, dispatch.ReasonDuplicateSameDay)
+	}
+	if second.IssueID.Valid {
+		t.Fatalf("same-day dispatch linked issue_id=%s, want no new issue", util.UUIDToString(second.IssueID))
+	}
+
+	third, err := autopilotSvc.DispatchAutopilotForPlan(ctx, ap, trigger, "schedule", nil, day.AddDate(0, 0, 1).Add(12*time.Hour))
+	if err != nil {
+		t.Fatalf("third DispatchAutopilotForPlan (next day): %v", err)
+	}
+	if third == nil || !third.IssueID.Valid {
+		t.Fatalf("next-day dispatch = %+v, want a new issue", third)
+	}
+
+	var count int
+	if err := testPool.QueryRow(ctx,
+		`SELECT count(*) FROM issue WHERE workspace_id = $1 AND origin_type = 'autopilot' AND origin_id = $2`,
+		testWorkspaceID, ap.ID,
+	).Scan(&count); err != nil {
+		t.Fatalf("count issues: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("per_day autopilot should have 2 issues across 2 days, got %d", count)
 	}
 }

@@ -1,0 +1,47 @@
+{
+  "autopilot": {
+    "assignee_id": "a7ffc922-0182-4057-9929-f1a45673a186",
+    "assignee_type": "agent",
+    "can_manage_access": true,
+    "can_write": true,
+    "created_at": "2026-09-23T09:24:32Z",
+    "created_by_id": "0dcf0b8f-8acd-4ae7-9a28-39182ef4e693",
+    "created_by_type": "member",
+    "description": "你是**跨仓库 PR 合并与按机器部署**执行体。本次任务：扫描三机受管仓库的待合 PR，逐个校验后合并，并按**改动涉及的机器**执行对应部署。\n\n## 一、部署机器权威记录（2026-09-23 实测，禁止臆造）\n\n| 机器 | 角色 | ssh 目标 | 仓库根 | 架构 |\n|---|---|---|---|---|\n| **Mac Studio** | 采集端（中心栈已退役） | 本机（无需 ssh） | `/Users/macbook/vscode` | arm64 |\n| **Oracle 云** | **监控中心**（跑完整栈） | `ubuntu@oracle-unet` | `/home/ubuntu/vscode` | aarch64 |\n| **Windows** | 采集端 | `Administrator@100.80.113.39` | `D:/vscode`（严禁 C 盘） | x86_64 |\n\n**中心容器（Oracle）**：`prometheus-0` / `grafana` / `alertmanager-0` / `nginx` / `nginx-exporter`\n**公网入口**：`https://mon.practice.quest/{prometheus,alertmanager}/`、`https://mon-grafana.practice.quest/grafana/`（Basic Auth `monitor`）\n**Alertmanager 内部端口**：`127.0.0.1:9393→9093`\n**Windows 注意**：SSH 间歇不可达 → 重试 3 次；WSL2+Docker Desktop，cAdvisor 需 `tmpfs: /var/run`\n\n## 二、仓库发现（禁止全盘 find /）\n```bash\n# Mac\nfor d in /Users/macbook/vscode/*/; do [ -d \"$d/.git\" ] \u0026\u0026 (cd \"$d\" \u0026\u0026 git remote get-url origin 2\u003e/dev/null | grep -q github.com \u0026\u0026 echo \"$(basename $d)\"); done\n# Oracle\nssh ubuntu@oracle-unet 'for d in $HOME/vscode/*/; do [ -d \"$d/.git\" ] \u0026\u0026 (cd \"$d\" \u0026\u0026 git remote get-url origin 2\u003e/dev/null | grep -q github.com \u0026\u0026 echo \"$(basename $d)\"); done'\n# Windows（失败重试 3 次，仍失败则跳过该机并记录）\nssh Administrator@100.80.113.39 'for /d %d in (D:\\vscode\\*) do @if exist \"%d\\.git\" @echo %~nxd'\n```\n某机不可达 → 记录并**跳过该机**，不阻塞其他机。\n\n## 三、逐仓逐 PR 收集\n```bash\ncd \u003crepo\u003e \u0026\u0026 git fetch --all --prune\ngh pr list --state open --limit 50 --json number,title,headRefName,baseRefName,mergeable,mergeStateStatus,changedFiles,additions,deletions\n```\n\n## 四、硬门禁（任一不过即**跳过该 PR**，继续下一个）\n\n1. **【第一红线】`headRefName` 必须以 `agent/` 开头**\n   - 我方分支格式：`agent/\u003cagent-name\u003e/\u003chash\u003e`\n   - 非 `agent/` 前缀 = 上游/外部 PR → **绝对禁止合并**\n   - 实测反例：`enterprise-keeper` 19 个 open PR 全为上游 PR；`DeepTutor` 20 个全为上游 PR → 一个都不能合\n   - 例外：`feat/ric-*` 等我方人工分支，若关联 issue 为 `in_review`/`done` **且**作者为我方，可合（输出标 `manual-branch`）\n2. **base 必须是 `main` 或 `master`**\n3. **`mergeable=MERGEABLE`**（`CONFLICTING` → 跳过并记录，**禁止擅自解冲突**）\n4. **关联 issue 必须 `in_review` 或 `done`**\n   - 从 PR 标题/正文提取 `RIC-xxxx` → `multica issue get \u003cKEY\u003e --output json` 核台账\n   - **禁止**合并关联 issue 为 `in_progress`/`blocked`/`todo` 的 PR\n   - 提取不到关联 issue → 跳过并记录\n5. **本地 CI（若仓库有 `scripts/local_ci.sh`）**：`bash scripts/local_ci.sh`\n   - **GH Actions 计费停用期，PR 上 `UNSTABLE`/`fail` 是假信号**，不得据此判定不可合\n   - 本地 CI **真实 FAIL** → 跳过并记录根因\n6. **gitleaks**（若可用）：有新增泄露 → 跳过并记录\n\n## 五、合并\n- **逐个串行合并，禁止并发**\n- `gh pr merge \u003cN\u003e --squash --delete-branch`\n- 禁止：无 PR 直推主干 / 解冲突取一边 / 把未验收的当已合入\n\n## 六、主干对齐（每仓合并后）\n```bash\ngit checkout \u003cbase\u003e \u0026\u0026 git pull --ff-only origin \u003cbase\u003e\ngit rev-parse HEAD\ngit push origin \u003cbase\u003e   # 若本地领先\n```\n\n## 七、【核心】按机器部署（合并后必做）\n\n**判定原则**：改动涉及哪台机器的运行组件，就部署哪台。\n\n| 改动类型 | 需部署的机器 | 动作 |\n|---|---|---|\n| `monitoring-stack` 的 Grafana 大盘 / Prometheus 规则 / targets | **Oracle（中心）** | 见下方 Oracle 部署 |\n| `monitoring-stack` 的采集器脚本 / exporter 配置 | 该 exporter 所在机器（Mac / Windows / Oracle） | 该机 `git pull` + 重启对应采集器 |\n| `acme-observability` 等有中心栈的仓库 | 其中心所在机器 | 有 `deploy*` 脚本则执行 |\n| 其他仓库 | — | `deploy=skipped(no-target)`，仅合并+推送 |\n\n### Oracle 中心部署（monitoring-stack 标准动作）\n```bash\nssh ubuntu@oracle-unet '\n  cd ~/vscode/monitoring-stack\n  git fetch origin \u0026\u0026 git checkout main \u0026\u0026 git pull --ff-only origin main\n  git rev-parse --short HEAD\n  docker exec prometheus-0 promtool check config /etc/prometheus/prometheus.yml 2\u003e/dev/null || true\n  # 按改动范围决定是否重启（Grafana 大盘改动只需 provisioning 重载）\n  docker restart prometheus-0 grafana alertmanager-0\n  docker ps --format \"{{.Names}}: {{.Status}}\" | grep -E \"prometheus|grafana|alertmanager\"\n'\n```\n\n### Mac 侧（采集端，不跑中心栈）\n```bash\ncd /Users/macbook/vscode/monitoring-stack \u0026\u0026 git fetch origin \u0026\u0026 git pull --ff-only origin main \u0026\u0026 git rev-parse --short HEAD\n```\n\n### Windows 侧（采集端）\n```\nssh Administrator@100.80.113.39 \"cd /d D:\\vscode\\monitoring-stack \u0026\u0026 git fetch origin \u0026\u0026 git pull --ff-only origin main\"\n```\n- **严禁 C 盘**；SSH 失败重试 3 次，仍失败则记录 `deploy=blocked(ssh-unreachable)` 并**继续**其他仓库\n\n### 部署失败处置\n- 单机失败 → 记录 `deploy=failed` + 原因，**不阻塞**其他仓库\n- 全部失败或中心不可恢复 → 报 `blocked`\n\n## 八、验收（须贴实测证据）\n- [ ] 每仓 `gh pr list --state open` 结果已列出\n- [ ] 已合 PR 的 `agent/` 前缀校验记录（证明未误合上游 PR）\n- [ ] 各仓 `origin/\u003cbase\u003e` 合并前后 SHA 对比\n- [ ] **涉及机器的部署记录**：每台机 `HEAD == origin/\u003cbase\u003e` + 组件健康\n- [ ] Oracle：`docker ps` 三组件 Up + `promtool check config` 通过（若改 Prometheus 配置）\n- [ ] Grafana 大盘改动：provisioning 重载成功\n- [ ] 每个已合 PR 的关联 issue 状态已同步\n- [ ] 本地 CI PASS 日志\n\n## 九、铁律（违反即停）\n- **本任务自身即 PR 合并的合法通道**（禁止主会话直接 `gh pr merge`）\n- **绝不合并非 `agent/` 前缀的上游 PR** —— 第一红线\n- 遇以下情况**立即停下报 blocked**，不硬凑：合并冲突无法机械解决 / 本地 CI 真实失败且根因不明 / 权限不足\n- **不伪造**：无数据如实标注；不臆造 SHA / 容器状态 / 测试结果\n- **不回显**任何凭据明文\n- 无 open PR → 输出 `status: done, summary: 无待合 PR`，不做写操作\n\n## 十、输出契约（末尾必须输出 JSON）\n```json\n{\n  \"task_id\": \"\u003c本次 issue KEY\u003e\",\n  \"status\": \"done|blocked\",\n  \"agent\": \"claude-code-agent\",\n  \"summary\": \"≤200字：扫描N仓 / 合M个PR / 部署到哪些机器\",\n  \"merged\": [{\"repo\": \"monitoring-stack\", \"pr\": 83, \"issue\": \"RIC-1040\", \"sha\": \"...\"}],\n  \"skipped\": [{\"repo\": \"enterprise-keeper\", \"pr\": 1234, \"reason\": \"upstream-branch(非 agent/ 前缀)\"}],\n  \"deployed\": [{\"repo\": \"monitoring-stack\", \"machine\": \"oracle\", \"head\": \"...\", \"health\": \"ok\"}],\n  \"files\": [],\n  \"verify\": \"各仓 HEAD==origin/main + 涉及机器组件健康 + 本地CI PASS\",\n  \"next\": \"\"\n}\n```\n\n## 十一、边界\n- 只处理 `origin` 指向 GitHub 的仓库；无 remote 的跳过\n- 禁止全盘 `find /`；禁止 `issue list --limit \u003e100`\n- 单次运行合并上限 **10 个 PR**（防单次爆炸）",
+    "execution_mode": "create_issue",
+    "id": "9224cdf7-6b02-4131-950c-b3b63e74c0ac",
+    "issue_title_template": "[Infra] 跨仓库 PR 定时合并与部署 ({{date}})",
+    "last_run_at": "2026-11-04T16:00:28Z",
+    "pause_reason": null,
+    "project_id": null,
+    "status": "active",
+    "subscribers": [],
+    "title": "跨仓库 PR 定时合并与按机器部署",
+    "updated_at": "2026-11-04T16:00:28Z",
+    "workspace_id": "03de4570-c1ae-4530-bb55-0f35ef4d1689"
+  },
+  "collaborators": [],
+  "triggers": [
+    {
+      "autopilot_id": "9224cdf7-6b02-4131-950c-b3b63e74c0ac",
+      "created_at": "2026-09-23T09:24:37Z",
+      "cron_expression": "0 */4 * * *",
+      "enabled": true,
+      "has_signing_secret": false,
+      "has_webhook_token": false,
+      "id": "b6da88d6-6ade-4e2d-bd6d-51720fc02449",
+      "kind": "schedule",
+      "label": "每4小时合并+部署",
+      "last_fired_at": "2026-11-04T16:00:28Z",
+      "next_run_at": "2026-11-04T20:00:00Z",
+      "provider": null,
+      "signing_secret_hint": null,
+      "timezone": "Asia/Shanghai",
+      "updated_at": "2026-11-04T16:00:28Z",
+      "webhook_path": null,
+      "webhook_token": null,
+      "webhook_token_hint": null,
+      "webhook_url": null
+    }
+  ]
+}

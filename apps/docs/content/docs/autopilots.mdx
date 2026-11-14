@@ -34,6 +34,23 @@ An autopilot is enabled by default after saving; **Run now** manually executes t
 
 **Run only** requires the runtime to be available at trigger time; otherwise the run shows as skipped, and no waiting issue is left behind.
 
+## Avoid duplicate issues from frequent schedules [#issue-dedup]
+
+A schedule can fire more often than the issue title can distinguish. A `{{date}}` title changes once a day, so an autopilot on `0 */4 * * *` would otherwise create four identically named issues daily and send the assignee after the same work four times.
+
+Set `issue_dedup_policy` to control this:
+
+| Value | Behavior |
+|---|---|
+| `off` (default) | A short recent-duplicate window catches retries seconds apart; separate firings each create their own issue. |
+| `per_day` | At most one issue per trigger timezone's calendar day. Later firings the same day are recorded as skipped with reason `duplicate_same_day`. |
+
+`per_day` suits work that must not run twice a day — a merge and deploy pass, a daily report. It still counts a day whose issue already finished, so a schedule that fires again in the evening does not reopen the day's work. Set it from the CLI:
+
+```bash
+multica autopilot update <autopilot> --issue-dedup-policy per_day
+```
+
 ## Run on a schedule
 
 The schedule editor lets you pick the run time, repeat days, time window, and timezone, and previews the upcoming run times. One autopilot can have multiple schedules; enabling or disabling an individual trigger is done with the CLI's `autopilot trigger-update` — see [Using the CLI](/cli) for the parameters.

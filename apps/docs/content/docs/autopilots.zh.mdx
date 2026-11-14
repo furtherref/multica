@@ -34,6 +34,23 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 **仅运行**要求运行时在触发时可用；否则本次运行会显示为"已跳过"，不会留下一个等待中的任务。
 
+## 避免高频时间表建出重复任务 [#issue-dedup]
+
+时间表可能比标题的区分粒度触发得更频繁。`{{date}}` 每天只变一次，所以 `0 */4 * * *` 的自动化本会每天建出 4 条同名任务，让执行方把同一份工作做 4 遍。
+
+用 `issue_dedup_policy` 控制去重：
+
+| 取值 | 行为 |
+|---|---|
+| `off`（默认） | 只拦截相隔数秒的重复触发；不同轮次各自建单。 |
+| `per_day` | 按触发器时区的自然日最多建一条任务。同日后续触发记为"已跳过"，原因 `duplicate_same_day`。 |
+
+`per_day` 适合一天内不能重复执行的工作，例如合并部署、每日报告。当天任务已完成也计入，所以傍晚再次触发不会重开当天的工作。通过 CLI 设置：
+
+```bash
+multica autopilot update <autopilot> --issue-dedup-policy per_day
+```
+
 ## 按时间运行
 
 时间表编辑器可以选择运行时间、重复日期、时间窗口和时区，并预览接下来的运行时间。一条自动化可以添加多个时间表；单独启停某个触发器通过 CLI 的 `autopilot trigger-update` 完成，参数见 [CLI 命令](/cli)。

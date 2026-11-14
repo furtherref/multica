@@ -47,11 +47,14 @@ type AutopilotResponse struct {
 	PauseReason        *string `json:"pause_reason"`
 	ExecutionMode      string  `json:"execution_mode"`
 	IssueTitleTemplate *string `json:"issue_title_template"`
-	CreatedByType      string  `json:"created_by_type"`
-	CreatedByID        string  `json:"created_by_id"`
-	LastRunAt          *string `json:"last_run_at"`
-	CreatedAt          string  `json:"created_at"`
-	UpdatedAt          string  `json:"updated_at"`
+	// IssueDedupPolicy is "off" (default) or "per_day". See
+	// service.ValidateIssueDedupPolicy.
+	IssueDedupPolicy *string           `json:"issue_dedup_policy"`
+	CreatedByType    string            `json:"created_by_type"`
+	CreatedByID      string            `json:"created_by_id"`
+	LastRunAt        *string           `json:"last_run_at"`
+	CreatedAt        string            `json:"created_at"`
+	UpdatedAt        string            `json:"updated_at"`
 
 	// List-endpoint-only derived fields (absent on the detail/create/update
 	// responses and on older servers — clients must treat them as optional).
@@ -210,6 +213,7 @@ func autopilotToResponse(a db.Autopilot, subscribers []db.AutopilotSubscriber) A
 		PauseReason:        textToPtr(a.PauseReason),
 		ExecutionMode:      a.ExecutionMode,
 		IssueTitleTemplate: textToPtr(a.IssueTitleTemplate),
+		IssueDedupPolicy:   &a.IssueDedupPolicy,
 		CreatedByType:      a.CreatedByType,
 		CreatedByID:        uuidToString(a.CreatedByID),
 		LastRunAt:          timestampToPtr(a.LastRunAt),
@@ -366,6 +370,7 @@ type CreateAutopilotRequest struct {
 	AssigneeID         string            `json:"assignee_id"`
 	ExecutionMode      string            `json:"execution_mode"`
 	IssueTitleTemplate *string           `json:"issue_title_template"`
+	IssueDedupPolicy   *string           `json:"issue_dedup_policy"`
 	Subscribers        []SubscriberInput `json:"subscribers"`
 }
 
@@ -378,6 +383,7 @@ type UpdateAutopilotRequest struct {
 	Status             *string `json:"status"`
 	ExecutionMode      *string `json:"execution_mode"`
 	IssueTitleTemplate *string `json:"issue_title_template"`
+	IssueDedupPolicy   *string `json:"issue_dedup_policy"`
 	// Wholesale replacement when present; omit to leave subscribers untouched.
 	Subscribers []SubscriberInput `json:"subscribers"`
 }
@@ -833,6 +839,11 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	issueDedupPolicy, ok := service.ValidateIssueDedupPolicy(req.IssueDedupPolicy)
+	if !ok {
+		writeError(w, http.StatusBadRequest, service.IssueDedupPolicyError())
+		return
+	}
 
 	workspaceID := h.resolveWorkspaceID(r)
 	// Everything this handler stamps — created_by, the v1 rule version, the
@@ -911,6 +922,7 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 		Description:        ptrToText(req.Description),
 		IssueTitleTemplate: ptrToText(req.IssueTitleTemplate),
 		ProjectID:          projectID,
+		IssueDedupPolicy:   pgtype.Text{String: string(issueDedupPolicy), Valid: true},
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create autopilot")
@@ -1070,6 +1082,7 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 		Description:        prev.Description,
 		AssigneeID:         prev.AssigneeID,
 		IssueTitleTemplate: prev.IssueTitleTemplate,
+		IssueDedupPolicy:   pgtype.Text{String: prev.IssueDedupPolicy, Valid: true},
 		ProjectID:          prev.ProjectID,
 	}
 	if req.Title != nil {
@@ -1092,6 +1105,14 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		params.IssueTitleTemplate = ptrToText(req.IssueTitleTemplate)
+	}
+	if _, ok := rawFields["issue_dedup_policy"]; ok {
+		policy, valid := service.ValidateIssueDedupPolicy(req.IssueDedupPolicy)
+		if !valid {
+			writeError(w, http.StatusBadRequest, service.IssueDedupPolicyError())
+			return
+		}
+		params.IssueDedupPolicy = pgtype.Text{String: string(policy), Valid: true}
 	}
 	if _, ok := rawFields["project_id"]; ok {
 		projectID, ok := h.parseAutopilotProjectID(w, r, req.ProjectID, prev.WorkspaceID)
