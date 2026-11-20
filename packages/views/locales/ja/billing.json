@@ -28,6 +28,7 @@
     "actions": {
       "retry": "再試行",
       "retry_autopilots": "自動化の使用量を再取得",
+      "retry_storage": "添付ファイルの保存容量の使用量を再試行",
       "upgrade_to": "{{plan}} にアップグレード",
       "switch_to": "{{plan}} に切り替え",
       "manage": "請求を管理",
@@ -137,7 +138,10 @@
       "usage_unavailable": "使用量は一時的に利用できません",
       "members": "メンバー",
       "members_pending": "保留中の招待：{{pending}} 件",
-      "metering": "スケジュール、Webhook、エージェントによる実行はカウントされます。メンバーが「今すぐ実行」で開始した実行はカウントされません。"
+      "metering": "スケジュール、Webhook、エージェントによる実行はカウントされます。メンバーが「今すぐ実行」で開始した実行はカウントされません。",
+      "storage": "添付ファイルの保存容量",
+      "storage_description": "タスク、コメント、チャットの添付ファイル。",
+      "storage_label": "添付ファイルの保存容量の使用量"
     },
     "seats": {
       "title": "席数",
@@ -244,7 +248,22 @@
     "read_only": "読み取り専用です。編集するにはアップグレードしてください。",
     "unavailable": "このワークスペースのプランには含まれていません。",
     "view_plans": "プランを見る",
-    "locked_error": "このワークスペースのプランには含まれていません。既存の設定はそのまま有効です。追加するにはアップグレードしてください。"
+    "locked_error": "このワークスペースのプランには含まれていません。既存の設定はそのまま有効です。追加するにはアップグレードしてください。",
+    "upgrade_to_add": "アップグレード",
+    "business": "Business",
+    "badge_label": "Business の機能。詳細を表示",
+    "upgrade_to_business": "Business にアップグレード",
+    "ask_admin": "Business へのアップグレードをワークスペースの管理者に依頼してください。",
+    "upgrade_card": {
+      "agent_invocation_members": {
+        "title": "特定のメンバーにエージェントの実行を許可するのは Business の機能です",
+        "description": "自分だけ、またはワークスペース全体に公開する設定は、どのプランでも使えます。"
+      },
+      "runtime_member_sharing": {
+        "title": "ランタイムを特定のメンバーと共有するのは Business の機能です",
+        "description": "\"非公開\" と \"公開\" は、どのプランでも使えます。"
+      }
+    }
   },
   "trial": {
     "status": {
@@ -308,5 +327,13 @@
         "after": "終了後も既存のゲストはアクセスを保持します。新しいゲストの招待には Pro または Business が必要です。"
       }
     }
+  },
+  "storage_limit": {
+    "title": "{{filename}} はアップロードされませんでした",
+    "copy_title": "サブタスクは作成されませんでした：元の添付ファイルをコピーできません",
+    "admin_body": "添付ファイルの保存容量が上限に達しました（{{used}} / {{limit}}）。既存の添付ファイルには影響しません。",
+    "admin_body_no_figures": "添付ファイルの保存容量が上限に達しました。既存の添付ファイルには影響しません。",
+    "member_body": "添付ファイルの保存容量が上限に達しました。管理者にプランのアップグレードを依頼するか、不要な添付ファイルを削除してください。",
+    "dismiss": "閉じる"
   }
 }

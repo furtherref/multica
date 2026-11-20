@@ -1302,10 +1302,15 @@ export interface DashboardFailureByAgent {
 
 export type RuntimeUpdateStatus =
   | "pending"
+  // The daemon is busy and installs once its last agent task finishes.
+  | "scheduled"
   | "running"
   | "completed"
   | "failed"
-  | "timeout";
+  | "timeout"
+  | "cancelled"
+  // The machine did not become idle within 24 hours.
+  | "expired";
 
 export interface RuntimeUpdate {
   id: string;
@@ -1314,6 +1319,10 @@ export interface RuntimeUpdate {
   target_version: string;
   output?: string;
   error?: string;
+  /** Agent tasks the daemon is waiting for while `scheduled`. */
+  active_tasks?: number;
+  /** True until installation starts. */
+  cancellable: boolean;
   created_at: string;
   updated_at: string;
 }

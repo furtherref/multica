@@ -16,11 +16,14 @@ const (
 	// GateMembers caps a workspace's members. Guests take no slot. It has no
 	// period: the limit is a ceiling on headcount, not a budget that resets.
 	GateMembers GateName = "members"
+	// GateStorageBytes caps the attachment bytes a workspace holds. Like
+	// members it has no period: the limit is what the workspace may hold now.
+	GateStorageBytes GateName = "storage_bytes"
 )
 
 func (n GateName) valid() bool {
 	switch n {
-	case GateAutopilotRuns, GateMembers:
+	case GateAutopilotRuns, GateMembers, GateStorageBytes:
 		return true
 	default:
 		return false
@@ -116,16 +119,33 @@ const (
 	// FeatureGuests covers adding guests (MUL-9420): inviting one, making a
 	// member a guest, and sharing more projects with a guest.
 	FeatureGuests FeatureName = "guests"
+	// FeatureAgentInvocationMembers covers letting specific members invoke an
+	// agent: creating an agent with a member list, adding to the list, and
+	// switching from "only me" or "whole workspace" to specific members.
+	FeatureAgentInvocationMembers FeatureName = "agent_invocation_members"
+	// FeatureRuntimeMemberSharing covers sharing a private runtime with
+	// specific members: adding anyone to its shared_with list.
+	FeatureRuntimeMemberSharing FeatureName = "runtime_member_sharing"
+	// FeatureTeamAppAccounts covers team Apps accounts: connecting one for an
+	// app that has none, giving an agent a team-account app or a higher level
+	// on one, and custom team rules.
+	FeatureTeamAppAccounts FeatureName = "team_app_accounts"
 )
 
 // Features lists every paid feature this consumer understands.
 func Features() []FeatureName {
-	return []FeatureName{FeaturePrivateProjects, FeatureGuests}
+	return []FeatureName{
+		FeaturePrivateProjects,
+		FeatureGuests,
+		FeatureAgentInvocationMembers,
+		FeatureRuntimeMemberSharing,
+		FeatureTeamAppAccounts,
+	}
 }
 
 func (n FeatureName) Valid() bool {
 	switch n {
-	case FeaturePrivateProjects, FeatureGuests:
+	case FeaturePrivateProjects, FeatureGuests, FeatureAgentInvocationMembers, FeatureRuntimeMemberSharing, FeatureTeamAppAccounts:
 		return true
 	default:
 		return false

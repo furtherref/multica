@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/attribution"
+	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -1771,6 +1772,15 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Paid feature check after every permission and validation check, so a
+	// caller who could not create this agent anyway gets the ordinary error.
+	var invocationAdmission featureAdmission
+	if agentInvocationMembersAdds(permissionModePrivate, nil, perm) {
+		if invocationAdmission, ok = h.requireFeatureAddition(w, r, wsUUID, entitlement.FeatureAgentInvocationMembers, agentInvocationOpCreate); !ok {
+			return
+		}
+	}
+
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start agent create transaction")
@@ -1857,6 +1867,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to commit agent create")
 		return
 	}
+	invocationAdmission.admitted(r.Context())
 	slog.Info("agent created", append(logger.RequestAttrs(r), "agent_id", uuidToString(created.ID), "name", created.Name, "workspace_id", workspaceID)...)
 
 	if runtime.Status == "online" {
@@ -2324,6 +2335,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	permissionTouched := hasPermissionMode || hasTargets || req.Visibility != nil
 	replacePermissionTargets := false
 	authorizationChanged := false
+	invocationAddition := false
 	var resolvedPerm resolvedPermission
 	if permissionTouched {
 		isAgentOwner := uuidToString(existing.OwnerID) == requestUserID(r)
@@ -2354,6 +2366,14 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			replacePermissionTargets = true
 			params.PermissionMode = pgtype.Text{String: perm.mode, Valid: true}
 			params.Visibility = pgtype.Text{String: perm.legacyVisibility(), Valid: true}
+			if agentPermissionNeedsCurrentTargets(perm) {
+				current, err := h.Queries.ListAgentInvocationTargets(r.Context(), existing.ID)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to load agent invocation targets")
+					return
+				}
+				invocationAddition = agentInvocationMembersAdds(existing.PermissionMode, current, perm)
+			}
 		}
 	}
 	if req.Status != nil {
@@ -2548,6 +2568,14 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Paid feature check after every permission and validation check above.
+	var invocationAdmission featureAdmission
+	if invocationAddition {
+		if invocationAdmission, ok = h.requireFeatureAddition(w, r, existing.WorkspaceID, entitlement.FeatureAgentInvocationMembers, agentInvocationOpAddMembers); !ok {
+			return
+		}
+	}
+
 	// Only binding writes need this transaction. Hold the same runtime lock as
 	// revocation until the new binding commits; a preflight-only check is stale
 	// as soon as a public runtime becomes private.
@@ -2709,6 +2737,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	invocationAdmission.admitted(r.Context())
 
 	resp := h.agentToResponse(updated)
 	if err := h.enrichAgentResponseWithTargets(r.Context(), &resp, updated.ID); err != nil {

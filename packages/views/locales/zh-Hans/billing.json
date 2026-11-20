@@ -28,6 +28,7 @@
     "actions": {
       "retry": "重试",
       "retry_autopilots": "重试加载自动化用量",
+      "retry_storage": "重试附件存储用量",
       "upgrade_to": "升级到 {{plan}}",
       "switch_to": "切换到 {{plan}}",
       "manage": "管理账单",
@@ -137,7 +138,10 @@
       "usage_unavailable": "用量暂时不可用",
       "members": "成员",
       "members_pending": "待接受的邀请：{{pending}}",
-      "metering": "时间表、Webhook 和智能体发起的运行计入额度，成员点击\"立即运行\"不计入。"
+      "metering": "时间表、Webhook 和智能体发起的运行计入额度，成员点击\"立即运行\"不计入。",
+      "storage": "附件存储",
+      "storage_description": "任务、评论和聊天中的附件。",
+      "storage_label": "附件存储用量"
     },
     "seats": {
       "title": "席位",
@@ -244,7 +248,22 @@
     "read_only": "只读，升级后可编辑",
     "unavailable": "当前工作区的套餐不包含此功能。",
     "view_plans": "查看套餐",
-    "locked_error": "当前工作区的套餐不包含此功能。已有设置继续生效，升级后可以新增。"
+    "locked_error": "当前工作区的套餐不包含此功能。已有设置继续生效，升级后可以新增。",
+    "upgrade_to_add": "升级套餐",
+    "business": "Business",
+    "badge_label": "Business 功能，查看详情",
+    "upgrade_to_business": "升级到 Business",
+    "ask_admin": "请联系工作区管理员升级到 Business。",
+    "upgrade_card": {
+      "agent_invocation_members": {
+        "title": "允许指定成员运行智能体是 Business 功能",
+        "description": "\"仅自己\"和\"整个工作区\"在所有套餐中都可以使用。"
+      },
+      "runtime_member_sharing": {
+        "title": "与指定成员共享运行时是 Business 功能",
+        "description": "\"私有\"和\"公开\"在所有套餐中都可以使用。"
+      }
+    }
   },
   "trial": {
     "status": {
@@ -308,5 +327,13 @@
         "after": "到期后已有访客保留访问权限，邀请新访客需要 Pro 或 Business。"
       }
     }
+  },
+  "storage_limit": {
+    "title": "{{filename}} 没有上传",
+    "copy_title": "子任务没有创建：无法复制源附件",
+    "admin_body": "附件存储已满（{{used}} / {{limit}}），已有附件不受影响。",
+    "admin_body_no_figures": "附件存储已满，已有附件不受影响。",
+    "member_body": "附件存储已满。请联系管理员升级套餐，或删除不需要的附件。",
+    "dismiss": "关闭"
   }
 }

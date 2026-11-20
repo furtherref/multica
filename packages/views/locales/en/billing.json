@@ -28,6 +28,7 @@
     "actions": {
       "retry": "Retry",
       "retry_autopilots": "Retry automation usage",
+      "retry_storage": "Retry attachment storage usage",
       "upgrade_to": "Upgrade to {{plan}}",
       "switch_to": "Switch to {{plan}}",
       "manage": "Manage billing",
@@ -138,7 +139,10 @@
       "usage_unavailable": "Usage is temporarily unavailable",
       "members": "Members",
       "members_pending": "Pending invitations: {{pending}}",
-      "metering": "Runs from schedules, webhooks, and agents count. Runs a member starts with Run now don't."
+      "metering": "Runs from schedules, webhooks, and agents count. Runs a member starts with Run now don't.",
+      "storage": "Attachment storage",
+      "storage_description": "Attachments in issues, comments, and chat.",
+      "storage_label": "Attachment storage usage"
     },
     "seats": {
       "title": "Seats",
@@ -250,7 +254,22 @@
     "read_only": "Read-only. Upgrade to edit.",
     "unavailable": "Not included in this workspace's plan.",
     "view_plans": "View plans",
-    "locked_error": "This isn't included in the workspace's plan. Existing settings keep working; upgrade to add more."
+    "locked_error": "This isn't included in the workspace's plan. Existing settings keep working; upgrade to add more.",
+    "upgrade_to_add": "Upgrade to add",
+    "business": "Business",
+    "badge_label": "Business feature. Show details",
+    "upgrade_to_business": "Upgrade to Business",
+    "ask_admin": "Ask a workspace admin to upgrade to Business.",
+    "upgrade_card": {
+      "agent_invocation_members": {
+        "title": "Letting specific people run an agent is a Business feature",
+        "description": "\"Only me\" and \"Entire workspace\" stay available on every plan."
+      },
+      "runtime_member_sharing": {
+        "title": "Sharing a runtime with specific members is a Business feature",
+        "description": "\"Private\" and \"Public\" stay available on every plan."
+      }
+    }
   },
   "trial": {
     "status": {
@@ -320,5 +339,13 @@
         "after": "Existing guests keep their access after the trial. New guests need Pro or Business."
       }
     }
+  },
+  "storage_limit": {
+    "title": "{{filename}} wasn't uploaded",
+    "copy_title": "The sub-issue wasn't created: its source attachments couldn't be copied",
+    "admin_body": "Attachment storage is full ({{used}} / {{limit}}). Existing attachments aren't affected.",
+    "admin_body_no_figures": "Attachment storage is full. Existing attachments aren't affected.",
+    "member_body": "Attachment storage is full. Ask an admin to upgrade the plan, or delete attachments you no longer need.",
+    "dismiss": "Dismiss"
   }
 }
