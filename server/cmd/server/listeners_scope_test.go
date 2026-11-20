@@ -27,23 +27,18 @@ func TestRegisterListeners_ChatSessionCreatedGoesOnlyToCreator(t *testing.T) {
 
 	bus.Publish(events.Event{
 		Type: protocol.EventChatSessionCreated, WorkspaceID: "ws-1",
-		ActorType: "member", ActorID: "creator-1", ChatSessionID: "chat-1",
+		ActorType: "member", ActorID: "creator-1", ChatSessionID: "chat-1", ChatSessionOwnerID: "creator-1",
 		Payload: protocol.ChatSessionCreatedPayload{
 			WorkspaceID: "ws-1", ChatSessionID: "chat-1", CreatorID: "creator-1",
 			Title: "private opening title",
 		},
 	})
 
-	if len(fb.workspaceCalls) != 0 {
-		t.Fatalf("private Chat create reached workspace fanout: %+v", fb.workspaceCalls)
-	}
-	if len(fb.userCalls) != 1 || fb.userCalls[0].userID != "creator-1" {
-		t.Fatalf("creator fanout = %+v, want creator-1 once", fb.userCalls)
-	}
+	msg := onlyOwnerWorkspaceFrame(t, fb, "ws-1", "creator-1")
 	var frame struct {
 		Payload protocol.ChatSessionCreatedPayload `json:"payload"`
 	}
-	if err := json.Unmarshal(fb.userCalls[0].msg, &frame); err != nil {
+	if err := json.Unmarshal(msg, &frame); err != nil {
 		t.Fatalf("decode creator frame: %v", err)
 	}
 	if frame.Payload.WorkspaceID != "ws-1" || frame.Payload.ChatSessionID != "chat-1" {
@@ -58,18 +53,32 @@ func TestRegisterListeners_ChatSessionTitleUpdateGoesOnlyToCreator(t *testing.T)
 
 	bus.Publish(events.Event{
 		Type: protocol.EventChatSessionUpdated, WorkspaceID: "ws-1",
-		ActorType: "member", ActorID: "creator-1", ChatSessionID: "chat-1",
+		ActorType: "member", ActorID: "creator-1", ChatSessionID: "chat-1", ChatSessionOwnerID: "creator-1",
 		Payload: protocol.ChatSessionUpdatedPayload{
 			ChatSessionID: "chat-1", Title: "private derived title",
 		},
 	})
 
-	if len(fb.workspaceCalls) != 0 {
-		t.Fatalf("private Chat title reached workspace fanout: %+v", fb.workspaceCalls)
+	onlyOwnerWorkspaceFrame(t, fb, "ws-1", "creator-1")
+}
+
+// onlyOwnerWorkspaceFrame asserts that the one delivery went to ownerID's
+// connections bound to workspaceID, and returns its frame. The user scope
+// would also reach the owner's connections to other workspaces, which are not
+// re-authorized against workspaceID.
+func onlyOwnerWorkspaceFrame(t *testing.T, fb *fakeBroadcaster, workspaceID, ownerID string) []byte {
+	t.Helper()
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	if len(fb.workspaceCalls) != 0 || len(fb.userCalls) != 0 || fb.broadcastCalled != 0 {
+		t.Fatalf("private content left the owner's workspace connections: workspace=%+v user=%+v broadcast=%d",
+			fb.workspaceCalls, fb.userCalls, fb.broadcastCalled)
 	}
-	if len(fb.userCalls) != 1 || fb.userCalls[0].userID != "creator-1" {
-		t.Fatalf("creator fanout = %+v, want creator-1 once", fb.userCalls)
+	want := realtime.WorkspaceMemberScopeID(workspaceID, ownerID)
+	if len(fb.scopeCalls) != 1 || fb.scopeCalls[0].scopeType != realtime.ScopeWorkspaceMember || fb.scopeCalls[0].scopeID != want {
+		t.Fatalf("scope fanout = %+v, want %s/%s once", fb.scopeCalls, realtime.ScopeWorkspaceMember, want)
 	}
+	return fb.scopeCalls[0].msg
 }
 
 type scopeCall struct {
@@ -480,3 +489,130 @@ func TestRegisterListeners_InvitationRevokedStillTargetsInviteeNotActor(t *testi
 }
 
 func inviteePtr(s string) *string { return &s }
+
+// IM outbounds (Slack, Lark, ...) subscribe to chat:done and task:message on
+// the bus in-process. Narrowing the WebSocket fanout must not narrow them.
+func TestRegisterListeners_ChatRoutingKeepsInProcessListeners(t *testing.T) {
+	bus := events.New()
+	fb := &fakeBroadcaster{}
+	var got []events.Event
+	for _, eventType := range []string{protocol.EventChatDone, protocol.EventTaskMessage} {
+		bus.Subscribe(eventType, func(e events.Event) { got = append(got, e) })
+	}
+	registerListeners(bus, fb)
+
+	done := protocol.ChatDonePayload{ChatSessionID: "chat-1", TaskID: "task-1", Content: "assistant reply"}
+	message := protocol.TaskMessagePayload{TaskID: "task-1", Seq: 1, Type: "text", Content: "streamed text"}
+	for _, e := range []events.Event{
+		{Type: protocol.EventChatDone, WorkspaceID: "ws-1", ChatSessionID: "chat-1", ChatSessionOwnerID: "owner-1", Payload: done},
+		{Type: protocol.EventTaskMessage, WorkspaceID: "ws-1", TaskID: "task-1", ChatSessionID: "chat-1", ChatSessionOwnerID: "owner-1", Payload: message},
+		// Ownerless events are dropped from the WebSocket only.
+		{Type: protocol.EventChatDone, WorkspaceID: "ws-1", ChatSessionID: "chat-1", Payload: done},
+	} {
+		bus.Publish(e)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("in-process listener saw %d events, want 3", len(got))
+	}
+	if p, ok := got[0].Payload.(protocol.ChatDonePayload); !ok || p.Content != "assistant reply" {
+		t.Fatalf("chat:done payload = %#v, want the full reply", got[0].Payload)
+	}
+	if p, ok := got[1].Payload.(protocol.TaskMessagePayload); !ok || p.Content != "streamed text" {
+		t.Fatalf("task:message payload = %#v, want the full message", got[1].Payload)
+	}
+	if p, ok := got[2].Payload.(protocol.ChatDonePayload); !ok || p.Content != "assistant reply" {
+		t.Fatalf("ownerless chat:done payload = %#v, want the full reply", got[2].Payload)
+	}
+}
+
+// A pin is one member's own in every workspace, with or without a private
+// project: one published without its member reaches nobody.
+func TestRegisterListeners_PinEventsWithoutMemberAreDropped(t *testing.T) {
+	for _, eventType := range []string{protocol.EventPinCreated, protocol.EventPinDeleted, protocol.EventPinReordered} {
+		t.Run(eventType, func(t *testing.T) {
+			bus := events.New()
+			fb := &fakeBroadcaster{}
+			registerListeners(bus, fb)
+
+			bus.Publish(events.Event{
+				Type: eventType, WorkspaceID: "ws-1", ActorType: "member", ActorID: "owner-1",
+				Payload: map[string]any{"item_type": "issue", "item_id": "issue-1"},
+			})
+
+			fb.mu.Lock()
+			defer fb.mu.Unlock()
+			if len(fb.workspaceCalls) != 0 || len(fb.scopeCalls) != 0 || len(fb.userCalls) != 0 || fb.broadcastCalled != 0 {
+				t.Fatalf("pin event was delivered: workspace=%+v scope=%+v user=%+v broadcast=%d",
+					fb.workspaceCalls, fb.scopeCalls, fb.userCalls, fb.broadcastCalled)
+			}
+		})
+	}
+}
+
+func TestRegisterListeners_MemberPrivateEventsGoOnlyToThatMember(t *testing.T) {
+	for _, eventType := range []string{
+		protocol.EventIssueViewPreferenceChanged, protocol.EventIssueViewChanged,
+		protocol.EventPinCreated, protocol.EventPinDeleted, protocol.EventPinReordered,
+	} {
+		t.Run(eventType, func(t *testing.T) {
+			bus := events.New()
+			fb := &fakeBroadcaster{}
+			registerListeners(bus, fb)
+
+			bus.Publish(events.Event{
+				Type: eventType, WorkspaceID: "ws-1", ActorType: "member", ActorID: "owner-1",
+				MemberPrivateUserID: "owner-1",
+				Payload:             map[string]any{"view_id": "view-1"},
+			})
+
+			msg := onlyOwnerWorkspaceFrame(t, fb, "ws-1", "owner-1")
+			var frame struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(msg, &frame); err != nil || frame.Type != eventType {
+				t.Fatalf("member frame type = %q (%v), want %q", frame.Type, err, eventType)
+			}
+		})
+	}
+}
+
+// Preferences have no audience but their owner: without one, nobody hears it.
+func TestRegisterListeners_PreferenceEventWithoutMemberIsDropped(t *testing.T) {
+	bus := events.New()
+	fb := &fakeBroadcaster{}
+	registerListeners(bus, fb)
+
+	bus.Publish(events.Event{
+		Type: protocol.EventIssueViewPreferenceChanged, WorkspaceID: "ws-1", ActorType: "member", ActorID: "owner-1",
+		Payload: map[string]any{"scope_type": "sidebar_projects"},
+	})
+
+	if len(fb.workspaceCalls) != 0 || len(fb.userCalls) != 0 || len(fb.scopeCalls) != 0 || fb.broadcastCalled != 0 {
+		t.Fatalf("preference event without a member was delivered: workspace=%+v user=%+v scope=%+v broadcast=%d",
+			fb.workspaceCalls, fb.userCalls, fb.scopeCalls, fb.broadcastCalled)
+	}
+}
+
+// A shared view's change is news to the whole workspace.
+func TestRegisterListeners_SharedIssueViewChangeGoesToWorkspace(t *testing.T) {
+	bus := events.New()
+	fb := &fakeBroadcaster{}
+	registerListeners(bus, fb)
+
+	bus.Publish(events.Event{
+		Type: protocol.EventIssueViewChanged, WorkspaceID: "ws-1", ActorType: "member", ActorID: "owner-1",
+		Payload: map[string]any{"view_id": "view-1", "action": "updated"},
+	})
+
+	if len(fb.scopeCalls) != 0 || len(fb.workspaceCalls) != 1 || fb.workspaceCalls[0].workspaceID != "ws-1" {
+		t.Fatalf("shared view change fanout: scope=%+v workspace=%+v, want ws-1 once", fb.scopeCalls, fb.workspaceCalls)
+	}
+}
+
+// An invitation conclusion must reach the invitee BOTH ways: the workspace
+// broadcast keeps admin pending lists fresh, and a targeted send reaches the
+// invitee's own clients — which are usually bound to a different workspace
+// room (or no room at all, #8432), so the broadcast alone never arrives.
+// The targeted frame passes excludeWorkspace so clients already in the room
+// don't get the event twice.

@@ -19,6 +19,8 @@ interface PriorityPickerProps {
   onUpdate: (updates: Partial<UpdateIssueRequest>) => void;
   trigger?: React.ReactNode;
   triggerRender?: React.ReactElement<Record<string, unknown>>;
+  /** Hover tooltip naming the property; hidden while the picker is open. */
+  tooltip?: React.ReactNode;
   open?: boolean;
   onOpenChange?: (v: boolean) => void;
   align?: "start" | "center" | "end";
@@ -51,6 +53,7 @@ export function PriorityPicker(props: PriorityPickerProps) {
       trigger={props.trigger}
       triggerRender={props.triggerRender}
       triggerClassName={PICKER_TRIGGER_CLASS}
+      tooltip={props.tooltip}
     >
       {(open, onOpenChange) => (
         <PriorityPickerImpl {...props} open={open} onOpenChange={onOpenChange} />
@@ -64,6 +67,7 @@ function PriorityPickerImpl({
   onUpdate,
   trigger: customTrigger,
   triggerRender,
+  tooltip,
   open: controlledOpen,
   onOpenChange: controlledOnOpenChange,
   align,
@@ -81,6 +85,7 @@ function PriorityPickerImpl({
       width="w-44"
       align={align}
       triggerRender={triggerRender}
+      tooltip={tooltip}
       trigger={
         customTrigger ??
         (priority != null ? (

@@ -389,3 +389,28 @@ describe("TranscriptButton", () => {
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
   });
 });
+
+describe("TranscriptButton hosted terminal dialog", () => {
+  it("hands the loaded timeline and keyboard intent to the list owner", async () => {
+    vi.mocked(api.listTaskMessages).mockResolvedValue([msg(1, "Read")]);
+    const onOpenTranscript = vi.fn();
+    renderWithClient(
+      <TranscriptButton
+        task={completedTask}
+        agentName="Demo agent"
+        onOpenTranscript={onOpenTranscript}
+      />,
+      makeClient(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "View transcript" }), { detail: 0 });
+    await waitFor(() => expect(onOpenTranscript).toHaveBeenCalledTimes(1));
+    expect(onOpenTranscript.mock.calls[0]?.[0]).toHaveLength(1);
+    expect(onOpenTranscript.mock.calls[0]?.[1]).toBe(true);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "View transcript" }), { detail: 1 });
+    // The fork re-reads the shared task-messages cache on every open
+    // (merged by seq), so the second open fetches again.
+    await waitFor(() => expect(onOpenTranscript).toHaveBeenCalledTimes(2));
+    expect(onOpenTranscript.mock.calls[1]?.[1]).toBe(false);
+  });
+});

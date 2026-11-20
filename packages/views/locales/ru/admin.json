@@ -1,0 +1,35 @@
+{
+  "page": {
+    "title": "Чат",
+    "description": "Управление учётными записями пользователей во всём развёртывании Multica."
+  },
+  "sidebar": {
+    "console": "Администрирование системы"
+  },
+  "users": {
+    "section_title": "Пользователи · {{count}}",
+    "search_placeholder": "Поиск по имени или email",
+    "filter_label": "Статус",
+    "filter_all": "Все",
+    "filter_active": "Активные",
+    "filter_suspended": "Заблокированные",
+    "suspended_badge": "Заблокирован",
+    "unknown_status_badge": "Неизвестный статус",
+    "actions_menu_aria": "Другие действия",
+    "self_badge": "Вы",
+    "suspend_action": "Заблокировать аккаунт",
+    "restore_action": "Восстановить аккаунт",
+    "suspend_title": "Заблокировать {{name}}",
+    "suspend_description": "После блокировки {{name}} не сможет войти в Multica, активные сеансы истекут при следующем запросе, а выполняемые задачи будут отменены. Аккаунт можно восстановить в любой момент.",
+    "restore_title": "Восстановить {{name}}",
+    "restore_description": "{{name}} снова сможет входить в Multica.",
+    "confirm_cancel": "Отмена",
+    "confirm_action": "Подтвердить",
+    "toast_suspended": "Аккаунт заблокирован",
+    "toast_suspend_failed": "Не удалось заблокировать аккаунт",
+    "toast_restored": "Аккаунт восстановлен",
+    "toast_restore_failed": "Не удалось восстановить аккаунт",
+    "empty": "Нет пользователей, соответствующих поиску"
+  },
+  "back_to_workspace": "Вернуться в рабочее пространство"
+}

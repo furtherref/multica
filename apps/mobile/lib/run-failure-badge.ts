@@ -22,6 +22,7 @@ import { RUNTIME_ACCESS_DENIED_BADGE } from "./runtime-access-copy";
 const FAILURE_REASON_BADGE: Record<string, string> = {
   queued_expired: "Queue expired",
   runtime_offline: "Runtime offline",
+  runtime_access_revoked: "Access revoked",
   runtime_recovery: "Runtime recovery",
   timeout: "Timeout",
   iteration_limit: "Iteration limit",
@@ -53,9 +54,19 @@ const FAILURE_REASON_BADGE: Record<string, string> = {
   manual: "Manual",
 };
 
+/**
+ * Reasons whose badge copy lives in the `issues` namespace
+ * (`runs.failure_badge.*`) rather than in the English-only map above.
+ */
+const LOCALIZED_FAILURE_REASON_BADGE = new Set(["local_directory_missing"]);
+
 export function runFailureBadgeLabel(
   reason: string | null | undefined,
+  t: (key: string) => string,
 ): string | undefined {
   if (!reason) return undefined;
+  if (LOCALIZED_FAILURE_REASON_BADGE.has(reason)) {
+    return t(`runs.failure_badge.${reason}`);
+  }
   return FAILURE_REASON_BADGE[reason];
 }

@@ -269,9 +269,9 @@ func (s *TaskService) SupplementChatQuickActions(ctx context.Context, task db.Ag
 		return fmt.Errorf("attach chat quick actions: %w", err)
 	}
 
-	workspaceID := s.ResolveTaskWorkspaceID(ctx, task)
-	recipientUserID := s.chatTaskCreatorID(ctx, task)
-	if workspaceID == "" || recipientUserID == "" {
+	scope := s.ResolveTaskScope(ctx, task)
+	workspaceID := scope.WorkspaceID
+	if workspaceID == "" || scope.ChatSessionOwnerID == "" {
 		return nil
 	}
 	payload := protocol.ChatQuickActionsPayload{
@@ -283,14 +283,15 @@ func (s *TaskService) SupplementChatQuickActions(ctx context.Context, task db.Ag
 	}
 	_ = json.Unmarshal(msg.QuickActions, &payload.QuickActions)
 	s.Bus.Publish(events.Event{
-		Type:            protocol.EventChatQuickActions,
-		WorkspaceID:     workspaceID,
-		ActorType:       "system",
-		ActorID:         "",
-		ChatSessionID:   util.UUIDToString(task.ChatSessionID),
-		AgentID:         util.UUIDToString(task.AgentID),
-		RecipientUserID: recipientUserID,
-		Payload:         payload,
+		Type:               protocol.EventChatQuickActions,
+		WorkspaceID:        workspaceID,
+		ActorType:          "system",
+		ActorID:            "",
+		ChatSessionID:      util.UUIDToString(task.ChatSessionID),
+		AgentID:            util.UUIDToString(task.AgentID),
+		ChatSessionOwnerID: scope.ChatSessionOwnerID,
+		RecipientUserID:    scope.ChatSessionOwnerID,
+		Payload:            payload,
 	})
 	return nil
 }

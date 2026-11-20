@@ -70,6 +70,7 @@ const (
 	ReasonSelfTriggerSuppressed = dispatch.ReasonSelfTriggerSuppressed
 	ReasonIssueInTriage         = dispatch.ReasonIssueInTriage
 	ReasonIssueArchived         = dispatch.ReasonIssueArchived
+	ReasonProjectAccessBlocked  = dispatch.ReasonProjectAccessBlocked
 	ReasonInternalError         = dispatch.ReasonInternalError
 )
 
@@ -144,6 +145,8 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "this issue is archived; restore it before running agents"
 	case ReasonBudgetExceeded:
 		return "the cost budget for this runtime is reached"
+	case ReasonProjectAccessBlocked:
+		return "the agent's owner is not a member of this private project"
 	default:
 		return "the run was blocked"
 	}

@@ -138,7 +138,7 @@ func TestSkillIndexReachesTheBriefNotTheContextFile(t *testing.T) {
 	// copy of the skill index, so writeContextFiles must not bring the file
 	// back.
 	dir := t.TempDir()
-	if err := writeContextFiles(dir, "", ctx, nil); err != nil {
+	if _, err := writeContextFiles(dir, "", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".agent_context", "issue_context.md")); !errors.Is(err, os.ErrNotExist) {

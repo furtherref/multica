@@ -1,0 +1,85 @@
+{
+  "page": {
+    "title": "聊天",
+    "empty": {
+      "title": "還沒有執行時",
+      "description": "建立第一個範本後，新增 issue 時可以一鍵帶入標題和內容。"
+    },
+    "no_matches": {
+      "title": "無匹配",
+      "with_query": "沒有執行時匹配 \"{{query}}\"{{filterSuffix}}。"
+    },
+    "list_error": {
+      "title": "無法載入 skill",
+      "fallback": "拉取 skill 列表時出錯。",
+      "retry": "重試"
+    },
+    "tagline": "管理建立 issue 時可套用的標題和內容範本。",
+    "new_template": "新增 Issue 範本",
+    "search_placeholder": "搜尋範本名稱、標題或內容..."
+  },
+  "table": {
+    "name": "名稱",
+    "source": "來源",
+    "updated": "更新時間",
+    "source_manual": "手動建立",
+    "by_creator": "由 {{name}} 建立",
+    "no_content": "無內容"
+  },
+  "create": {
+    "close": "關閉",
+    "title": "新增 Issue 範本",
+    "description": "範本只會在建立 issue 時帶入標題和內容。",
+    "name_placeholder": "例如：缺陷回報",
+    "issue_title_placeholder": "例如：修復 {{module}} 中的問題",
+    "issue_content_placeholder": "## 背景\n\n## 重現步驟\n\n## 預期結果\n",
+    "cancel": "取消",
+    "submit": "建立範本",
+    "submitting": "建立中...",
+    "toast_created": "已建立 Issue 範本",
+    "fallback_error": "建立 Issue 範本失敗"
+  },
+  "detail": {
+    "toast_saved": "已儲存 skill",
+    "toast_save_failed": "儲存 skill 失敗",
+    "toast_deleted": "已刪除執行時",
+    "toast_delete_failed": "刪除執行時失敗",
+    "save_bar": {
+      "discard": "丟棄",
+      "save": "儲存修改",
+      "saving": "儲存中...",
+      "unsaved": "未儲存的修改"
+    },
+    "not_found": {
+      "title": "未找到該 skill",
+      "fallback": "這個 skill 可能已被刪除，或你沒有訪問權限。",
+      "back": "返回 Skills"
+    },
+    "delete_dialog": {
+      "title": "刪除自動化",
+      "description": "將永久刪除\"{{title}}\"，連同它的觸發器和執行歷史。此操作不可撤銷。",
+      "warning": "此操作不可撤銷。",
+      "cancel": "取消",
+      "confirm": "刪除",
+      "deleting": "刪除中..."
+    },
+    "all_templates": "全部 Issue 範本",
+    "delete_aria": "刪除 Issue 範本",
+    "sidebar": {
+      "metadata": "中繼資料",
+      "source": "來源",
+      "created": "建立於",
+      "updated": "更新於",
+      "created_by": "新增者",
+      "id": "ID"
+    },
+    "content_edit": "編輯",
+    "content_preview": "預覽",
+    "no_content": "尚無內容。點擊編輯按鈕新增 Issue 內容。"
+  },
+  "fields": {
+    "name": "範本名稱",
+    "issue_title": "Issue 標題",
+    "issue_content": "Issue 內容"
+  }
+}

@@ -18,43 +18,16 @@ beforeEach(() => {
   callbacks.downloadProgress = null;
   callbacks.updateDownloaded = null;
 
-  window.desktopAPI = {
-    appInfo: { version: "0.2.24", os: "macos" },
-    systemLocale: "en-US",
-    onSystemLocaleChanged: vi.fn(() => vi.fn()),
-    runtimeConfig: {
-      ok: true,
-      config: {
-        schemaVersion: 1,
-        apiUrl: "http://localhost:8080",
-        wsUrl: "ws://localhost:8080/ws",
-        appUrl: "http://localhost:3000",
-      },
-    },
-    onAuthToken: vi.fn(() => vi.fn()),
-    onInviteOpen: vi.fn(() => vi.fn()),
-    openExternal: vi.fn(() => Promise.resolve()),
-    downloadURL: vi.fn(() => Promise.resolve()),
-    setImmersiveMode: vi.fn(() => Promise.resolve()),
-    showNotification: vi.fn(),
-    setUnreadBadge: vi.fn(),
-    onInboxOpen: vi.fn(() => vi.fn()),
-    onOpenSettings: vi.fn(() => vi.fn()),
-    onNavigationGesture: vi.fn(() => vi.fn()),
-    pickDirectory: vi.fn(() => Promise.resolve({ ok: false, reason: "cancelled" as const })),
-    validateLocalDirectory: vi.fn(() => Promise.resolve({ ok: true })),
-    setRendererRouteContext: vi.fn(),
-    onCloseActiveTab: vi.fn(() => vi.fn()),
-    closeWindow: vi.fn(),
-    getLastFreeze: vi.fn(() => null),
-    ackFreeze: vi.fn(),
-    windowContext: { kind: "main" as const },
-    reportAuthSession: vi.fn(),
-    openIssueWindow: vi.fn(() => Promise.resolve({ ok: true as const })),
-    onSelectTabShortcut: vi.fn(() => vi.fn()),
-  };
+  // Partial mocks, as upstream's test does: a strict DesktopAPI literal breaks
+  // on every new preload field even though this component reads only these.
+  Object.defineProperty(window, "desktopAPI", {
+    configurable: true,
+    value: { openExternal: vi.fn(() => Promise.resolve()) },
+  });
 
-  window.updater = {
+  Object.defineProperty(window, "updater", {
+    configurable: true,
+    value: {
     onUpdateAvailable: vi.fn((callback: UpdateAvailableCallback) => {
       callbacks.updateAvailable = callback;
       return vi.fn();
@@ -79,7 +52,9 @@ beforeEach(() => {
         available: true,
       } as const),
     ),
-  };
+    },
+  });
+
 });
 
 describe("UpdateNotification", () => {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -192,16 +193,48 @@ func projectOutbound(eventType string, payload any) any {
 	return projected
 }
 
+// isChatPrivateEvent reports whether e carries chat session content that only
+// the session's creator may receive. Every chat:* event qualifies, including
+// ones added later. Of the task events only task:message does: it streams the
+// agent's transcript. Chat-task lifecycle events (task:queued, task:completed,
+// ...) keep workspace fanout because every member's agent presence and
+// workload views depend on them; they carry ids and status, and task:failed
+// has its error text stripped by projectOutbound.
+func isChatPrivateEvent(e events.Event) bool {
+	if strings.HasPrefix(e.Type, "chat:") {
+		return true
+	}
+	return e.Type == protocol.EventTaskMessage && e.ChatSessionID != ""
+}
+
+// memberPrivateEvents never leave their member, so one published without
+// MemberPrivateUserID is dropped instead of reaching the workspace.
+var memberPrivateEvents = map[string]bool{
+	protocol.EventIssueViewPreferenceChanged: true,
+	protocol.EventPinCreated:                 true,
+	protocol.EventPinDeleted:                 true,
+	protocol.EventPinReordered:               true,
+}
+
 // registerListeners wires up event bus listeners for WS broadcasting.
 // Personal events (inbox, invites) are sent only to the target user via
-// SendToUser. All other events are broadcast to the workspace room.
+// SendToUser, chat content only to the chat session's creator, and
+// member-private events only to that member's connections to the workspace.
+// All other events are broadcast to the workspace room.
 //
 // The broadcaster parameter is intentionally typed as the realtime.Broadcaster
 // interface (not *realtime.Hub) so that this layer can later be swapped out
 // for a Redis-backed relay or a feature-flagged dual-write implementation
 // without touching any of the event listeners below. This is Phase 0 of the
 // horizontal-scaling plan tracked in MUL-1138.
-func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
+//
+// audience, when given, narrows events about private projects (MUL-8472) to
+// their members; see privateProjectAudience.
+func registerListeners(bus *events.Bus, b realtime.Broadcaster, audience ...privateProjectAudience) {
+	var projectAudience privateProjectAudience
+	if len(audience) > 0 {
+		projectAudience = audience[0]
+	}
 	// Connection authorization starts from a resolved snapshot. Additive Agent
 	// creation expands rooms in place; mutations that can narrow visibility
 	// close workspace connections on every node via the relay-backed internal
@@ -240,12 +273,14 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 		protocol.EventInboxRead:          true,
 		protocol.EventInboxArchived:      true,
 		protocol.EventInboxUnarchived:    true,
+		protocol.EventInboxDeleted:       true,
 		protocol.EventInboxBatchRead:     true,
 		protocol.EventInboxBatchArchived: true,
+		protocol.EventInboxSnoozed:       true,
+		protocol.EventInboxUnsnoozed:     true,
 		protocol.EventInvitationCreated:  true,
 		protocol.EventInvitationRevoked:  true,
-		protocol.EventChatSessionCreated: true,
-		protocol.EventChatSessionUpdated: true,
+		protocol.EventIssueUnreadChanged: true,
 	}
 
 	// Helper: marshal event and send to a specific user.
@@ -275,11 +310,29 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 		sendToRecipient(b, e, recipientID)
 	})
 
+	// inbox:snoozed — a snooze names its recipient at the top level; a row
+	// written into a snooze carries it on the nested item, like inbox:new.
+	bus.Subscribe(protocol.EventInboxSnoozed, func(e events.Event) {
+		payload, ok := e.Payload.(map[string]any)
+		if !ok {
+			return
+		}
+		recipientID, _ := payload["recipient_id"].(string)
+		if item, ok := payload["item"].(map[string]any); ok && recipientID == "" {
+			recipientID, _ = item["recipient_id"].(string)
+		}
+		sendToRecipient(b, e, recipientID)
+	})
+
 	// inbox:read, inbox:archived, inbox:unarchived, inbox:batch-read,
-	// inbox:batch-archived — extract recipient from top-level payload
+	// inbox:batch-archived, issue_unread:changed — extract recipient from
+	// top-level payload
 	for _, eventType := range []string{
 		protocol.EventInboxRead, protocol.EventInboxArchived, protocol.EventInboxUnarchived,
+		protocol.EventInboxDeleted,
 		protocol.EventInboxBatchRead, protocol.EventInboxBatchArchived,
+		protocol.EventInboxUnsnoozed,
+		protocol.EventIssueUnreadChanged,
 	} {
 		bus.Subscribe(eventType, func(e events.Event) {
 			payload, ok := e.Payload.(map[string]any)
@@ -358,16 +411,6 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 		})
 	}
 
-	// A Chat session is creator-private. Its initial title may be derived from
-	// the creator's first message, so the list-invalidation event must not be
-	// broadcast to every workspace member. ActorID is the creator on every
-	// producer path for this event.
-	for _, eventType := range []string{protocol.EventChatSessionCreated, protocol.EventChatSessionUpdated} {
-		bus.Subscribe(eventType, func(e events.Event) {
-			sendToRecipient(b, e, e.ActorID)
-		})
-	}
-
 	// member:added — also send to the invited user so they discover the new workspace.
 	// Pass excludeWorkspace so clients already in the target room (reached via
 	// BroadcastToWorkspace in SubscribeAll) don't receive the event twice.
@@ -424,6 +467,33 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 			return
 		}
 
+		if e.MemberPrivateUserID != "" || memberPrivateEvents[e.Type] {
+			if e.MemberPrivateUserID == "" || e.WorkspaceID == "" {
+				slog.Warn("realtime: dropping member-private event without recipient", "event_type", e.Type)
+				return
+			}
+			realtime.M.RecordEvent(e.Type)
+			b.BroadcastToScope(realtime.ScopeWorkspaceMember, realtime.WorkspaceMemberScopeID(e.WorkspaceID, e.MemberPrivateUserID), data)
+			return
+		}
+
+		if projectAudience != nil && e.WorkspaceID != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), audienceResolveTimeout)
+			recipients, private, err := projectAudience.Audience(ctx, e)
+			cancel()
+			if err != nil {
+				logAudienceFailure(e, err)
+				return
+			}
+			if private {
+				realtime.M.RecordEvent(e.Type)
+				for _, userID := range recipients {
+					b.BroadcastToScope(realtime.ScopeWorkspaceMember, realtime.WorkspaceMemberScopeID(e.WorkspaceID, userID), data)
+				}
+				return
+			}
+		}
+
 		if isTaskScopedRealtimeEvent(e.Type) {
 			if e.TaskID == "" {
 				realtime.M.MessagesDroppedTotal.Add(1)
@@ -474,6 +544,9 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster) {
 		}
 
 		if strings.HasPrefix(e.Type, "chat:") {
+			if e.RecipientUserID == "" {
+				e.RecipientUserID = e.ChatSessionOwnerID
+			}
 			if e.RecipientUserID == "" || e.AgentID == "" {
 				realtime.M.MessagesDroppedTotal.Add(1)
 				slog.Warn("dropping creator-owned chat event without trusted authorization metadata", "event_type", e.Type)

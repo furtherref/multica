@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, ScrollText } from "lucide-react";
+import { Loader2, ScrollText } from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
 import {
   Tooltip,
@@ -52,6 +52,8 @@ interface TranscriptButtonProps {
    * somewhere else never sees the click that would tell it.
    */
   finalFocus?: boolean;
+  /** Host a terminal transcript outside a row that may be virtualized away. */
+  onOpenTranscript?: (items: TimelineItem[], fromKeyboard: boolean) => void;
   /**
    * Optional content rendered above the transcript event list. Used to
    * surface autopilot webhook payloads inline with the run history.
@@ -77,6 +79,7 @@ export function TranscriptButton({
   open: controlledOpen,
   onOpenChange: controlledOnOpenChange,
   finalFocus,
+  onOpenTranscript,
   headerSlot,
 }: TranscriptButtonProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
@@ -178,9 +181,29 @@ export function TranscriptButton({
     e.stopPropagation();
     const keyboard = e.detail === 0;
     setFromKeyboard(keyboard);
+    // A host that renders terminal transcripts outside a virtualized row
+    // takes the timeline instead of this instance opening its own dialog.
+    if (onOpenTranscript && !isLive) {
+      if (!canFetch) {
+        onOpenTranscript(rawItems, keyboard);
+        return;
+      }
+      void api
+        .listTaskMessages(task.id)
+        .then((fetched) => {
+          const merged = mergeTaskMessagesBySeq(
+            qc.getQueryData<TaskMessagePayload[]>(chatKeys.taskMessages(task.id)) ?? [],
+            fetched,
+          );
+          qc.setQueryData<TaskMessagePayload[]>(chatKeys.taskMessages(task.id), merged);
+          onOpenTranscript(buildTimeline(merged), keyboard);
+        })
+        .catch(() => onOpenTranscript(rawItems, keyboard));
+      return;
+    }
     if (canFetch) setCatchupStatus("pending");
     setOpen(true, keyboard);
-  }, [canFetch, setOpen]);
+  }, [canFetch, setOpen, onOpenTranscript, isLive, rawItems, task.id, qc]);
 
   useEffect(() => {
     if (!open) return;

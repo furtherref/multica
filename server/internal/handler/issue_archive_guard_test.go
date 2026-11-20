@@ -759,7 +759,7 @@ func TestRestoreWithReassignKeepsNewRun(t *testing.T) {
 
 // Fix wave 3: a dispatched task must not START on an archived issue — the
 // /start window between archive commit and cancel effect is closed at the
-// StartAgentTask statement.
+// StartAgentTaskWithSupplement statement.
 func TestStartTaskRefusedOnArchivedIssue(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -780,19 +780,7 @@ func TestStartTaskRefusedOnArchivedIssue(t *testing.T) {
 	if _, err := testPool.Exec(ctx, `UPDATE issue SET status = 'archive' WHERE id = $1`, issueID); err != nil {
 		t.Fatalf("archive issue: %v", err)
 	}
-	if _, err := db.New(testPool).StartAgentTask(ctx, parseUUID(taskID)); !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("start must refuse the archived issue's task, got err=%v", err)
-	}
-	var status string
-	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status); err != nil {
-		t.Fatalf("read task status: %v", err)
-	}
-	if status != "dispatched" {
-		t.Fatalf("refused start must leave the task untouched, got %q", status)
-	}
-
-	// The daemon's live start path is StartAgentTaskWithSupplement; it carries
-	// the same guard.
+	// The daemon's live start path is StartAgentTaskWithSupplement.
 	startWithSupplement := func() error {
 		_, err := db.New(testPool).StartAgentTaskWithSupplement(ctx, db.StartAgentTaskWithSupplementParams{
 			TaskID: parseUUID(taskID),

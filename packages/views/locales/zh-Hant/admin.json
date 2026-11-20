@@ -1,0 +1,35 @@
+{
+  "page": {
+    "title": "聊天",
+    "description": "管理整個 Multica 部署中的使用者帳號。"
+  },
+  "sidebar": {
+    "console": "系統管理"
+  },
+  "users": {
+    "section_title": "使用者 · {{count}}",
+    "search_placeholder": "依姓名或電子郵件搜尋",
+    "filter_label": "狀態",
+    "filter_all": "全部",
+    "filter_active": "正常",
+    "filter_suspended": "已停用",
+    "suspended_badge": "已停用",
+    "unknown_status_badge": "狀態未知",
+    "actions_menu_aria": "更多操作",
+    "self_badge": "你",
+    "suspend_action": "停用帳號",
+    "restore_action": "恢復帳號",
+    "suspend_title": "停用 {{name}}",
+    "suspend_description": "停用後，{{name}} 將無法登入 Multica，已登入的工作階段會在下一次請求時失效，進行中的任務將被取消。你可以隨時恢復此帳號。",
+    "restore_title": "恢復 {{name}}",
+    "restore_description": "恢復後，{{name}} 可以重新登入 Multica。",
+    "confirm_cancel": "取消",
+    "confirm_action": "確認",
+    "toast_suspended": "已停用帳號",
+    "toast_suspend_failed": "停用帳號失敗",
+    "toast_restored": "已恢復帳號",
+    "toast_restore_failed": "恢復帳號失敗",
+    "empty": "沒有符合的使用者"
+  },
+  "back_to_workspace": "返回工作區"
+}

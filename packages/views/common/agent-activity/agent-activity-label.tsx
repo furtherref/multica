@@ -2,7 +2,7 @@
 
 import { cn } from "@multica/ui/lib/utils";
 import { ShimmerText } from "@multica/ui/components/common/shimmer-text";
-import { UnicodeSpinner } from "@multica/ui/components/common/unicode-spinner";
+import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import type { AgentAvailability } from "@multica/core/agents";
 import type { TaskMessagePayload } from "@multica/core/types";
 import { useT } from "../../i18n";
@@ -56,7 +56,7 @@ export function AgentActivityLabel({
   return (
     <span className={cn("inline-flex min-w-0 items-center gap-1.5", className)}>
       {!hideSpinner && !isStatic && (
-        <UnicodeSpinner name="breathe" className="opacity-70" />
+        <MulticaIcon mode="think" size={16} />
       )}
       <span className="truncate">
         <ShimmerText active={!isStatic}>{label}</ShimmerText>

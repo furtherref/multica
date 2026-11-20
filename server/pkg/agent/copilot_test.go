@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1082,9 +1083,9 @@ func TestCopilotExecuteSurfacesStderrOnNonZeroResult(t *testing.T) {
 func TestBuildCopilotArgsBaseline(t *testing.T) {
 	t.Parallel()
 
-	args := buildCopilotArgs("write a haiku", ExecOptions{}, slog.Default())
+	args := buildCopilotArgs(ExecOptions{}, slog.Default())
+	// No -p: the prompt rides stdin (#9362).
 	expected := []string{
-		"-p", "write a haiku",
 		"--output-format", "json",
 		"--allow-all",
 		"--no-ask-user",
@@ -1103,7 +1104,7 @@ func TestBuildCopilotArgsBaseline(t *testing.T) {
 func TestBuildCopilotArgsWithModel(t *testing.T) {
 	t.Parallel()
 
-	args := buildCopilotArgs("hi", ExecOptions{Model: "gpt-4o"}, slog.Default())
+	args := buildCopilotArgs(ExecOptions{Model: "gpt-4o"}, slog.Default())
 
 	var foundModel bool
 	for i, a := range args {
@@ -1123,7 +1124,7 @@ func TestBuildCopilotArgsWithModel(t *testing.T) {
 func TestBuildCopilotArgsWithResume(t *testing.T) {
 	t.Parallel()
 
-	args := buildCopilotArgs("hi", ExecOptions{ResumeSessionID: "sess-42"}, slog.Default())
+	args := buildCopilotArgs(ExecOptions{ResumeSessionID: "sess-42"}, slog.Default())
 
 	var foundResume bool
 	for i, a := range args {
@@ -1143,7 +1144,7 @@ func TestBuildCopilotArgsWithResume(t *testing.T) {
 func TestBuildCopilotArgsOmitsOptionalWhenEmpty(t *testing.T) {
 	t.Parallel()
 
-	args := buildCopilotArgs("hi", ExecOptions{}, slog.Default())
+	args := buildCopilotArgs(ExecOptions{}, slog.Default())
 	for _, a := range args {
 		if a == "--model" {
 			t.Fatalf("expected no --model flag when Model is empty, got args=%v", args)
@@ -1157,7 +1158,7 @@ func TestBuildCopilotArgsOmitsOptionalWhenEmpty(t *testing.T) {
 func TestBuildCopilotArgsPassesThroughCustomArgs(t *testing.T) {
 	t.Parallel()
 
-	args := buildCopilotArgs("hi", ExecOptions{
+	args := buildCopilotArgs(ExecOptions{
 		CustomArgs: []string{"--max-turns", "50"},
 	}, slog.Default())
 
@@ -1169,7 +1170,7 @@ func TestBuildCopilotArgsPassesThroughCustomArgs(t *testing.T) {
 func TestBuildCopilotArgsFiltersBlockedCustomArgs(t *testing.T) {
 	t.Parallel()
 
-	args := buildCopilotArgs("hi", ExecOptions{
+	args := buildCopilotArgs(ExecOptions{
 		CustomArgs: []string{"--output-format", "text", "--max-turns", "50"},
 	}, slog.Default())
 
@@ -1189,10 +1190,34 @@ func TestBuildCopilotArgsFiltersBlockedCustomArgs(t *testing.T) {
 	}
 }
 
+func TestBuildCopilotArgsBlocksPromptAlias(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name       string
+		customArgs []string
+	}{
+		{"separate value", []string{"--prompt", "custom prompt", "--log-level", "debug"}},
+		{"inline value", []string{"--prompt=custom prompt", "--log-level", "debug"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			args := buildCopilotArgs(ExecOptions{
+				CustomArgs: tt.customArgs,
+			}, slog.Default())
+			want := buildCopilotArgs(ExecOptions{CustomArgs: []string{"--log-level", "debug"}}, slog.Default())
+			if !slices.Equal(args, want) {
+				t.Fatalf("args with prompt alias = %q, want %q", args, want)
+			}
+		})
+	}
+}
+
 func TestBuildCopilotArgsBlocksResumeAndACP(t *testing.T) {
 	t.Parallel()
 
-	args := buildCopilotArgs("hi", ExecOptions{
+	args := buildCopilotArgs(ExecOptions{
 		CustomArgs: []string{"--resume", "bad-session", "--acp", "--yolo"},
 	}, slog.Default())
 
@@ -1365,7 +1390,7 @@ Options:
 func TestBuildCopilotArgsInjectsEffort(t *testing.T) {
 	t.Parallel()
 
-	args := buildCopilotArgs("hi", ExecOptions{ThinkingLevel: "high"}, slog.Default())
+	args := buildCopilotArgs(ExecOptions{ThinkingLevel: "high"}, slog.Default())
 
 	var found bool
 	for i, a := range args {
@@ -1385,7 +1410,7 @@ func TestBuildCopilotArgsInjectsEffort(t *testing.T) {
 func TestBuildCopilotArgsOmitsEffortWhenEmpty(t *testing.T) {
 	t.Parallel()
 
-	args := buildCopilotArgs("hi", ExecOptions{}, slog.Default())
+	args := buildCopilotArgs(ExecOptions{}, slog.Default())
 	for _, a := range args {
 		if a == "--reasoning-effort" || a == "--effort" {
 			t.Fatalf("expected no effort flag when ThinkingLevel is empty, got args=%v", args)
@@ -1396,7 +1421,7 @@ func TestBuildCopilotArgsOmitsEffortWhenEmpty(t *testing.T) {
 func TestBuildCopilotArgsBlocksUserEffortOverride(t *testing.T) {
 	t.Parallel()
 
-	args := buildCopilotArgs("hi", ExecOptions{
+	args := buildCopilotArgs(ExecOptions{
 		ThinkingLevel: "high",
 		CustomArgs:    []string{"--effort", "low", "--reasoning-effort", "minimal"},
 	}, slog.Default())
@@ -1536,4 +1561,20 @@ func writeFakeCopilotHelpBinary(t *testing.T) string {
 		"EOF\n"
 	writeTestExecutable(t, path, []byte(script))
 	return path
+}
+
+// A user-supplied -p would put a prompt back on argv — the exact path #9362
+// moved off — so it must stay filtered.
+func TestBuildCopilotArgsBlocksPromptFlag(t *testing.T) {
+	t.Parallel()
+
+	args := buildCopilotArgs(ExecOptions{
+		CustomArgs: []string{"-p", "injected prompt", "--max-turns", "50"},
+	}, slog.Default())
+
+	for _, a := range args {
+		if a == "-p" || a == "injected prompt" {
+			t.Fatalf("blocked -p should have been filtered: %v", args)
+		}
+	}
 }

@@ -5,9 +5,12 @@ import type { SupportedLocale } from "@multica/core/i18n";
 import { describe, expect, it } from "vitest";
 import enAgents from "../../../locales/en/agents.json";
 import frAgents from "../../../locales/fr/agents.json";
+import esAgents from "../../../locales/es/agents.json";
 import jaAgents from "../../../locales/ja/agents.json";
 import koAgents from "../../../locales/ko/agents.json";
 import zhHansAgents from "../../../locales/zh-Hans/agents.json";
+import ruAgents from "../../../locales/ru/agents.json";
+import zhHantAgents from "../../../locales/zh-Hant/agents.json";
 
 import {
   FAILURE_REASON_I18N_KEYS,
@@ -22,9 +25,12 @@ import {
 const AGENT_RESOURCES = {
   en: enAgents,
   "zh-Hans": zhHansAgents,
+  "zh-Hant": zhHantAgents,
   ja: jaAgents,
   ko: koAgents,
   fr: frAgents,
+  es: esAgents,
+  ru: ruAgents,
 } as const;
 
 function fixedT(locale: SupportedLocale): TFunction<"agents"> {
@@ -73,6 +79,12 @@ describe("cancellationActorLabel", () => {
 // it must hold: a SERVER-cancelled row (persisted reason) reads like a failed
 // row. Actor provenance is handled independently by cancellationActorLabel.
 describe("cancelReasonLabel", () => {
+  it("localizes access revocation without calling the cancelled run a failure", () => {
+    for (const locale of Object.keys(AGENT_RESOURCES) as SupportedLocale[]) {
+      expect(cancelReasonLabel({ status: "cancelled", failure_reason: "runtime_access_revoked" }, fixedT(locale)))
+        .toBe(AGENT_RESOURCES[locale].task_failure.reasons.runtime_access_revoked);
+    }
+  });
   it("returns null for a user-initiated cancel", () => {
     expect(
       cancelReasonLabel(
@@ -108,9 +120,12 @@ describe("cancelReasonLabel", () => {
     const expected: Record<SupportedLocale, string> = {
       en: "Cancelled by the system",
       "zh-Hans": "已由系统取消",
+      "zh-Hant": "已由系統取消",
       ja: "システムによってキャンセルされました",
       ko: "시스템에서 취소함",
       fr: "Annulée par le système",
+      es: "Cancelada por el sistema",
+      ru: "Отменено системой",
     };
 
     for (const locale of Object.keys(expected) as SupportedLocale[]) {
@@ -187,6 +202,17 @@ describe("failureReasonLabel", () => {
     );
     expect(failureReasonLabel("cancelled", enT)).toBe(
       "Cancelled by the system",
+    );
+  });
+
+  // MUL-9665: a project's linked folder that was deleted used to read as the
+  // generic "Local directory error", which never said the folder was gone.
+  it("names a deleted project folder instead of a generic local directory error", () => {
+    expect(failureReasonLabel("local_directory_missing", enT)).toBe(
+      "Project's local folder no longer exists",
+    );
+    expect(failureReasonLabel("local_directory_missing", fixedT("zh-Hans"))).toBe(
+      "项目的本地文件夹已不存在",
     );
   });
 

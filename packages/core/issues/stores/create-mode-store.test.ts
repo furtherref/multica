@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useCreateModeStore } from "./create-mode-store";
 
 describe("useCreateModeStore", () => {
   beforeEach(() => {
@@ -90,5 +91,22 @@ describe("openCreateIssueWithPreference", () => {
 
     useCreateModeStore.getState().setLastMode(initialMode);
     useModalStore.getState().close();
+  });
+});
+
+describe("useCreateModeStore expanded", () => {
+  afterEach(() => {
+    useCreateModeStore.getState().setExpanded(false);
+  });
+
+  it("defaults to the compact dialog", () => {
+    expect(useCreateModeStore.getState().expanded).toBe(false);
+  });
+
+  it("remembers the last dialog size", () => {
+    useCreateModeStore.getState().setExpanded(true);
+    expect(useCreateModeStore.getState().expanded).toBe(true);
+    useCreateModeStore.getState().setExpanded(false);
+    expect(useCreateModeStore.getState().expanded).toBe(false);
   });
 });

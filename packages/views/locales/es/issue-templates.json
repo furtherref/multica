@@ -1,0 +1,85 @@
+{
+  "page": {
+    "title": "Chat",
+    "empty": {
+      "title": "Todavía no hay runtimes",
+      "description": "Crea una plantilla para reutilizar el título y el contenido al crear incidencias."
+    },
+    "no_matches": {
+      "title": "Sin resultados",
+      "with_query": "Ningún runtime coincide con \"{{query}}\"{{filterSuffix}}."
+    },
+    "list_error": {
+      "title": "No se han podido cargar las skills",
+      "fallback": "Algo ha ido mal al obtener la lista de skills.",
+      "retry": "Reintentar"
+    },
+    "tagline": "Gestiona plantillas reutilizables de título y contenido para incidencias.",
+    "new_template": "Nueva plantilla de incidencia",
+    "search_placeholder": "Buscar por nombre, título o contenido de la plantilla..."
+  },
+  "table": {
+    "name": "Nombre",
+    "source": "Origen",
+    "updated": "Actualizada",
+    "source_manual": "Creada manualmente",
+    "by_creator": "por {{name}}",
+    "no_content": "Sin contenido"
+  },
+  "create": {
+    "close": "Cerrar",
+    "title": "Nueva plantilla de incidencia",
+    "description": "Las plantillas solo aplican el título y el contenido de la incidencia.",
+    "name_placeholder": "Ejemplo: Informe de error",
+    "issue_title_placeholder": "Ejemplo: Corregir un problema en {{module}}",
+    "issue_content_placeholder": "## Contexto\n\n## Pasos\n\n## Resultado esperado\n",
+    "cancel": "Cancelar",
+    "submit": "Crear plantilla",
+    "submitting": "Creando...",
+    "toast_created": "Plantilla de incidencia creada",
+    "fallback_error": "No se pudo crear la plantilla de incidencia"
+  },
+  "detail": {
+    "toast_saved": "Skill guardada",
+    "toast_save_failed": "No se ha podido guardar la skill",
+    "toast_deleted": "Runtime eliminado",
+    "toast_delete_failed": "No se ha podido eliminar el runtime",
+    "save_bar": {
+      "discard": "Descartar",
+      "save": "Guardar cambios",
+      "saving": "Guardando…",
+      "unsaved": "Cambios sin guardar"
+    },
+    "not_found": {
+      "title": "Skill no encontrada",
+      "fallback": "Es posible que esta skill se haya eliminado o que hayas perdido acceso.",
+      "back": "Volver a Skills"
+    },
+    "delete_dialog": {
+      "title": "Eliminar automatización",
+      "description": "Esto eliminará permanentemente \"{{title}}\", junto con sus disparadores y su historial de ejecuciones. Esta acción no se puede deshacer.",
+      "warning": "Esta acción no se puede deshacer.",
+      "cancel": "Cancelar",
+      "confirm": "Eliminar",
+      "deleting": "Eliminando..."
+    },
+    "all_templates": "Todas las plantillas de incidencia",
+    "delete_aria": "Eliminar plantilla de incidencia",
+    "sidebar": {
+      "metadata": "Metadatos",
+      "source": "Origen",
+      "created": "Creada",
+      "updated": "Actualizada",
+      "created_by": "Creador",
+      "id": "ID"
+    },
+    "content_edit": "Editar",
+    "content_preview": "Vista previa",
+    "no_content": "Aún no hay contenido. Pulsa el botón de editar para añadir el contenido de la incidencia."
+  },
+  "fields": {
+    "name": "Nombre de la plantilla",
+    "issue_title": "Título de la incidencia",
+    "issue_content": "Contenido de la incidencia"
+  }
+}

@@ -1,6 +1,7 @@
 import baseConfig from "./base.js";
 import reactPlugin from "eslint-plugin-react";
 import reactHooksPlugin from "eslint-plugin-react-hooks";
+import a11yPlugin from "./icon-button-name.js";
 
 /** @type {import("eslint").Linter.Config[]} */
 export default [
@@ -17,12 +18,13 @@ export default [
   },
   {
     files: ["**/*.{jsx,tsx}"],
-    plugins: { react: reactPlugin },
+    plugins: { react: reactPlugin, "multica-a11y": a11yPlugin },
     rules: {
       ...reactPlugin.configs.recommended.rules,
       ...reactPlugin.configs["jsx-runtime"].rules,
       "react/prop-types": "off",
       "react/no-unknown-property": "off",
+      "multica-a11y/icon-button-name": "error",
     },
     settings: {
       react: { version: "detect" },

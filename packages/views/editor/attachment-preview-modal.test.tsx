@@ -1,23 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, type ReactElement } from "react";
 import type { Attachment } from "@multica/core/types";
+import { ApiError } from "@multica/core/api/client";
+import { configStore } from "@multica/core/config";
 
-const { openExternalMock, isDesktopShellMock, copyImageMock, toastMock } =
+const { openExternalMock, isDesktopShellMock, copyImageMock, copyTextMock, toastMock } =
   vi.hoisted(() => ({
     openExternalMock: vi.fn(),
     // Web by default; the copy-image tests flip it to the desktop shell.
     isDesktopShellMock: vi.fn(() => false),
     copyImageMock: vi.fn(async (_url: string) => true),
+    copyTextMock: vi.fn(async (_text: string) => true),
     toastMock: { success: vi.fn(), error: vi.fn() },
   }));
 
 vi.mock("../platform", () => ({
   openExternal: openExternalMock,
-  // No-op in jsdom: the real hook drives Electron traffic-light visibility
-  // via window.desktopAPI, which doesn't exist here.
-  useImmersiveMode: vi.fn(),
 }));
 
 vi.mock("../platform/local-directory", () => ({
@@ -26,6 +26,7 @@ vi.mock("../platform/local-directory", () => ({
 
 vi.mock("@multica/ui/lib/clipboard", () => ({
   copyImage: copyImageMock,
+  copyText: copyTextMock,
 }));
 
 vi.mock("sonner", () => ({ toast: toastMock }));
@@ -37,6 +38,8 @@ vi.mock("sonner", () => ({ toast: toastMock }));
 const {
   getAttachmentTextContentMock,
   getAttachmentMock,
+  getAttachmentForDownloadMock,
+  getAttachmentBlobMock,
   downloadMock,
   getBaseUrlMock,
   FakePreviewTooLargeError,
@@ -58,7 +61,9 @@ const {
     getAttachmentTextContentMock: vi.fn(),
     // Re-sign metadata. Rejects by default: a deployment with nothing to
     // upgrade to, so the picked URL stands.
-    getAttachmentMock: vi.fn((): Promise<Attachment> => Promise.reject(new Error("no re-sign"))),
+    getAttachmentMock: vi.fn<(id: string) => Promise<Attachment>>(() => Promise.reject(new Error("no re-sign"))),
+    getAttachmentBlobMock: vi.fn(),
+    getAttachmentForDownloadMock: vi.fn(),
     downloadMock: vi.fn(),
     // Default to the web shape (empty base, same-origin). Tests covering
     // the desktop-renderer / standalone-shell case override per-test.
@@ -72,6 +77,8 @@ vi.mock("@multica/core/api", () => ({
   api: {
     getAttachmentTextContent: getAttachmentTextContentMock,
     getAttachment: getAttachmentMock,
+    getAttachmentForDownload: getAttachmentForDownloadMock,
+    getAttachmentBlob: getAttachmentBlobMock,
     getBaseUrl: getBaseUrlMock,
   },
   PreviewTooLargeError: FakePreviewTooLargeError,
@@ -147,6 +154,10 @@ vi.mock("../i18n", () => ({
           preview_unsupported: "This file type can't be previewed.",
           close: "Close",
           download_failed: "",
+          copy_contents: "Copy contents",
+          contents_copied: "Contents copied",
+          copy_failed: "Couldn't copy contents",
+          more_actions: "More actions",
           open_in_new_tab: "Open in new tab",
           wrap_lines: "Wrap lines",
           viewport: "Viewport width",
@@ -170,19 +181,18 @@ vi.mock("../i18n", () => ({
           address_hint: "?query",
           reload: "Reload",
         },
-        file_card: {
-          enter_full_screen: "Enter full screen",
-          exit_full_screen: "Exit full screen",
-        },
       }),
   }),
 }));
 
 import {
   AttachmentPreviewModal,
+  AttachmentPreviewStandalone,
+  PreviewImagePrefetch,
   useAttachmentPreview,
 } from "./attachment-preview-modal";
 import { withFragmentNavShim } from "./utils/iframe-fragment-nav";
+import { withWidthBridge } from "./utils/iframe-width-bridge";
 import { withLocationBridge } from "./utils/iframe-location-bridge";
 import { renderHook, act as hookAct } from "@testing-library/react";
 
@@ -229,6 +239,10 @@ function ClosablePreview({ attachment }: { attachment: Attachment }) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getAttachmentMock.mockReset().mockRejectedValue(new ApiError("no re-sign", 404, "Not Found"));
+  getAttachmentBlobMock.mockReset();
+  getAttachmentForDownloadMock.mockReset();
+  downloadMock.mockReset();
   // Drops any body a test queued but never consumed (a media kind skips the
   // text fetch), so it cannot answer the next test's request.
   getAttachmentTextContentMock.mockReset();
@@ -236,23 +250,45 @@ beforeEach(() => {
   slugState.value = "acme";
   isDesktopShellMock.mockReturnValue(false);
   copyImageMock.mockResolvedValue(true);
+  copyTextMock.mockResolvedValue(true);
   // Default to web's same-origin empty base so existing absolute-URL tests
   // remain unaffected by the relative-URL resolution added in normalize().
   getBaseUrlMock.mockReturnValue("");
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
 describe("AttachmentPreviewModal — dispatch", () => {
-  it("renders an <img> centered in the modal for image content types", () => {
+  it("renders an <img> centered in the modal for image content types", async () => {
     const att = makeAttachment({ filename: "shot.png", content_type: "image/png" });
+    getAttachmentMock.mockResolvedValueOnce(att);
     render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
-    const img = document.querySelector("img");
+    const img = await screen.findByRole("img", { name: att.filename });
     expect(img).toBeTruthy();
-    expect(img?.getAttribute("src")).toBe(att.url);
+    expect(img?.getAttribute("src")).toBe(att.download_url);
     expect(img?.getAttribute("alt")).toBe(att.filename);
+  });
+
+  it("resolves an image whose cached record has no download URL from current metadata", async () => {
+    const att = makeAttachment({
+      filename: "shot.png",
+      content_type: "image/png",
+      download_url: "",
+    });
+    const fresh = "https://cdn.example.test/shot.png?Signature=current";
+    getAttachmentMock.mockResolvedValueOnce({ ...att, download_url: fresh });
+    render(
+      <AttachmentPreviewModal
+        source={{ kind: "full", attachment: att }}
+        open
+        onClose={() => {}}
+      />,
+    );
+    expect(
+      (await screen.findByRole("img", { name: att.filename })).getAttribute("src")).toBe(fresh);
   });
 
   it("renders an <img> from a URL-only source for image filenames", () => {
@@ -268,27 +304,29 @@ describe("AttachmentPreviewModal — dispatch", () => {
     expect(img?.getAttribute("src")).toBe(url);
   });
 
-  it("renders a PDF iframe pointing at the storage url", () => {
+  it("renders a same-origin proxy PDF through the stable authenticated URL", async () => {
     const att = makeAttachment({ filename: "manual.pdf", content_type: "application/pdf" });
+    getAttachmentMock.mockResolvedValueOnce({ ...att, download_url: `/api/attachments/${att.id}/signed-download?exp=${Math.floor(Date.now() / 1000) + 60}&sig=fresh` });
     render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
-    const iframe = document.querySelector("iframe");
-    expect(iframe).toBeTruthy();
-    expect(iframe?.getAttribute("src")).toBe(att.url);
+    await waitFor(() => {
+      expect(document.querySelector("iframe")?.getAttribute("src")).toBe(`/api/attachments/${att.id}/download`);
+    });
   });
 
-  it("renders a <video> for video/* content types", () => {
+  it("renders a <video> for video/* content types", async () => {
     const att = makeAttachment({ filename: "clip.mp4", content_type: "video/mp4" });
     render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
-    const video = document.querySelector("video");
-    expect(video).toBeTruthy();
-    expect(video?.getAttribute("src")).toBe(att.url);
+    await waitFor(() => {
+      expect(document.querySelector("video")?.getAttribute("src")).toBe(att.download_url);
+    });
   });
 
-  it("renders an <audio> for audio/* content types", () => {
+  it("renders an <audio> for audio/* content types", async () => {
     const att = makeAttachment({ filename: "note.mp3", content_type: "audio/mpeg" });
     render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
-    const audio = document.querySelector("audio");
-    expect(audio).toBeTruthy();
+    await waitFor(() => {
+      expect(document.querySelector("audio")).toBeTruthy();
+    });
   });
 
   it("fetches text and hands it to ReadonlyContent for Markdown", async () => {
@@ -299,7 +337,7 @@ describe("AttachmentPreviewModal — dispatch", () => {
     const att = makeAttachment({ filename: "README.md", content_type: "text/markdown" });
     render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
 
-    expect(getAttachmentTextContentMock).toHaveBeenCalledWith("att-1");
+    expect(getAttachmentTextContentMock).toHaveBeenCalledWith("att-1", { workspaceId: "ws-1" });
 
     await waitFor(() => {
       expect(screen.getByTestId("readonly-content")).toBeTruthy();
@@ -322,11 +360,12 @@ describe("AttachmentPreviewModal — dispatch", () => {
       // (MUL-2330). The combination with `allow-same-origin` would defeat
       // the sandbox, so this assertion must stay exact.
       expect(frame?.getAttribute("sandbox")).toBe("allow-scripts");
-      // srcdoc carries the original HTML between the address bridge in
+      // srcdoc carries the original HTML (with the width bridge,
+      // utils/iframe-width-bridge.ts) between the address bridge in
       // front (utils/iframe-location-bridge.ts) and the fragment-nav shim
       // appended at the end (utils/iframe-fragment-nav.ts).
       expect(frame?.getAttribute("srcdoc")).toBe(
-        withLocationBridge(withFragmentNavShim("<p>hi</p>"), ""),
+        withLocationBridge(withFragmentNavShim(withWidthBridge("<p>hi</p>")), ""),
       );
     });
   });
@@ -345,7 +384,7 @@ describe("AttachmentPreviewModal — dispatch", () => {
 
     const frame = document.querySelector("iframe[sandbox]") as HTMLIFrameElement;
     expect(frame.getAttribute("srcdoc")).toBe(
-      withLocationBridge(withFragmentNavShim("<p>hi</p>"), "?s=overview"),
+      withLocationBridge(withFragmentNavShim(withWidthBridge("<p>hi</p>")), "?s=overview"),
     );
     expect((input as HTMLInputElement).value).toBe("?s=overview");
   });
@@ -370,7 +409,7 @@ describe("AttachmentPreviewModal — dispatch", () => {
 
     expect(screen.getByLabelText("Address")).toHaveValue("?s=ia");
     expect(document.querySelector("iframe[sandbox]")?.getAttribute("srcdoc")).toBe(
-      withLocationBridge(withFragmentNavShim("<p>hi</p>"), "?s=ia"),
+      withLocationBridge(withFragmentNavShim(withWidthBridge("<p>hi</p>")), "?s=ia"),
     );
   });
 
@@ -415,20 +454,33 @@ describe("AttachmentPreviewModal — dispatch", () => {
   });
 });
 
-describe("AttachmentPreviewModal — media previews load from the storage url", () => {
-  // The /api/attachments/{id}/download endpoint is access-controlled (workspace
-  // middleware) and a bare <img>/<iframe>/<video> load cannot send the auth or
-  // X-Workspace-Slug headers it requires. The preview reuses the attachment's
-  // public storage `url` — the same address the inline thumbnail loads — so it
-  // works on web and the desktop renderer without a credentialed round-trip.
-  // `download_url` stays reserved for the explicit Download button.
-  it("renders a full-source image from attachment.url, not the access-controlled download_url", () => {
+describe("AttachmentPreviewModal — server-relative download_url resolution (MUL-2976)", () => {
+  // The unified `/api/attachments/{id}/download` endpoint returns a
+  // server-relative path on non-CloudFront deployments. The web app keeps
+  // working same-origin because `apiBaseUrl=""`, but the desktop renderer
+  // is loaded from `app://` / file: / dev-server origin and needs the
+  // absolute URL — otherwise `<img src>`, `<iframe src>`, `<video src>`
+  // hit the shell origin and fail.
+  it.each(["https://api.example.test", "", "https://api.example.test/"])(
+    "loads authenticated image bytes with API base '%s'",
+    async (base) => {
+    getBaseUrlMock.mockReturnValue(base);
     const att = makeAttachment({
       filename: "shot.png",
       content_type: "image/png",
-      url: "https://oss.example.test/att-1.png",
-      download_url: "/api/attachments/att-1/download?workspace_id=ws-1",
-    });
+      download_url: "/api/attachments/att-1/download",
+      });
+      getAttachmentMock.mockResolvedValueOnce(att);
+      getAttachmentBlobMock.mockResolvedValueOnce(
+        new Blob(["image"], { type: "image/png" }),
+      );
+      const create = vi.fn(() => "blob:authenticated-image");
+      vi.stubGlobal(
+        "URL",
+        class extends URL {
+          static createObjectURL = create;
+          static revokeObjectURL = vi.fn();
+        });
     render(
       <AttachmentPreviewModal
         source={{ kind: "full", attachment: att }}
@@ -436,13 +488,14 @@ describe("AttachmentPreviewModal — media previews load from the storage url", 
         onClose={() => {}}
       />,
     );
-    const img = document.querySelector("img");
-    expect(img?.getAttribute("src")).toBe("https://oss.example.test/att-1.png");
-  });
+      await waitFor(() =>
+        expect(document.querySelector("img")?.getAttribute("src")).toBe(
+          "blob:authenticated-image",
+        ),
+      );
+      expect(getAttachmentBlobMock).toHaveBeenCalledWith(att.id);
+    });
 
-  // A client that cannot load the auth-gated endpoint natively (desktop,
-  // split-origin web) would fail on it, and a sequence reads that failure as
-  // a broken image and skips it. Nothing reaches <img> until the upgrade lands.
   it("waits for the re-sign before loading an auth-gated image", async () => {
     getBaseUrlMock.mockReturnValue("https://api.example.test");
     let resolveMeta: (value: Attachment) => void = () => {};
@@ -457,9 +510,6 @@ describe("AttachmentPreviewModal — media previews load from the storage url", 
       id,
       filename: "shot.png",
       content_type: "image/png",
-      // No storage url: the preview falls back to download_url, which is the
-      // auth-gated endpoint the re-sign upgrades.
-      url: "",
       download_url: `/api/attachments/${id}/download`,
     });
     render(
@@ -485,11 +535,11 @@ describe("AttachmentPreviewModal — media previews load from the storage url", 
     expect(onImageError).not.toHaveBeenCalled();
   });
 
-  it("renders a full-source PDF from attachment.url", () => {
+  it("prefixes the configured API base for PDF previews when download_url is server-relative", async () => {
+    getBaseUrlMock.mockReturnValue("https://api.example.test");
     const att = makeAttachment({
       filename: "manual.pdf",
       content_type: "application/pdf",
-      url: "https://oss.example.test/att-1.pdf",
       download_url: "/api/attachments/att-1/download",
     });
     render(
@@ -499,21 +549,21 @@ describe("AttachmentPreviewModal — media previews load from the storage url", 
         onClose={() => {}}
       />,
     );
-    const iframe = document.querySelector("iframe");
-    expect(iframe?.getAttribute("src")).toBe(
-      "https://oss.example.test/att-1.pdf",
-    );
+    await waitFor(() => {
+      expect(document.querySelector("iframe")?.getAttribute("src")).toBe(
+        "https://api.example.test/api/attachments/att-1/download",
+      );
+    });
   });
 
-  it("passes an already-absolute storage url through unchanged on the desktop renderer (non-empty base)", () => {
-    // Desktop renderer reports a non-empty API base; an absolute storage URL
-    // (the normal shape) must pass through untouched, not get re-prefixed.
+  it("passes an already-absolute CloudFront/presigned download_url through unchanged", async () => {
     getBaseUrlMock.mockReturnValue("https://api.example.test");
     const att = makeAttachment({
       filename: "shot.png",
       content_type: "image/png",
-      url: "https://oss.example.test/att-1.png",
+      download_url: "https://cdn.example.test/att-1.png?Signature=s",
     });
+    getAttachmentMock.mockResolvedValueOnce(att);
     render(
       <AttachmentPreviewModal
         source={{ kind: "full", attachment: att }}
@@ -521,28 +571,9 @@ describe("AttachmentPreviewModal — media previews load from the storage url", 
         onClose={() => {}}
       />,
     );
-    const img = document.querySelector("img");
-    expect(img?.getAttribute("src")).toBe("https://oss.example.test/att-1.png");
-  });
-
-  it("falls back to download_url (resolved against the API base) when the storage url is missing", () => {
-    getBaseUrlMock.mockReturnValue("https://api.example.test");
-    const att = makeAttachment({
-      filename: "shot.png",
-      content_type: "image/png",
-      url: "",
-      download_url: "/api/attachments/att-1/download",
-    });
-    render(
-      <AttachmentPreviewModal
-        source={{ kind: "full", attachment: att }}
-        open
-        onClose={() => {}}
-      />,
-    );
-    const img = document.querySelector("img");
+    const img = await screen.findByRole("img", { name: att.filename });
     expect(img?.getAttribute("src")).toBe(
-      "https://api.example.test/api/attachments/att-1/download",
+      "https://cdn.example.test/att-1.png?Signature=s",
     );
   });
 });
@@ -576,6 +607,170 @@ describe("AttachmentPreviewModal — error states", () => {
   });
 });
 
+describe("AttachmentPreviewModal — streamed media (MUL-8892)", () => {
+  it.each(["video", "audio"] as const)("restores %s and its playback position after signing recovers from an outage", async (kind) => {
+    const id = "11111111-2222-3333-4444-555555555555";
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const cap = (sig: string, exp: number) => `/api/attachments/${id}/signed-download?exp=${exp}&sig=${sig}`;
+    const old = cap("first", Math.floor(now / 1000) + 60);
+    const fresh = cap("recovered", Math.floor(now / 1000) + 120);
+    const att = makeAttachment({ id, filename: kind === "audio" ? "clip.wav" : "clip.mp4", content_type: `${kind}/${kind === "audio" ? "wav" : "mp4"}`, download_url: `/api/attachments/${id}/download` });
+    getAttachmentMock.mockReset();
+    getAttachmentMock.mockResolvedValueOnce({ ...att, download_url: old })
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue({ ...att, download_url: fresh });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    try {
+      rtlRender(<QueryClientProvider client={qc}><AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} /></QueryClientProvider>);
+      const audio = await waitFor(() => {
+        const el = document.querySelector<HTMLMediaElement>(kind);
+        expect(el?.getAttribute("src")).toBe(old);
+        return el!;
+      });
+      audio.currentTime = 23;
+      audio.playbackRate = 1.5;
+      Object.defineProperty(audio, "paused", { configurable: true, value: false });
+      const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+      clock.mockReturnValue(now + 61000);
+      fireEvent.error(audio);
+      await waitFor(() => expect(screen.getByText("Couldn't load preview")).toBeInTheDocument(), { timeout: 6000 });
+      act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+      await waitFor(() => expect(getAttachmentMock).toHaveBeenCalledTimes(5));
+      expect(qc.getQueryData<Attachment>(["attachment-stream-resign", id])?.download_url).toBe(fresh);
+      const restored = await waitFor(() => {
+        const el = document.querySelector<HTMLMediaElement>(kind);
+        expect(el?.getAttribute("src")).toBe(fresh);
+        return el!;
+      });
+      fireEvent.loadedMetadata(restored);
+      expect(restored.currentTime).toBe(23);
+      expect(restored.playbackRate).toBe(1.5);
+      expect(play).toHaveBeenCalled();
+      play.mockRestore();
+    } finally { clock.mockRestore(); qc.clear(); focusManager.setFocused(undefined); }
+  });
+
+  it.each(["video", "audio"] as const)("renews an expired local %s and restores the seek and play state", async (kind) => {
+    const id = "11111111-2222-3333-4444-555555555555";
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const cap = (suffix: string, exp: number) => `/api/attachments/${id}/signed-download?exp=${exp}&sig=${suffix}`;
+    const old = cap("first", Math.floor(now / 1000) + 60);
+    const fresh = cap("renewed", Math.floor(now / 1000) + 120);
+    const att = makeAttachment({ id, filename: kind === "audio" ? "clip.wav" : "clip.mp4", content_type: `${kind}/${kind === "audio" ? "wav" : "mp4"}`, download_url: `/api/attachments/${id}/download` });
+    getAttachmentMock.mockResolvedValueOnce({ ...att, download_url: old }).mockResolvedValueOnce({ ...att, download_url: fresh });
+    try {
+      render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
+      const media = await waitFor(() => {
+        const el = document.querySelector<HTMLMediaElement>(kind);
+        expect(el?.getAttribute("src")).toBe(old);
+        return el!;
+      });
+      media.currentTime = 23;
+      media.playbackRate = 1.5;
+      Object.defineProperty(media, "paused", { configurable: true, value: false });
+      const play = vi.spyOn(media, "play").mockResolvedValue();
+      clock.mockReturnValue(now + 61000);
+      fireEvent.error(media);
+      await waitFor(() => expect(media.getAttribute("src")).toBe(fresh));
+      expect(document.querySelector(kind)).toBe(media);
+      media.currentTime = 0;
+      fireEvent.loadedMetadata(media);
+      expect(media.currentTime).toBe(23);
+      expect(media.playbackRate).toBe(1.5);
+      expect(play).toHaveBeenCalledOnce();
+      expect(getAttachmentMock).toHaveBeenCalledTimes(2);
+    } finally { clock.mockRestore(); }
+  });
+
+  // The record comes from a cache that never goes stale; its signed
+  // download_url may have expired long before the reader clicks play.
+  const staleVideo = () =>
+    makeAttachment({
+      filename: "clip.mp4",
+      content_type: "video/mp4",
+      download_url: "https://cdn.example.test/clip.mp4?Signature=expired",
+    });
+
+  it("plays a video from a freshly signed URL, not the one cached on the record", async () => {
+    let resolveMeta: (value: Attachment) => void = () => {};
+    getAttachmentMock.mockImplementationOnce(
+      () => new Promise<Attachment>((resolve) => { resolveMeta = resolve; }),
+    );
+    const att = staleVideo();
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
+
+    expect(getAttachmentMock).toHaveBeenCalledWith("att-1", { workspaceId: "ws-1" });
+    expect(document.querySelector("video")).toBeNull();
+    expect(screen.getByText("Loading preview…")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveMeta({ ...att, download_url: "https://cdn.example.test/clip.mp4?Signature=fresh" });
+    });
+    await waitFor(() => {
+      expect(document.querySelector("video")?.getAttribute("src")).toBe(
+        "https://cdn.example.test/clip.mp4?Signature=fresh",
+      );
+    });
+  });
+
+  it.each(["", "https://api.example.test"])("signs a PDF afresh with API base '%s'", async (base) => {
+    getBaseUrlMock.mockReturnValue(base);
+    getAttachmentMock.mockResolvedValueOnce(
+      makeAttachment({ download_url: "https://cdn.example.test/manual.pdf?Signature=fresh" }),
+    );
+    const att = makeAttachment({
+      filename: "manual.pdf",
+      content_type: "application/pdf",
+      download_url: "https://cdn.example.test/manual.pdf?Signature=expired",
+    });
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
+    await waitFor(() => {
+      expect(document.querySelector("iframe")?.getAttribute("src")).toBe(
+        "https://cdn.example.test/manual.pdf?Signature=fresh",
+      );
+    });
+  });
+
+  it("keeps the record's URL when the server has no storage URL to sign (proxy mode)", async () => {
+    getAttachmentMock.mockResolvedValueOnce(
+      makeAttachment({ download_url: "/api/attachments/att-1/capability?token=t" }),
+    );
+    const att = makeAttachment({
+      filename: "clip.mp4",
+      content_type: "video/mp4",
+      download_url: "/api/attachments/att-1/download",
+    });
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
+    await waitFor(() => {
+      expect(document.querySelector("video")?.getAttribute("src")).toBe(
+        "/api/attachments/att-1/download",
+      );
+    });
+  });
+
+  it("says so, with a download, when the video cannot be played", async () => {
+    const att = staleVideo();
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
+    const video = await waitFor(() => {
+      const el = document.querySelector("video");
+      expect(el).toBeTruthy();
+      return el!;
+    });
+
+    fireEvent.error(video);
+
+    await waitFor(() => expect(document.querySelector("video")).toBeNull());
+    expect(screen.getByText("Couldn't load preview")).toBeInTheDocument();
+    const downloads = screen.getAllByRole("button", { name: "Download" });
+    fireEvent.click(downloads[downloads.length - 1]!);
+    expect(downloadMock).toHaveBeenCalledWith("att-1", "ws-1");
+  });
+});
+
 describe("AttachmentPreviewModal — controls", () => {
   it("ESC closes the modal", () => {
     const onClose = vi.fn();
@@ -592,10 +787,10 @@ describe("AttachmentPreviewModal — controls", () => {
     render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
     // Two Download CTAs may exist (header + unsupported fallback). The header
     // button is always present, look it up by aria-label/title.
-    const buttons = screen.getAllByTitle("Download");
+    const buttons = screen.getAllByRole("button", { name: "Download" });
     expect(buttons.length).toBeGreaterThan(0);
     fireEvent.click(buttons[0]!);
-    expect(downloadMock).toHaveBeenCalledWith("att-1");
+    expect(downloadMock).toHaveBeenCalledWith("att-1", "ws-1");
   });
 
   it("describes the file by type and size instead of its MIME type", () => {
@@ -617,7 +812,7 @@ describe("AttachmentPreviewModal — controls", () => {
       render(<ClosablePreview attachment={att} />);
       expect(setImmersiveMode).toHaveBeenLastCalledWith(true);
 
-      fireEvent.click(screen.getByTitle("Close"));
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
       await waitFor(() => {
         expect(setImmersiveMode).toHaveBeenLastCalledWith(false);
       });
@@ -635,6 +830,90 @@ describe("AttachmentPreviewModal — controls", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("keeps the dialog mounted for its exit and then removes it", async () => {
+    const att = makeAttachment({
+      filename: "manual.pdf",
+      content_type: "application/pdf",
+    });
+    render(<ClosablePreview attachment={att} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+  });
+});
+
+describe("AttachmentPreviewModal — copy contents", () => {
+  it.each([
+    ["example.php", "text/plain", "<?php\r\n// 示例\r\necho 'Hello';\r\n"],
+    ["README.md", "text/markdown", "# Heading\n\n**Keep the source**\n"],
+    ["config.json", "application/json", '{ "enabled": true, "items": [1, 2] }\n'],
+    ["report.csv", "text/csv", 'name,value\n"Example",42\n'],
+  ])("copies the complete original %s body without line numbers or formatting", async (filename, contentType, text) => {
+    getAttachmentTextContentMock.mockResolvedValueOnce({ text, originalContentType: contentType });
+    const attachment = makeAttachment({ filename, content_type: contentType });
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment }} open onClose={() => {}} />);
+    const button = screen.getByRole("button", { name: "Copy contents" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(copyTextMock).toHaveBeenCalledWith(text);
+    expect(getAttachmentTextContentMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith("Contents copied"));
+  });
+
+  it("uses the same copy action in the standalone preview", async () => {
+    getAttachmentTextContentMock.mockResolvedValueOnce({ text: "complete file\n", originalContentType: "text/plain" });
+    render(<AttachmentPreviewStandalone attachment={makeAttachment({ filename: "example.txt", content_type: "text/plain" })} />);
+    const button = screen.getByRole("button", { name: "Copy contents" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(copyTextMock).toHaveBeenCalledWith("complete file\n");
+  });
+
+  it("keeps copy disabled while loading and after a text fetch failure", async () => {
+    let reject!: (reason: Error) => void;
+    getAttachmentTextContentMock.mockReturnValueOnce(new Promise((_, fail) => { reject = fail; }));
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: makeAttachment({ filename: "example.txt", content_type: "text/plain" }) }} open onClose={() => {}} />);
+    expect(screen.getByRole("button", { name: "Copy contents" })).toBeDisabled();
+    await act(async () => reject(new Error("unavailable")));
+    expect(await screen.findByText("Couldn't load preview")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy contents" })).toBeDisabled();
+    expect(copyTextMock).not.toHaveBeenCalled();
+  });
+
+  it("reports clipboard failure without claiming success", async () => {
+    copyTextMock.mockResolvedValueOnce(false);
+    getAttachmentTextContentMock.mockResolvedValueOnce({ text: "example", originalContentType: "text/plain" });
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: makeAttachment({ filename: "example.txt", content_type: "text/plain" }) }} open onClose={() => {}} />);
+    const button = screen.getByRole("button", { name: "Copy contents" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith("Couldn't copy contents"));
+    expect(toastMock.success).not.toHaveBeenCalled();
+  });
+
+  it("offers HTML copying only in source view", async () => {
+    const text = "<!doctype html>\n<p>Example</p>\n";
+    getAttachmentTextContentMock.mockResolvedValueOnce({ text, originalContentType: "text/html" });
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: makeAttachment({ filename: "example.html", content_type: "text/html" }) }} open onClose={() => {}} />);
+    expect(screen.queryByRole("button", { name: "Copy contents" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "View source" }));
+    const button = await screen.findByRole("button", { name: "Copy contents" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(copyTextMock).toHaveBeenCalledWith(text);
+  });
+
+  it.each([
+    ["example.png", "image/png"],
+    ["example.pdf", "application/pdf"],
+  ])("does not offer text copying for %s", (filename, contentType) => {
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: makeAttachment({ filename, content_type: contentType }) }} open onClose={() => {}} />);
+    expect(screen.queryByRole("button", { name: "Copy contents" })).toBeNull();
+  });
 });
 
 describe("AttachmentPreviewModal — copy image (MUL-7759)", () => {
@@ -642,26 +921,37 @@ describe("AttachmentPreviewModal — copy image (MUL-7759)", () => {
     makeAttachment({
       filename: "screenshot.png",
       content_type: "image/png",
-      url: "https://cdn.example.test/screenshot.png",
       download_url: "https://cdn.example.test/screenshot.png?Signature=s",
     });
 
   it("copies the image on screen from the desktop shell", async () => {
     isDesktopShellMock.mockReturnValue(true);
-    render(<AttachmentPreviewModal source={{ kind: "full", attachment: image() }} open onClose={() => {}} />);
+    getAttachmentMock.mockResolvedValue(image());
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: image() }} open onClose={() => {}} />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Copy image" })).toBeEnabled(),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Copy image" }));
 
-    // The image on screen loads from the storage `url`; `download_url` is
-    // kept for the explicit Download button.
-    expect(copyImageMock).toHaveBeenCalledWith("https://cdn.example.test/screenshot.png");
+    expect(copyImageMock).toHaveBeenCalledWith(
+      "https://cdn.example.test/screenshot.png?Signature=s",
+    );
     await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith("Image copied"));
   });
 
   it("says so when the copy fails", async () => {
     isDesktopShellMock.mockReturnValue(true);
     copyImageMock.mockResolvedValue(false);
-    render(<AttachmentPreviewModal source={{ kind: "full", attachment: image() }} open onClose={() => {}} />);
+    getAttachmentMock.mockResolvedValue(image());
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: image() }} open onClose={() => {}} />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Copy image" })).toBeEnabled(),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Copy image" }));
 
@@ -670,6 +960,7 @@ describe("AttachmentPreviewModal — copy image (MUL-7759)", () => {
   });
 
   it("offers no copy button on web, where the storage CDN can't be read from script", () => {
+    getAttachmentMock.mockResolvedValue(image());
     render(<AttachmentPreviewModal source={{ kind: "full", attachment: image() }} open onClose={() => {}} />);
     expect(screen.queryByRole("button", { name: "Copy image" })).toBeNull();
   });
@@ -747,10 +1038,119 @@ describe("AttachmentPreviewModal — URL-only source", () => {
         onClose={() => {}}
       />,
     );
-    const button = screen.getAllByTitle("Download")[0]!;
+    const button = screen.getAllByRole("button", { name: "Download" })[0]!;
     fireEvent.click(button);
     expect(openExternalMock).toHaveBeenCalledWith(url);
     expect(downloadMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("attachment preview download feedback", () => {
+  it("shows pending feedback in the viewer header and restores the button on completion", async () => {
+    const pending = Promise.withResolvers<void>();
+    downloadMock.mockReturnValueOnce(pending.promise);
+    const attachment = makeAttachment({ filename: "manual.pdf", content_type: "application/pdf" });
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment }} open onClose={() => {}} />);
+    const button = screen.getByRole("button", { name: "Download" });
+
+    fireEvent.click(button);
+
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+    expect(button.querySelector(".animate-spin")).toBeInTheDocument();
+    fireEvent.click(button);
+    expect(downloadMock).toHaveBeenCalledExactlyOnceWith(attachment.id, attachment.workspace_id);
+
+    await act(async () => pending.resolve());
+
+    expect(button).toBeEnabled();
+    expect(button).toHaveAttribute("aria-busy", "false");
+    expect(button.querySelector(".animate-spin")).toBeNull();
+  });
+
+  it("shares pending state between the unsupported-file action and the header", async () => {
+    const pending = Promise.withResolvers<void>();
+    downloadMock.mockReturnValueOnce(pending.promise);
+    const attachment = makeAttachment();
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment }} open onClose={() => {}} />);
+    const [header, fallback] = screen.getAllByRole("button", { name: "Download" });
+
+    fireEvent.click(fallback!);
+
+    for (const button of [header!, fallback!]) {
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute("aria-busy", "true");
+      expect(button.querySelector(".animate-spin")).toBeInTheDocument();
+      fireEvent.click(button);
+    }
+    expect(downloadMock).toHaveBeenCalledExactlyOnceWith(attachment.id, attachment.workspace_id);
+    await act(async () => pending.resolve());
+  });
+
+  it("shows pending feedback on the download action after a text preview fails", async () => {
+    getAttachmentTextContentMock.mockRejectedValueOnce(new FakePreviewTooLargeError());
+    const pending = Promise.withResolvers<void>();
+    downloadMock.mockReturnValueOnce(pending.promise);
+    const attachment = makeAttachment({ filename: "large.md", content_type: "text/markdown" });
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment }} open onClose={() => {}} />);
+    await screen.findByText("File is too large to preview. Please download.");
+    const [, fallback] = screen.getAllByRole("button", { name: "Download" });
+
+    fireEvent.click(fallback!);
+
+    expect(fallback).toBeDisabled();
+    expect(fallback).toHaveAttribute("aria-busy", "true");
+    await act(async () => pending.resolve());
+  });
+
+  it("shows the same pending feedback on the standalone preview page", async () => {
+    const pending = Promise.withResolvers<void>();
+    downloadMock.mockReturnValueOnce(pending.promise);
+    const attachment = makeAttachment({ filename: "manual.pdf", content_type: "application/pdf" });
+    render(<AttachmentPreviewStandalone attachment={attachment} />);
+    const button = screen.getByRole("button", { name: "Download" });
+
+    fireEvent.click(button);
+
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+    expect(button.querySelector(".animate-spin")).toBeInTheDocument();
+    await act(async () => pending.resolve());
+  });
+
+  it("allows downloading another file while the previous preview's download is pending", async () => {
+    const first = makeAttachment({ filename: "first.pdf", content_type: "application/pdf" });
+    const second = makeAttachment({ id: "att-2", filename: "second.pdf", content_type: "application/pdf" });
+    const firstDownload = Promise.withResolvers<void>();
+    const secondDownload = Promise.withResolvers<void>();
+    downloadMock.mockReturnValueOnce(firstDownload.promise).mockReturnValueOnce(secondDownload.promise);
+    function PreviewSequence() {
+      const [index, setIndex] = useState(0);
+      return (
+        <AttachmentPreviewModal
+          source={{ kind: "full", attachment: index === 0 ? first : second }}
+          open
+          onClose={() => {}}
+          sequence={{ index, total: 2, onNext: () => setIndex(1), onPrev: () => setIndex(0) }}
+        />
+      );
+    }
+    render(<PreviewSequence />);
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+
+    fireEvent.keyDown(document, { key: "ArrowRight" });
+    const button = screen.getByRole("button", { name: "Download" });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+
+    expect(downloadMock.mock.calls).toEqual([
+      [first.id, first.workspace_id],
+      [second.id, second.workspace_id],
+    ]);
+    await act(async () => firstDownload.resolve());
+    expect(button).toBeDisabled();
+    await act(async () => secondDownload.resolve());
+    expect(button).toBeEnabled();
   });
 });
 
@@ -771,7 +1171,7 @@ describe("AttachmentPreviewModal — open-in-new-tab", () => {
         onClose={() => {}}
       />,
     );
-    expect(screen.getByTitle("Open in new tab")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open in new tab" })).toBeTruthy();
   });
 
   it("invokes navigation.openInNewTab with the preview path and closes the modal (desktop)", async () => {
@@ -791,7 +1191,7 @@ describe("AttachmentPreviewModal — open-in-new-tab", () => {
         onClose={onClose}
       />,
     );
-    fireEvent.click(screen.getByTitle("Open in new tab"));
+    fireEvent.click(screen.getByRole("button", { name: "Open in new tab" }));
     expect(openInNewTabMock).toHaveBeenCalledWith(
       "/acme/attachments/att-1/preview?name=report.html",
       "report.html",
@@ -819,7 +1219,7 @@ describe("AttachmentPreviewModal — open-in-new-tab", () => {
     const input = await screen.findByLabelText("Address");
     fireEvent.change(input, { target: { value: "?s=ia#top" } });
     fireEvent.submit(input.closest("form")!);
-    fireEvent.click(screen.getByTitle("Open in new tab"));
+    fireEvent.click(screen.getByRole("button", { name: "Open in new tab" }));
     expect(openInNewTabMock).toHaveBeenCalledWith(
       "/acme/attachments/att-1/preview?name=report.html&loc=%3Fs%3Dia%23top",
       "report.html",
@@ -848,7 +1248,7 @@ describe("AttachmentPreviewModal — open-in-new-tab", () => {
         onClose={onClose}
       />,
     );
-    fireEvent.click(screen.getByTitle("Open in new tab"));
+    fireEvent.click(screen.getByRole("button", { name: "Open in new tab" }));
     expect(openInNewTabMock).not.toHaveBeenCalled();
     expect(windowOpenSpy).toHaveBeenCalledWith(
       "https://app.example/acme/attachments/att-1/preview?name=report.html",
@@ -875,7 +1275,7 @@ describe("AttachmentPreviewModal — open-in-new-tab", () => {
         onClose={() => {}}
       />,
     );
-    fireEvent.click(screen.getByTitle("Open in new tab"));
+    fireEvent.click(screen.getByRole("button", { name: "Open in new tab" }));
     expect(openInNewTabMock).toHaveBeenCalledWith(
       `/acme/attachments/att-1/preview?name=${filename}`,
       filename,
@@ -895,7 +1295,7 @@ describe("AttachmentPreviewModal — open-in-new-tab", () => {
         onClose={() => {}}
       />,
     );
-    expect(screen.queryByTitle("Open in new tab")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open in new tab" })).toBeNull();
   });
 
   it("does not render the new-tab button for a URL-only source — the page loads by id", () => {
@@ -906,7 +1306,7 @@ describe("AttachmentPreviewModal — open-in-new-tab", () => {
         onClose={() => {}}
       />,
     );
-    expect(screen.queryByTitle("Open in new tab")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open in new tab" })).toBeNull();
   });
 
   it("does not render the new-tab button when there is no workspace slug", async () => {
@@ -926,7 +1326,7 @@ describe("AttachmentPreviewModal — open-in-new-tab", () => {
         onClose={() => {}}
       />,
     );
-    expect(screen.queryByTitle("Open in new tab")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open in new tab" })).toBeNull();
   });
 });
 
@@ -1063,52 +1463,55 @@ function currentScale(): number {
   return Number.parseFloat(match![1]!);
 }
 
-function renderImagePreview(attachment: Attachment = imageAttachment()) {
-  return render(
+async function renderImagePreview(attachment: Attachment = imageAttachment()) {
+  getAttachmentMock.mockResolvedValue(attachment);
+  const view = render(
     <AttachmentPreviewModal
       source={{ kind: "full", attachment }}
       open
       onClose={() => {}}
     />,
   );
+  await screen.findByRole("img", { name: attachment.filename });
+  return view;
 }
 
-describe("AttachmentPreviewModal — image zoom", () => {
+describe("AttachmentPreviewModal — image zoom", async () => {
   beforeEach(() => {
     stubCanvasViewport();
   });
 
-  it("fits an oversized image to the canvas on open", () => {
+  it("fits an oversized image to the canvas on open", async () => {
     stubNaturalSize({ width: 1600, height: 800 });
-    renderImagePreview();
+    await renderImagePreview();
 
     // 1600x800 in an 800x400 canvas fits at exactly 50%.
     expect(currentScale()).toBeCloseTo(0.5, 5);
     expect(screen.getByText("50%")).toBeInTheDocument();
   });
 
-  it("opens a small image at 100% instead of magnifying it", () => {
+  it("opens a small image at 100% instead of magnifying it", async () => {
     stubNaturalSize({ width: 200, height: 100 });
-    renderImagePreview();
+    await renderImagePreview();
 
     expect(currentScale()).toBe(1);
   });
 
-  it("shows a long screenshot in full, below the 25% floor", () => {
+  it("shows a long screenshot in full, below the 25% floor", async () => {
     // The regression this pins: with a hard MIN_SCALE floor the fit snapped
     // back up to 25% and a full-page screenshot opened cropped, with no zoom
     // level that showed all of it.
     stubNaturalSize({ width: 1600, height: 8000 });
-    renderImagePreview();
+    await renderImagePreview();
 
     const scale = currentScale();
     expect(scale).toBeLessThan(0.25);
     expect(8000 * scale).toBeLessThanOrEqual(CANVAS_VIEWPORT.height + 0.001);
   });
 
-  it("zooms in and out from the toolbar", () => {
+  it("zooms in and out from the toolbar", async () => {
     stubNaturalSize({ width: 1600, height: 800 });
-    renderImagePreview();
+    await renderImagePreview();
 
     fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
     expect(currentScale()).toBeCloseTo(0.5 * 1.2, 5);
@@ -1117,9 +1520,9 @@ describe("AttachmentPreviewModal — image zoom", () => {
     expect(currentScale()).toBeCloseTo(0.5, 5);
   });
 
-  it("jumps to natural size and back to fit", () => {
+  it("jumps to natural size and back to fit", async () => {
     stubNaturalSize({ width: 1600, height: 800 });
-    renderImagePreview();
+    await renderImagePreview();
 
     fireEvent.click(screen.getByRole("button", { name: "Actual size" }));
     expect(currentScale()).toBe(1);
@@ -1128,9 +1531,9 @@ describe("AttachmentPreviewModal — image zoom", () => {
     expect(currentScale()).toBeCloseTo(0.5, 5);
   });
 
-  it("zooms on wheel without scrolling the page behind the modal", () => {
+  it("zooms on wheel without scrolling the page behind the modal", async () => {
     stubNaturalSize({ width: 1600, height: 800 });
-    renderImagePreview();
+    await renderImagePreview();
 
     const wheel = new WheelEvent("wheel", {
       deltaY: -100,
@@ -1149,9 +1552,9 @@ describe("AttachmentPreviewModal — image zoom", () => {
     expect(wheel.defaultPrevented).toBe(true);
   });
 
-  it("pans on drag", () => {
+  it("pans on drag", async () => {
     stubNaturalSize({ width: 1600, height: 800 });
-    renderImagePreview();
+    await renderImagePreview();
     const before = canvasContent().style.transform;
 
     fireEvent.pointerDown(zoomCanvas(), { pointerId: 1, clientX: 400, clientY: 200 });
@@ -1161,9 +1564,9 @@ describe("AttachmentPreviewModal — image zoom", () => {
     expect(canvasContent().style.transform).not.toBe(before);
   });
 
-  it("toggles between fit and 100% on double-click", () => {
+  it("toggles between fit and 100% on double-click", async () => {
     stubNaturalSize({ width: 1600, height: 800 });
-    renderImagePreview();
+    await renderImagePreview();
 
     fireEvent.doubleClick(zoomCanvas(), { clientX: 400, clientY: 200 });
     expect(currentScale()).toBe(1);
@@ -1172,9 +1575,9 @@ describe("AttachmentPreviewModal — image zoom", () => {
     expect(currentScale()).toBeCloseTo(0.5, 5);
   });
 
-  it("focuses the canvas on open so the keyboard controls work without a click first", () => {
+  it("focuses the canvas on open so the keyboard controls work without a click first", async () => {
     stubNaturalSize({ width: 1600, height: 800 });
-    renderImagePreview();
+    await renderImagePreview();
 
     expect(document.activeElement).toBe(zoomCanvas());
 
@@ -1185,9 +1588,9 @@ describe("AttachmentPreviewModal — image zoom", () => {
   // The focus placed on open is for the keyboard controls; drawn as a ring it
   // framed the whole full-window stage. It stays marked (CSS drops the ring)
   // until focus leaves, so a reader tabbing back in still sees one.
-  it("keeps the focus ring off for the focus it places itself", () => {
+  it("keeps the focus ring off for the focus it places itself", async () => {
     stubNaturalSize({ width: 1600, height: 800 });
-    renderImagePreview();
+    await renderImagePreview();
 
     expect(zoomCanvas()).toHaveAttribute("data-autofocused");
     fireEvent.blur(zoomCanvas());
@@ -1197,25 +1600,27 @@ describe("AttachmentPreviewModal — image zoom", () => {
   it("re-fits on reopen instead of restoring the previous zoom", async () => {
     stubNaturalSize({ width: 1600, height: 800 });
     const att = imageAttachment();
+    getAttachmentMock.mockResolvedValue(att);
     render(<ClosablePreview attachment={att} />);
+    await screen.findByRole("img", { name: att.filename });
 
     fireEvent.click(screen.getByRole("button", { name: "Actual size" }));
     expect(currentScale()).toBe(1);
 
-    fireEvent.click(screen.getByTitle("Close"));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
 
-    renderImagePreview(att);
+    await renderImagePreview(att);
     expect(currentScale()).toBeCloseTo(0.5, 5);
   });
 
-  it("letterboxes an image with no intrinsic size and hides the zoom controls", () => {
+  it("letterboxes an image with no intrinsic size and hides the zoom controls", async () => {
     // An SVG that declares only a viewBox has no intrinsic size in Chromium,
     // so there is nothing to build a transform against. It must still render.
     stubNaturalSize({ width: 0, height: 0 });
-    renderImagePreview(
+    await renderImagePreview(
       makeAttachment({ filename: "chart.svg", content_type: "image/svg+xml" }),
     );
 
@@ -1225,16 +1630,20 @@ describe("AttachmentPreviewModal — image zoom", () => {
     expect(screen.queryByRole("button", { name: "Zoom in" })).toBeNull();
   });
 
-  it("keeps a pan that ends over the backdrop from closing the modal", () => {
+  it("keeps a pan that ends over the backdrop from closing the modal", async () => {
     stubNaturalSize({ width: 1600, height: 800 });
     const onClose = vi.fn();
+    const att = imageAttachment();
+    getAttachmentMock.mockResolvedValueOnce(att);
     render(
       <AttachmentPreviewModal
-        source={{ kind: "full", attachment: imageAttachment() }}
+        source={{ kind: "full", attachment: att }}
         open
         onClose={onClose}
       />,
     );
+
+    await screen.findByRole("img", { name: att.filename });
 
     // A drag released outside the panel bubbles its click to the backdrop.
     fireEvent.click(zoomCanvas());
@@ -1244,7 +1653,7 @@ describe("AttachmentPreviewModal — image zoom", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("shows no zoom controls for non-image kinds", () => {
+  it("shows no zoom controls for non-image kinds", async () => {
     render(
       <AttachmentPreviewModal
         source={{
@@ -1281,7 +1690,7 @@ describe("AttachmentPreviewModal — text views", () => {
     openText("main.go", "package main\n\nfunc main() {}\n");
     await waitFor(() => expect(document.querySelectorAll(".code-line")).toHaveLength(3));
     expect(document.querySelector("pre.code-lines")).not.toHaveClass("code-lines-wrap");
-    expect(screen.getByTitle("Wrap lines")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Wrap lines" })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("wraps a log by default and lets the reader turn it off", async () => {
@@ -1290,9 +1699,9 @@ describe("AttachmentPreviewModal — text views", () => {
     const pre = document.querySelector("pre.code-lines");
     expect(pre).toHaveClass("code-lines-wrap");
 
-    fireEvent.click(screen.getByTitle("Wrap lines"));
+    fireEvent.click(screen.getByRole("button", { name: "Wrap lines" }));
     expect(document.querySelector("pre.code-lines")).not.toHaveClass("code-lines-wrap");
-    expect(screen.getByTitle("Wrap lines")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Wrap lines" })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("keeps the reader's wrap choice when the viewer moves to another file", async () => {
@@ -1307,7 +1716,7 @@ describe("AttachmentPreviewModal — text views", () => {
     );
     const { rerender } = rtlRender(viewer(first));
     await waitFor(() => expect(document.querySelector("pre.code-lines")).toBeTruthy());
-    fireEvent.click(screen.getByTitle("Wrap lines"));
+    fireEvent.click(screen.getByRole("button", { name: "Wrap lines" }));
 
     rerender(viewer(second));
     await waitFor(() => expect(document.querySelector("pre.code-lines")).toBeTruthy());
@@ -1347,14 +1756,14 @@ describe("AttachmentPreviewModal — html viewports", () => {
   it("shows the source with line numbers, and holds the viewport while it does", async () => {
     openHtml();
     await screen.findByTitle("prototype.html");
-    expect(screen.getByTitle("Wrap lines")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Wrap lines" })).toBeDisabled();
 
-    fireEvent.click(screen.getByTitle("View source"));
-    expect(screen.getByTitle("View source")).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "View source" }));
+    expect(screen.getByRole("button", { name: "View source" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByTitle("prototype.html")).toBeNull();
     expect(document.querySelector(".code-line")?.textContent).toBe("<h1>Prototype</h1>");
     expect(screen.getByRole("button", { name: "Phone" })).toBeDisabled();
-    expect(screen.getByTitle("Wrap lines")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Wrap lines" })).toBeEnabled();
   });
 });
 
@@ -1372,14 +1781,14 @@ describe("AttachmentPreviewModal — structured data", () => {
     await screen.findByText("name");
     expect(screen.getByText('"web"')).toBeTruthy();
     expect(screen.getByRole("button", { name: "Tree" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByTitle("Wrap lines")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Wrap lines" })).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Raw" }));
     expect(screen.queryByText("name")).toBeNull();
     expect(document.querySelector(".code-line")?.textContent).toBe(
       '{"name":"web","ports":[80,443]}',
     );
-    expect(screen.getByTitle("Wrap lines")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Wrap lines" })).toBeEnabled();
   });
 
   it("parses YAML into the same tree", async () => {
@@ -1393,18 +1802,17 @@ describe("AttachmentPreviewModal — structured data", () => {
     expect(document.querySelector(".code-line")?.textContent).toBe('{"name": ');
     expect(screen.getByRole("button", { name: "Tree" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Raw" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByTitle("Wrap lines")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Wrap lines" })).toBeEnabled();
   });
 });
 
 describe("AttachmentPreviewModal — tables", () => {
-  // CSV opens in OnlyOffice in this fork; TSV takes the table path.
-  it("shows a TSV as a table", async () => {
+  it("shows a CSV as a table", async () => {
     getAttachmentTextContentMock.mockResolvedValue({
-      text: "name\tcount\nalpha\t3\n",
-      originalContentType: "text/tab-separated-values",
+      text: "name,count\nalpha,3\n",
+      originalContentType: "text/csv",
     });
-    const att = makeAttachment({ filename: "report.tsv", content_type: "text/tab-separated-values" });
+    const att = makeAttachment({ filename: "report.csv", content_type: "text/csv" });
     render(
       <AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />,
     );
@@ -1412,4 +1820,258 @@ describe("AttachmentPreviewModal — tables", () => {
     expect(table.querySelector("th[data-column-id='c0']")?.textContent).toBe("name");
     expect(table.querySelector("th[data-column-id='c1']")?.textContent).toBe("count");
   });
+});
+
+describe("AttachmentPreviewModal — expired cached image access", () => {
+  it("refreshes a cached signed image before decoding it", async () => {
+    const att = makeAttachment({
+      filename: "old-design.png",
+      content_type: "image/png",
+      download_url: "https://cdn.example.test/design.png?Signature=expired",
+    });
+    let resolveMetadata!: (value: Attachment) => void;
+    getAttachmentMock.mockImplementationOnce(
+      () =>
+        new Promise<Attachment>((resolve) => {
+          resolveMetadata = resolve;
+        }),
+    );
+    const onImageError = vi.fn();
+    render(
+      <AttachmentPreviewModal
+        source={{ kind: "full", attachment: att }}
+        open
+        onClose={() => {}}
+        onImageError={onImageError}
+      />,
+    );
+    expect(getAttachmentMock).toHaveBeenCalledWith(att.id, { workspaceId: att.workspace_id });
+    expect(document.querySelector('img[src*="Signature=expired"]')).toBeNull();
+    expect(screen.getByText("Loading preview…")).toBeInTheDocument();
+    expect(onImageError).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveMetadata({
+        ...att,
+        download_url: "https://cdn.example.test/design.png?Signature=fresh",
+      });
+    });
+    await waitFor(() =>
+      expect(document.querySelector("img")?.getAttribute("src")).toBe(
+        "https://cdn.example.test/design.png?Signature=fresh",
+      ),
+    );
+    expect(onImageError).not.toHaveBeenCalled();
+  });
+});
+
+describe("AttachmentPreviewModal — current image access failures", () => {
+  it.each([403, 404])(
+    "shows a failure and reports the current image once after metadata returns %s",
+    async (status) => {
+      const att = makeAttachment({
+        filename: "private.png",
+        content_type: "image/png",
+      });
+      getAttachmentMock.mockRejectedValueOnce(
+        new ApiError("not available", status, "Denied"),
+      );
+      const onImageError = vi.fn();
+      render(
+        <AttachmentPreviewModal
+          source={{ kind: "full", attachment: att }}
+          open
+          onClose={() => {}}
+          onImageError={onImageError}
+        />,
+      );
+      await waitFor(() => expect(onImageError).toHaveBeenCalledTimes(1));
+      expect(screen.getByText("Couldn't load preview")).toBeInTheDocument();
+      expect(document.querySelector("img")).toBeNull();
+      expect(getAttachmentBlobMock).not.toHaveBeenCalled();
+    },
+  );
+});
+
+it.each(["pending", "denied"])(
+  "does not expose the current attachment's held frame when access is %s",
+  async (phase) => {
+    isDesktopShellMock.mockReturnValue(true);
+    const a = makeAttachment({
+      id: "att-a",
+      filename: "a.png",
+      content_type: "image/png",
+      download_url: "https://cdn.example.test/a.png?Signature=old",
+    });
+    const b = makeAttachment({
+      id: "att-b",
+      filename: "b.png",
+      content_type: "image/png",
+      download_url: "https://cdn.example.test/b.png?Signature=new",
+    });
+    let aCalls = 0;
+    let deny!: (error: Error) => void;
+    getAttachmentMock.mockImplementation((id: string) =>
+      id === a.id
+        ? ++aCalls === 1
+          ? Promise.resolve(a)
+          : new Promise<Attachment>((_resolve, reject) => {
+              deny = reject;
+            })
+        : Promise.resolve(b),
+    );
+    Object.defineProperty(HTMLImageElement.prototype, "decode", {
+      configurable: true,
+      value: function (this: HTMLImageElement) {
+        return this.src === a.download_url
+          ? Promise.resolve()
+          : new Promise<void>(() => {});
+      },
+    });
+    function Harness() {
+      const [selected, setSelected] = useState(a);
+      return (
+        <>
+          <button onClick={() => setSelected(a)}>Select A</button>
+          <button onClick={() => setSelected(b)}>Select B</button>
+          <AttachmentPreviewModal
+            source={{ kind: "full", attachment: selected }}
+            open
+            onClose={() => {}}
+          />
+        </>
+      );
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      rtlRender(<QueryClientProvider client={client}><Harness /></QueryClientProvider>);
+      await screen.findByRole("img", { name: a.filename });
+      fireEvent.click(screen.getByText("Select B"));
+      await waitFor(() => expect(getAttachmentMock).toHaveBeenCalledWith(b.id, { workspaceId: b.workspace_id }));
+      client.setQueryData(["attachment-inline-resign", a.id], a, {
+        updatedAt: Date.now() - 6 * 60 * 1000,
+      });
+      fireEvent.click(screen.getByText("Select A"));
+      await waitFor(() => expect(aCalls).toBe(2));
+      if (phase === "pending") {
+        expect(screen.queryByRole("img", { name: a.filename })).toBeNull();
+      } else {
+        await act(async () => {
+          deny(new ApiError("revoked", 403, "Forbidden"));
+        });
+        await screen.findByText("Couldn't load preview");
+        expect(
+          screen.getByRole("button", { name: "Copy image" }),
+        ).toBeDisabled();
+        fireEvent.click(screen.getByRole("button", { name: "Copy image" }));
+        expect(copyImageMock).not.toHaveBeenCalled();
+      }
+    } finally {
+      client.clear();
+      delete (HTMLImageElement.prototype as { decode?: unknown }).decode;
+    }
+  },
+);
+
+it.each([
+  "/api/attachments/11111111-2222-3333-4444-555555555555/download",
+  "/uploads/workspaces/aaaaaaaa-2222-3333-4444-555555555555/11111111-2222-3333-4444-555555555555.png",
+  "https://api.example.test/uploads/workspaces/aaaaaaaa-2222-3333-4444-555555555555/11111111-2222-3333-4444-555555555555.png",
+])("refreshes a pasted protected image against its owning workspace: %s", async (url) => {
+  const id = "11111111-2222-3333-4444-555555555555";
+  const fresh = makeAttachment({
+    id,
+    workspace_id: "other-workspace",
+    filename: "pasted.png",
+    content_type: "image/png",
+  });
+  getAttachmentForDownloadMock.mockResolvedValueOnce(fresh);
+  render(
+    <AttachmentPreviewModal
+      source={{
+        kind: "url",
+        url,
+        filename: fresh.filename,
+      }}
+      open
+      onClose={() => {}}
+    />,
+  );
+  expect(
+    (await screen.findByRole("img", { name: fresh.filename })).getAttribute(
+      "src",
+    ),
+  ).toBe(fresh.download_url);
+  expect(getAttachmentForDownloadMock).toHaveBeenCalledWith(id);
+  expect(getAttachmentMock).not.toHaveBeenCalled();
+});
+
+describe("image viewer prefetch reuse", () => {
+  it.each(["full", "url", "legacy-url", "absolute-legacy-url"] as const)(
+    "uses the prefetched signature without another metadata request for a %s source",
+    async (kind) => {
+      const att = makeAttachment({
+        id: "11111111-2222-3333-4444-555555555555",
+        filename: "neighbor.png",
+        content_type: "image/png",
+        download_url: "https://cdn.example.test/neighbor.png?Signature=expired",
+      });
+      const fresh = { ...att, download_url: "https://cdn.example.test/neighbor.png?Signature=prefetched" };
+      if (kind === "full") getAttachmentMock.mockResolvedValue(fresh);
+      getAttachmentForDownloadMock.mockResolvedValue(fresh);
+      const legacyUrl = `/uploads/workspaces/aaaaaaaa-2222-3333-4444-555555555555/${att.id}.png`;
+      const source = kind === "full"
+        ? { kind, attachment: att }
+        : {
+            kind: "url" as const,
+            url: kind === "url"
+              ? `/api/attachments/${att.id}/download`
+              : kind === "legacy-url" ? legacyUrl : `https://api.example.test${legacyUrl}`,
+            filename: att.filename,
+          };
+      const src = vi.spyOn(HTMLImageElement.prototype, "src", "set");
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const view = rtlRender(
+        <QueryClientProvider client={client}>
+          <PreviewImagePrefetch source={source} />
+        </QueryClientProvider>,
+      );
+      await waitFor(() => expect(src).toHaveBeenCalledWith(fresh.download_url));
+      expect(src).not.toHaveBeenCalledWith(att.download_url);
+      view.rerender(
+        <QueryClientProvider client={client}>
+          <AttachmentPreviewModal source={source} open onClose={() => {}} />
+        </QueryClientProvider>,
+      );
+      expect((await screen.findByRole("img", { name: att.filename })).getAttribute("src"))
+        .toBe(fresh.download_url);
+      expect(kind === "full" ? getAttachmentMock : getAttachmentForDownloadMock).toHaveBeenCalledTimes(1);
+      expect(kind === "full" ? getAttachmentForDownloadMock : getAttachmentMock).not.toHaveBeenCalled();
+      view.unmount();
+      client.clear();
+    },
+  );
+});
+
+it("keeps a bare CDN image from another workspace loadable without workspace metadata", async () => {
+  const cdnDomain = configStore.getState().cdnDomain;
+  configStore.setState({ cdnDomain: "cdn.example.test" });
+  const url = "https://cdn.example.test/workspaces/aaaaaaaa-2222-3333-4444-555555555555/11111111-2222-3333-4444-555555555555.png";
+  const onImageError = vi.fn();
+  try {
+    render(
+      <AttachmentPreviewModal
+        source={{ kind: "url", url, filename: "cross-workspace.png" }}
+        open
+        onClose={() => {}}
+        onImageError={onImageError}
+      />,
+    );
+    expect((await screen.findByRole("img", { name: "cross-workspace.png" })).getAttribute("src")).toBe(url);
+    expect(getAttachmentMock).not.toHaveBeenCalled();
+    expect(getAttachmentForDownloadMock).not.toHaveBeenCalled();
+    expect(getAttachmentBlobMock).not.toHaveBeenCalled();
+    expect(onImageError).not.toHaveBeenCalled();
+  } finally {
+    configStore.setState({ cdnDomain });
+  }
 });

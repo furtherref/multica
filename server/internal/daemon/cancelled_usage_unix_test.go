@@ -80,7 +80,7 @@ while :; do sleep 1; done
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	d.handleTask(ctx, Task{ID: "task", RuntimeID: "rt", IssueID: "issue", Agent: &AgentData{Name: "test"}}, 0)
+	d.handleTask(ctx, Task{ID: "task", RuntimeID: "rt", IssueID: "issue", Agent: &AgentData{Name: "test"}}, newTestTaskSlot(0))
 	if writes.Load() != 1 || acks.Load() != 1 || completes.Load() != 0 {
 		t.Fatalf("writes=%d acks=%d completes=%d", writes.Load(), acks.Load(), completes.Load())
 	}

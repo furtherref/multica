@@ -242,7 +242,7 @@ func TestCancelledTaskUsageReachesHTTPAfterBackendCleanup(t *testing.T) {
 				result, _, err := d.executeAndDrain(runCtx, cancelledUsageBackend{delay: 50 * time.Millisecond, result: agent.Result{Status: "completed", Usage: want}}, "unused", agent.ExecOptions{}, logger, task.ID, "", new(atomic.Int32))
 				return TaskResult{Status: result.Status, Usage: taskUsageEntries(provider, result.Usage)}, err
 			})
-			d.handleTask(ctx, Task{ID: "task", RuntimeID: "rt", IssueID: "issue", Agent: &AgentData{Name: "test"}}, 0)
+			d.handleTask(ctx, Task{ID: "task", RuntimeID: "rt", IssueID: "issue", Agent: &AgentData{Name: "test"}}, newTestTaskSlot(0))
 			if usageCalls.Load() != 1 || completeCalls.Load() != 0 || ackBeforeUsage.Load() {
 				t.Fatalf("usage=%d completed=%d ackBeforeUsage=%v", usageCalls.Load(), completeCalls.Load(), ackBeforeUsage.Load())
 			}

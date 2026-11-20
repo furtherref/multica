@@ -1,0 +1,35 @@
+{
+  "page": {
+    "title": "Chat",
+    "description": "Gestiona las cuentas de usuario de todo el despliegue de Multica."
+  },
+  "sidebar": {
+    "console": "Administración del sistema"
+  },
+  "users": {
+    "section_title": "Usuarios · {{count}}",
+    "search_placeholder": "Buscar por nombre o correo",
+    "filter_label": "Estado",
+    "filter_all": "Todos",
+    "filter_active": "Activos",
+    "filter_suspended": "Suspendidos",
+    "suspended_badge": "Suspendido",
+    "unknown_status_badge": "Estado desconocido",
+    "actions_menu_aria": "Más acciones",
+    "self_badge": "Tú",
+    "suspend_action": "Suspender cuenta",
+    "restore_action": "Restaurar cuenta",
+    "suspend_title": "Suspender a {{name}}",
+    "suspend_description": "Una vez suspendida, {{name}} no podrá iniciar sesión en Multica, sus sesiones activas caducarán en su próxima solicitud y las tareas en curso se cancelarán. Puedes restaurar esta cuenta en cualquier momento.",
+    "restore_title": "Restaurar a {{name}}",
+    "restore_description": "{{name}} podrá volver a iniciar sesión en Multica.",
+    "confirm_cancel": "Cancelar",
+    "confirm_action": "Confirmar",
+    "toast_suspended": "Cuenta suspendida",
+    "toast_suspend_failed": "No se pudo suspender la cuenta",
+    "toast_restored": "Cuenta restaurada",
+    "toast_restore_failed": "No se pudo restaurar la cuenta",
+    "empty": "Ningún usuario coincide con la búsqueda"
+  },
+  "back_to_workspace": "Volver al espacio de trabajo"
+}

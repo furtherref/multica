@@ -122,6 +122,7 @@ function renderRow(props: {
   view: "inbox" | "archived";
   adapter?: NavigationAdapter;
   onClick?: () => void;
+  isSelected?: boolean;
 }) {
   return render(
     <WorkspaceSlugProvider slug="acme">
@@ -129,7 +130,7 @@ function renderRow(props: {
         <InboxListItem
           item={props.item}
           view={props.view}
-          isSelected={false}
+          isSelected={props.isSelected ?? false}
           onClick={props.onClick ?? vi.fn()}
           onAction={vi.fn()}
         />
@@ -138,7 +139,7 @@ function renderRow(props: {
   );
 }
 
-const unreadDot = (container: HTMLElement) => container.querySelector(".bg-brand");
+const unreadDot = (container: HTMLElement) => container.querySelector('[data-mc="unread-dot"]');
 const title = (container: HTMLElement) => container.querySelector(".truncate");
 
 describe("InboxListItem unread affordance", () => {
@@ -211,6 +212,17 @@ describe("InboxListItem system notice titles", () => {
     });
 
     expect(title(container)?.textContent).toBe("Issue title");
+  });
+});
+
+describe("InboxListItem theme hooks", () => {
+  it("marks the row open in the detail pane as selected", () => {
+    const anchor = (container: HTMLElement) => container.querySelector('[data-mc="inbox-item"]');
+    expect(anchor(renderRow({ item: item(), view: "inbox", isSelected: true }).container)).toHaveAttribute(
+      "data-selected",
+      "true",
+    );
+    expect(anchor(renderRow({ item: item(), view: "inbox" }).container)).toHaveAttribute("data-selected", "false");
   });
 });
 
