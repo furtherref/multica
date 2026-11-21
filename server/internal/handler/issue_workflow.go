@@ -1023,16 +1023,16 @@ func (h *Handler) SetProjectWorkflow(w http.ResponseWriter, r *http.Request) {
 	allowed := func(key string) bool {
 		if target == nil {
 			_, ok := catalog[key]
-			return ok
+			return ok || key == issuestatus.Archive
 		}
-		return target.Has(key)
+		return target.Accepts(key)
 	}
 	targetAccepts := func(key string) bool {
 		if target == nil {
 			entry, ok := catalog[key]
-			return ok && !entry.Archived
+			return (ok && !entry.Archived) || key == issuestatus.Archive
 		}
-		return target.Has(key)
+		return target.Accepts(key)
 	}
 	counts, err := qtx.CountProjectIssuesByStatus(ctx, db.CountProjectIssuesByStatusParams{WorkspaceID: wsUUID, ProjectIds: []pgtype.UUID{project.ID}})
 	if err != nil {

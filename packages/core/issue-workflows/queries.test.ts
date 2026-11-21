@@ -84,9 +84,10 @@ describe("issue status workflow (MUL-8250)", () => {
   it("limits a batch to the statuses every issue's workflow lists, Default included", () => {
     const workflows = [defaultWorkflow, content];
     const outside = sharedWorkflowStatusKeys(workflows, projects, [{ project_id: null }]);
-    expect(outside && [...outside]).toEqual(["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"]);
+    // The fork's archive status (#39) is accepted by every workflow.
+    expect(outside && [...outside]).toEqual(["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled", "archive"]);
     const mixed = sharedWorkflowStatusKeys(workflows, projects, [{ project_id: null }, { project_id: "p-content" }]);
-    expect(mixed && [...mixed]).toEqual(["backlog", "todo", "blocked", "done", "cancelled"]);
+    expect(mixed && [...mixed]).toEqual(["backlog", "todo", "blocked", "done", "cancelled", "archive"]);
     expect(sharedWorkflowStatusKeys(undefined, projects, [{ project_id: null }])).toBeNull();
   });
 });
@@ -98,6 +99,11 @@ describe("workflow helpers (MUL-7420)", () => {
     expect(workflowAllowsStatus(defaultWorkflow, "in_review")).toBe(true);
     expect(workflowAllowsStatus(content, "drafting")).toBe(true);
     expect(workflowAllowsStatus(content, "in_progress")).toBe(false);
+  });
+
+  it("allows the fork's archive status on every workflow (#39)", () => {
+    expect(workflowAllowsStatus(defaultWorkflow, "archive")).toBe(true);
+    expect(workflowAllowsStatus(content, "archive")).toBe(true);
   });
 
   it("names the middle columns and who may hand off", () => {

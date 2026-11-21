@@ -7,7 +7,7 @@ import {
   BUILT_IN_STATUS_ORDER,
 } from "@multica/core/issues/config";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
-import { useProjectWithWorkflow } from "@multica/core/issue-workflows";
+import { ARCHIVE_STATUS, useProjectWithWorkflow } from "@multica/core/issue-workflows";
 import {
   issueStatusColor,
   normalizeIssueStatusCategory,
@@ -148,6 +148,11 @@ export function useIssueStatusOptions(
         icon: iconOf(key),
       };
     const steps = listed.steps.map((step) => optionOf(step.status_key));
+    // Every workflow accepts the fork's archive status (#39), which no
+    // workflow can list; it sorts last, as in the catalog list.
+    if (!steps.some((o) => o.key === ARCHIVE_STATUS)) {
+      steps.push(optionOf(ARCHIVE_STATUS as IssueStatus));
+    }
     if (!listed.is_default || !currentStatus || steps.some((o) => o.key === currentStatus)) return steps;
     // Keep a current status Default leaves out visible and checked, after the
     // last step of its category.

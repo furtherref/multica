@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issuestatus"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -254,6 +255,24 @@ func TestCheckStatusListsAllowedKeys(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "backlog, todo, implement, code_review, blocked, done, cancelled") {
 		t.Fatalf("error %q should list the workflow's keys for agents", err)
+	}
+}
+
+// The fork's archive status (#39) has no catalog row, so no workflow lists it;
+// every workflow must still accept it, and a project move keeps it.
+func TestEveryWorkflowAcceptsArchive(t *testing.T) {
+	def := devDefinition()
+	stored := Definition{ID: pgtype.UUID{Bytes: [16]byte{1}, Valid: true}, Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())}
+	for _, d := range []*Definition{&def, &stored} {
+		if err := CheckStatus(d, issuestatus.Archive); err != nil {
+			t.Fatalf("%s rejected archive: %v", d.Name, err)
+		}
+	}
+	if err := CheckStatusOutsideProject(&stored, issuestatus.Archive); err != nil {
+		t.Fatalf("outside a project, archive rejected: %v", err)
+	}
+	if got := MoveTarget(def, issuestatus.Archive, func(string) string { return "closed" }); got != issuestatus.Archive {
+		t.Fatalf("archived issue moved to %q, want it to stay archived", got)
 	}
 }
 

@@ -16,6 +16,7 @@ export {
   workflowStep,
   stepHandsOff,
   workflowAllowsStatus,
+  ARCHIVE_STATUS,
   projectMoveMayHandOff,
   workflowHandoffPreviewOptions,
   handoffStepCount,

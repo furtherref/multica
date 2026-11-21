@@ -331,7 +331,7 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 	// actually written.
 	if def, err := s.createWorkflow(ctx, qtx, p); err != nil {
 		return IssueCreateResult{}, err
-	} else if def != nil && def.Limits() && !def.Has(p.Status) {
+	} else if def != nil && def.Limits() && !def.Accepts(p.Status) {
 		p.Status = issueworkflow.StartStatus
 	}
 

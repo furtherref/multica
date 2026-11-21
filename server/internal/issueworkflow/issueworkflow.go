@@ -272,6 +272,14 @@ func (d Definition) Has(key string) bool {
 	return ok
 }
 
+// Accepts reports whether an issue on this workflow may sit on the status:
+// one the workflow lists, or the fork's archive status (#39). Archive has no
+// catalog row, so no workflow can list it; like cancelled it retires an issue
+// from any step.
+func (d Definition) Accepts(key string) bool {
+	return key == issuestatus.Archive || d.Has(key)
+}
+
 // Step returns the step for a status key.
 func (d Definition) Step(key string) (Step, bool) {
 	for _, s := range d.Steps {
@@ -628,7 +636,7 @@ func ResolveHandler(step Step, project db.Project, issueCreatorType string, issu
 // using def: its current status when the workflow lists it, otherwise the
 // first step of the same lifecycle category, otherwise the start status.
 func MoveTarget(def Definition, currentKey string, categoryOf func(string) string) string {
-	if def.Has(currentKey) {
+	if def.Accepts(currentKey) {
 		return currentKey
 	}
 	category := categoryOf(currentKey)
@@ -696,7 +704,7 @@ func statusLabel(name, key string) string {
 // when a write keeps the issue's current status, so an issue already on a
 // status its workflow no longer lists keeps working.
 func CheckStatus(def *Definition, key string) error {
-	if def == nil || !def.Limits() || def.Has(key) {
+	if def == nil || !def.Limits() || def.Accepts(key) {
 		return nil
 	}
 	return &NotInWorkflowError{StatusKey: key, WorkflowName: def.Name, Allowed: def.StatusKeys()}

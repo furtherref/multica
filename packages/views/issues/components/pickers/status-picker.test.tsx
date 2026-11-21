@@ -213,8 +213,9 @@ describe("StatusPicker in a project that uses a workflow", () => {
     const rows = Array.from(document.querySelectorAll("button[data-picker-item]")).map(
       (el) => el.textContent?.trim(),
     );
-    // Only a column with a handoff carries its handler's avatar.
-    expect(rows).toEqual(["Todo", "QAHands off to Sentinel", "Done"]);
+    // Only a column with a handoff carries its handler's avatar. Every
+    // workflow also accepts the fork's archive status (#39), listed last.
+    expect(rows).toEqual(["Todo", "QAHands off to Sentinel", "Done", "Archive"]);
     expect(screen.getByText("Hands off to Sentinel").className).toContain("sr-only");
     expect(screen.getByTestId("avatar-agent-1")).toBeTruthy();
     expect(screen.queryByText("Delivery")).toBeNull();
@@ -264,7 +265,7 @@ describe("StatusPicker on an issue outside any project (MUL-8121)", () => {
     renderWithI18n(
       <StatusPicker status="todo" projectId={null} onUpdate={() => {}} open onOpenChange={() => {}} />,
     );
-    expect(rows()).toEqual(["Todo", "In Review", "Done"]);
+    expect(rows()).toEqual(["Todo", "In Review", "Done", "Archive"]);
     expect(screen.queryByText(/Default statuses/)).toBeNull();
     expect(screen.queryByText(/Hands off to/)).toBeNull();
   });
@@ -275,7 +276,7 @@ describe("StatusPicker on an issue outside any project (MUL-8121)", () => {
     renderWithI18n(
       <StatusPicker status="merged" projectId={null} onUpdate={() => {}} open onOpenChange={() => {}} />,
     );
-    expect(rows()).toEqual(["Todo", "In Review", "Merged", "Done"]);
+    expect(rows()).toEqual(["Todo", "In Review", "Merged", "Done", "Archive"]);
     // The check mark is the last svg in a row; it is hidden on the others.
     const checkOf = (label: string) => Array.from(optionRow(label).querySelectorAll("svg")).at(-1);
     expect(checkOf("Merged")?.getAttribute("class")).not.toContain("invisible");
@@ -302,8 +303,9 @@ describe("StatusPicker on an issue outside any project (MUL-8121)", () => {
     catalogEntries = [TODO, IN_REVIEW, QA, MERGED, DONE];
     workspaceDefault = DEFAULT;
     renderWithI18n(<StatusPicker status="todo" onUpdate={() => {}} open onOpenChange={() => {}} />);
-    // Cancelled is the built-in stand-in for a category the fixture omits.
-    expect(rows()).toEqual(["Todo", "In Review", "QA", "Merged", "Done", "Cancelled"]);
+    // Cancelled is the built-in stand-in for a category the fixture omits;
+    // the fork's archive (#39) is a built-in closed key.
+    expect(rows()).toEqual(["Todo", "In Review", "QA", "Merged", "Done", "Cancelled", "Archive"]);
   });
 
   it("offers the whole catalog while Default is unknown", () => {
@@ -311,7 +313,8 @@ describe("StatusPicker on an issue outside any project (MUL-8121)", () => {
     renderWithI18n(
       <StatusPicker status="todo" projectId={null} onUpdate={() => {}} open onOpenChange={() => {}} />,
     );
-    // Cancelled is the built-in stand-in for a category the fixture omits.
-    expect(rows()).toEqual(["Todo", "In Review", "QA", "Merged", "Done", "Cancelled"]);
+    // Cancelled is the built-in stand-in for a category the fixture omits;
+    // the fork's archive (#39) is a built-in closed key.
+    expect(rows()).toEqual(["Todo", "In Review", "QA", "Merged", "Done", "Cancelled", "Archive"]);
   });
 });

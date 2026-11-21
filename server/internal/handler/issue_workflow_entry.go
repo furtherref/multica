@@ -64,7 +64,7 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, prev db.Issue, params 
 		return nil, issueworkflow.CheckStatusOutsideProject(outside, params.Status.String)
 	}
 	projectMoving := params.ProjectID != prev.ProjectID
-	if projectMoving && !statusExplicit && !def.IsDefault && !def.Has(prev.Status) {
+	if projectMoving && !statusExplicit && !def.IsDefault && !def.Accepts(prev.Status) {
 		target := issueworkflow.MoveTarget(*def, prev.Status, func(key string) string {
 			return issuestatus.Category(ctx, h.Queries, prev.WorkspaceID, key)
 		})

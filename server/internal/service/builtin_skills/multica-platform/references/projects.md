@@ -201,8 +201,9 @@ reference (`in_progress` on start, `in_review` on delivery) do not apply.
   "build" unless the instructions say so.
 
 - **Only the workflow's keys.** A named workflow accepts only its own
-  statuses; any other status write fails with `status_not_in_workflow`, and
-  the error lists the allowed keys. The workspace Default workflow accepts
+  statuses, plus `archive`, which every workflow accepts; any other status
+  write fails with `status_not_in_workflow`, and the error lists the allowed
+  keys. The workspace Default workflow accepts
   every status, so issues on statuses it no longer lists keep working.
 - **Changing the status is the handoff.** Entering a column that hands off
   reassigns the issue to that column's handler and starts their run; a member

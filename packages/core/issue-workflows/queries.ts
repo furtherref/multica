@@ -135,7 +135,9 @@ export function sharedWorkflowStatusKeys(
   for (const issue of issues) {
     const workflow = issueStatusWorkflow(workflows, projects, issue);
     if (!workflow) continue;
-    const keys = new Set(workflow.steps.map((s) => s.status_key));
+    // Every workflow accepts the fork's archive status (#39); see
+    // workflowAllowsStatus.
+    const keys = new Set([...workflow.steps.map((s) => s.status_key), ARCHIVE_STATUS]);
     shared = shared ? new Set([...shared].filter((key) => keys.has(key))) : keys;
   }
   return shared;
@@ -154,17 +156,24 @@ export function stepHandsOff(step: IssueWorkflowStep | undefined): boolean {
 }
 
 /**
+ * The fork's archive status (#39). It has no catalog row, so no workflow can
+ * list it; like cancelled it retires an issue from any step, and the server
+ * accepts it on every workflow (issueworkflow.Definition.Accepts).
+ */
+export const ARCHIVE_STATUS = "archive";
+
+/**
  * Whether issues on `workflow` may enter a status: the ones it lists, Default
- * included (MUL-8250). An issue already on a status its workflow no longer
- * lists keeps it, so callers exempt the issue's current status. Null —
- * workflows still loading — allows every status.
+ * included (MUL-8250), plus the fork's archive status. An issue already on a
+ * status its workflow no longer lists keeps it, so callers exempt the issue's
+ * current status. Null — workflows still loading — allows every status.
  */
 export function workflowAllowsStatus(
   workflow: IssueWorkflow | null | undefined,
   statusKey: string,
 ): boolean {
   if (!workflow) return true;
-  return workflow.steps.some((s) => s.status_key === statusKey);
+  return statusKey === ARCHIVE_STATUS || workflow.steps.some((s) => s.status_key === statusKey);
 }
 
 /**
