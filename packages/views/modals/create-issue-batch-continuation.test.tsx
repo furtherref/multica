@@ -175,7 +175,8 @@ vi.mock("@multica/core/api", async () => {
       listMembers: async () => [{ user_id: "user-1", role: "admin" }],
       listSquads: async () => [],
       listRuntimes: async () => [{ id: "runtime-1", metadata: { cli_version: "1.2.3" } }],
-      listProjects: async () => ({ projects: [] }),
+      // The project every draft here starts with (the fork requires one, #28).
+      listProjects: async () => ({ projects: [{ id: "project-1", title: "Project One", archived_at: null }] }),
       uploadFile: vi.fn(),
     },
     ApiError,
@@ -301,7 +302,12 @@ vi.mock("../projects/components/project-picker", () => ({
 }));
 
 vi.mock("@multica/ui/components/ui/dialog", () => ({
-  Dialog: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  // Respect `open` so the fork's closed template dialogs stay unmounted.
+  Dialog: ({ children, open }: { children: ReactNode; open?: boolean }) =>
+    open === false ? null : <div>{children}</div>,
+  DialogHeader: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DialogFooter: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DialogDescription: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   DialogContent: ({ children, className }: { children: ReactNode; className?: string }) => (
     <div className={className}>{children}</div>
   ),
@@ -400,7 +406,8 @@ import {
 import { useQuickCreateStore } from "@multica/core/issues/stores/quick-create-store";
 
 const emptyDraft = (): IssueCreateDraft => ({
-  shared: { projectId: undefined, priority: "none", dueDate: null, attachments: [] },
+  // The fork requires a project (#28).
+  shared: { projectId: "project-1", priority: "none", dueDate: null, attachments: [] },
   manual: {
     title: "",
     description: "",
@@ -488,7 +495,7 @@ async function submitAndKeepOpen(user: ReturnType<typeof userEvent.setup>) {
 describe("assignee across create-mode switches", () => {
   it("prefills the selected agent when manual create started without an assignee", async () => {
     const user = userEvent.setup();
-    renderUi(<CreateIssueDialog onClose={vi.fn()} initialMode="manual" />);
+    renderUi(<CreateIssueDialog onClose={vi.fn()} initialMode="manual" data={{ project_id: "project-1" }} />);
     await user.type(screen.getByPlaceholderText("Issue title"), "Review payment callback");
     await user.click(screen.getByRole("button", { name: /Switch to Agent/i }));
     await user.click(await screen.findByRole("button", { name: /Created by/ }));
@@ -654,7 +661,7 @@ describe("keep-open continuation cleanup", () => {
       <CreateIssueDialog
         onClose={() => {}}
         initialMode="manual"
-        data={{ anchor_comment_id: "comment-source" }}
+        data={{ anchor_comment_id: "comment-source", project_id: "project-1" }}
       />,
     );
     await screen.findByPlaceholderText("Issue title");

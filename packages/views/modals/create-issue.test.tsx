@@ -868,7 +868,7 @@ describe("CreateIssueModal", () => {
     } as unknown as Issue;
     mockDraftStore.draft.manual.title = "Child scope";
     mockDraftStore.draft.manual.description = "Only implement validation";
-    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ parent_issue_id: "parent-copy" }} />);
+    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "project-1", parent_issue_id: "parent-copy" }} />);
     await user.click(await screen.findByRole("button", { name: "Copy parent fields" }));
     await user.click(screen.getByRole("checkbox", { name: /Priority/ }));
     await user.click(screen.getByRole("checkbox", { name: /Start date/ }));
@@ -886,7 +886,7 @@ describe("CreateIssueModal", () => {
     const user = userEvent.setup();
     mockDraftStore.draft.manual.title = "Voice issue";
     mockDraftStore.draft.manual.description = "Steps:";
-    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "project-1" }} />);
     expect(voiceOptions.last?.submit).toBeUndefined();
     act(() => {
       expect(voiceOptions.last?.insert(" open the inbox")).toBe(true);
@@ -953,6 +953,7 @@ describe("CreateIssueModal", () => {
   it("starts a fresh create from todo without a remembered stage", async () => {
     const user = userEvent.setup();
     const first = renderModal(<CreateIssueModal onClose={vi.fn()} data={{
+      project_id: "project-1",
       parent_issue_id: "parent-1",
       status: "in_progress",
       stage: 2,
@@ -967,7 +968,7 @@ describe("CreateIssueModal", () => {
       expect.objectContaining({ status: "in_progress", parent_issue_id: "parent-1", stage: 2 }),
     ));
     first.unmount();
-    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ parent_issue_id: "parent-1" }} />);
+    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "project-1", parent_issue_id: "parent-1" }} />);
 
     fireEvent.change(screen.getByPlaceholderText("Issue title"), {
       target: { value: "Another child" },
@@ -1089,9 +1090,10 @@ describe("CreateIssueModal", () => {
       labelIds: [],
       propertyValues: {},
     });
+    // The fork requires a project (#28), so the batch keeps it.
     expect(mockSetShared).toHaveBeenCalledWith({
       priority: "none",
-      projectId: undefined,
+      projectId: "project-1",
       dueDate: null,
       attachments: [],
     });
@@ -1127,7 +1129,7 @@ describe("CreateIssueModal", () => {
     const user = userEvent.setup();
     mockQuickCreateStore.keepOpen = true;
 
-    const modal = renderModal(<CreateIssueModal onClose={vi.fn()} />);
+    const modal = renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "project-1" }} />);
 
     await user.type(screen.getByPlaceholderText("Issue title"), "First issue");
     await user.click(screen.getByRole("button", { name: "Create Issue" }));
@@ -1158,6 +1160,7 @@ describe("CreateIssueModal", () => {
     const user = userEvent.setup();
     mockQuickCreateStore.keepOpen = true;
     const modal = renderModal(<CreateIssueModal onClose={vi.fn()} data={{
+      project_id: "project-1",
       status: "in_progress",
     }} />);
 

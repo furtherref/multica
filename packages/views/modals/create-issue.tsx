@@ -494,10 +494,10 @@ export function ManualCreatePanel({
     setCustomPropertyPickerId(null);
     setPropertyErrorId(null);
     setUnavailablePropertyRemoved(false);
-    setProjectId(undefined);
     setChildIssues([]);
-    // Keep status and assignee in this batch. Parent and stage stay in local
-    // state, while other manual and shared fields reset for the next issue.
+    // Keep status, assignee and project in this batch (a project is required
+    // to create an issue). Parent and stage stay in local state, while other
+    // manual and shared fields reset for the next issue.
     setManual({
       title: "",
       description: "",
@@ -510,7 +510,7 @@ export function ManualCreatePanel({
     });
     setShared({
       priority: "none",
-      projectId: undefined,
+      projectId,
       dueDate: null,
       attachments: [],
     });
