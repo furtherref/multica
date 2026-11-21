@@ -220,7 +220,8 @@ describe("BatchActionToolbar picker wiring", () => {
 
     render(<BatchActionToolbar issues={issues} />);
 
-    expect(screen.getByTestId("status-picker")).toHaveAttribute("data-allowed", "done,todo");
+    // Every workflow also accepts the fork's archive status (#39).
+    expect(screen.getByTestId("status-picker")).toHaveAttribute("data-allowed", "archive,done,todo");
   });
 
   it("offers Default's statuses for issues on Default or outside any project (MUL-8250)", () => {
@@ -229,7 +230,7 @@ describe("BatchActionToolbar picker wiring", () => {
 
     render(<BatchActionToolbar issues={issues} />);
 
-    expect(screen.getByTestId("status-picker")).toHaveAttribute("data-allowed", "done,in_progress,todo");
+    expect(screen.getByTestId("status-picker")).toHaveAttribute("data-allowed", "archive,done,in_progress,todo");
   });
 
   it("renders nothing when nothing is selected", () => {
