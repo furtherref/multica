@@ -55,8 +55,10 @@ var typeGroups = map[string]string{
 	"quick_create_unconfirmed": "",
 	"autopilot_paused":         "",
 	"autopilot_quota_exceeded": "",
-	"children_done":            "",
-	"project_owner_joined":     "",
+	// Fork runtime cost budgets (#99): written by TaskService.notifyRuntimeBudgetExceeded.
+	"runtime_budget_exceeded": "",
+	"children_done":           "",
+	"project_owner_joined":    "",
 	// The agent is stopped until the person answers these.
 	"app_action_requested":  "",
 	"app_action_reminder":   "",
