@@ -851,7 +851,8 @@ describe("AttachmentPreviewModal — copy contents", () => {
     ["example.php", "text/plain", "<?php\r\n// 示例\r\necho 'Hello';\r\n"],
     ["README.md", "text/markdown", "# Heading\n\n**Keep the source**\n"],
     ["config.json", "application/json", '{ "enabled": true, "items": [1, 2] }\n'],
-    ["report.csv", "text/csv", 'name,value\n"Example",42\n'],
+    // Fork: CSV opens in OnlyOffice, so the table case uses TSV.
+    ["report.tsv", "text/tab-separated-values", 'name\tvalue\n"Example"\t42\n'],
   ])("copies the complete original %s body without line numbers or formatting", async (filename, contentType, text) => {
     getAttachmentTextContentMock.mockResolvedValueOnce({ text, originalContentType: contentType });
     const attachment = makeAttachment({ filename, content_type: contentType });
@@ -1807,12 +1808,13 @@ describe("AttachmentPreviewModal — structured data", () => {
 });
 
 describe("AttachmentPreviewModal — tables", () => {
-  it("shows a CSV as a table", async () => {
+  // Fork: CSV opens in OnlyOffice; TSV is the table kind here.
+  it("shows a TSV as a table", async () => {
     getAttachmentTextContentMock.mockResolvedValue({
-      text: "name,count\nalpha,3\n",
-      originalContentType: "text/csv",
+      text: "name\tcount\nalpha\t3\n",
+      originalContentType: "text/tab-separated-values",
     });
-    const att = makeAttachment({ filename: "report.csv", content_type: "text/csv" });
+    const att = makeAttachment({ filename: "report.tsv", content_type: "text/tab-separated-values" });
     render(
       <AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />,
     );

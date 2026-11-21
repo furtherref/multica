@@ -171,9 +171,7 @@ describe("AttachmentPreviewPage", () => {
     );
     renderPage(<AttachmentPreviewPage attachmentId="att-1" />);
     const img = await screen.findByAltText("shot.png");
-    // Media loads from the storage `url`; `download_url` is kept for the
-    // explicit Download button.
-    expect(img.getAttribute("src")).toBe("https://cdn.example.test/att-1");
+    expect(img.getAttribute("src")).toBe("https://cdn.example.test/att-1?Signature=s");
     expect(getAttachmentMock).toHaveBeenCalledTimes(1);
   });
 

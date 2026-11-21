@@ -5,56 +5,11 @@
  * Media uses signed download URLs; text uses the authenticated content endpoint
  * to avoid storage CORS and attachment-disposition restrictions.
  *
- * The file gets the whole window (MUL-7642): no card, no max width. A fixed
- * near-black stage sits behind the content whatever the theme — a photo, a
- * PDF page and a white HTML document all read against it — and the chrome
- * over it (top bar, prev / next, messages on the stage) wears the dark token
- * set via a `dark` class on each chrome element. Documents that are read
- * rather than looked at (Markdown, text) render on a centered sheet that
- * keeps the app's own theme.
+ * HTML runs in a sandboxed opaque-origin iframe: allow scripts for interactive
+ * artifacts, but do not add allow-same-origin, navigation, popup, or form privileges.
+ * Desktop PDF previews require the Chromium PDF plugin to be enabled.
  *
- * Single viewer for every previewable kind. Handles 10 PreviewKinds:
- *
- *   - image : <img> on the shared ZoomCanvas — fit on open, then wheel /
- *             drag / pinch / double-click / keyboard zoom, same controls as
- *             the Mermaid viewer.
- *   - pdf   : <iframe src={download_url}> — relies on Chromium's PDFium
- *             plugin. On desktop, requires webPreferences.plugins=true
- *             (see apps/desktop/src/main/index.ts).
- *   - video : <video controls src={download_url}>
- *   - audio : <audio controls src={download_url}>
- *
- *   - markdown : fetch text via api.getAttachmentTextContent, render via
- *                the existing ReadonlyContent (full mention/mermaid/katex
- *                pipeline included).
- *   - html     : fetch text, hand to <iframe srcdoc={text}
- *                sandbox="allow-scripts">. The iframe runs in an opaque
- *                origin: scripts execute (chart libraries / vanilla SVG
- *                JS work), but cookie / localStorage / parent access /
- *                top-navigation / popups / forms stay blocked because
- *                `allow-same-origin` is intentionally NOT included.
- *                Laid out at a device width on demand, or shown as source.
- *   - table    : fetch text, parse TSV, sortable virtualized table (CSV is
- *                an office kind in this fork).
- *   - structured : fetch text, parse JSON / JSON Lines / YAML into a
- *                collapsible tree, with the source one toggle away.
- *   - text     : fetch text, highlight with lowlight if the extension
- *                maps to a known hljs language, with numbered lines and a
- *                wrap toggle.
- *   - office   : OnlyOffice DocEditor — fetches config via getOfficeConfig,
- *                then loads the ONLYOFFICE Document Server JS bundle and
- *                initializes DocEditor in an inline placeholder div.
- *
- * The same top bar and stage also stand alone as the "open in new tab" page
- * (`AttachmentPreviewStandalone`), so a file looks the same in both.
- *
- * Media types load directly from the attachment's storage `url` — the same
- * publicly-reachable address the inline thumbnail renders from — so the preview
- * works without the auth/workspace headers a bare media-element load can't
- * send. The `download_url` endpoint stays reserved for the explicit Download
- * button (it re-signs through the API client).
- * Text types go through `/api/attachments/{id}/content` to sidestep
- * CloudFront CORS (not configured) + Content-Disposition: attachment.
+ * Fork: CSV and other office formats open in OnlyOffice (`office` kind).
  */
 
 import {
@@ -238,27 +193,21 @@ interface PreviewState {
   kind: PreviewKind | null;
 }
 
-// Media preview elements (<img>/<iframe>/<video>/<audio>) load their src
-// directly in the browser, carrying no auth or workspace headers. Use the
-// attachment's own storage `url` — the same publicly-reachable address the
-// inline thumbnail already renders from — instead of the access-controlled
-// `/api/attachments/{id}/download` endpoint, which needs the X-Workspace-Slug
-// header the JS API client injects but a bare media-element load cannot send
-// (it 400s on web in proxy mode and fails on the desktop renderer, whose
-// cross-origin requests authenticate with a Bearer token an <img> can't
-// attach). `download_url` stays reserved for the explicit Download button.
-// Fall back to `download_url` only when `url` is missing.
-//
-// `resolvePublicFileUrl` resolves any server-relative form against the
-// configured API base (a no-op for the absolute storage URLs `url` normally
-// holds) so the desktop renderer, loaded from a non-API origin, still points
-// at a reachable address.
 function resolvePreviewMediaUrl(attachment: Attachment): string {
-  const raw = attachment.url || attachment.download_url;
+  const raw =
+    attachment.download_url || attachment.markdown_url || attachment.url;
   return resolvePublicFileUrl(raw) ?? raw;
 }
 
 function normalize(source: PreviewSource): PreviewState {
+  // Resolve any server-relative URL (e.g. `/api/attachments/{id}/download`
+  // returned by the unified-endpoint metadata path when no CloudFront
+  // signer is configured) against the configured API base. Web with the
+  // default empty base keeps the relative path and resolves it against
+  // the page origin — same behaviour as before this PR. Desktop renderer
+  // (loaded from `app://` / file: / dev-server origin) needs the absolute
+  // form so `<img src>` / `<iframe src>` / `<video src>` actually point at
+  // the API server instead of the shell origin.
   if (source.kind === "full") {
     return {
       filename: source.attachment.filename,
