@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronRight, Server } from "lucide-react";
+import { ChevronRight, Server } from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import type {
   AgentRuntime,

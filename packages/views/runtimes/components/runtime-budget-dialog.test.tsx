@@ -138,7 +138,7 @@ describe("RuntimeBudgetDialog", () => {
   it("caps the dialog height and scrolls the rows so the footer stays reachable", () => {
     wrap(<RuntimeBudgetDialog open onOpenChange={vi.fn()} runtimeId="rt-1" budget={budget} members={members} />);
     const content = screen.getByRole("dialog");
-    expect(content.className).toContain("max-h-[85vh]");
+    expect(content.className).toContain("max-h-[85%]");
     const scrollRegion = screen.getByText("Runtime total").closest(".overflow-y-auto");
     expect(scrollRegion).not.toBeNull();
     // The footer sits outside the scrolling region, so it never scrolls away.

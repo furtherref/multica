@@ -11,7 +11,7 @@ import {
   Pencil,
   Save,
   Trash2,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { useTimeAgo } from "../../i18n";
@@ -22,6 +22,7 @@ import { memberListOptions } from "@multica/core/workspace/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
 import { Button, buttonVariants } from "@multica/ui/components/ui/button";
+import { IconButton } from "@multica/ui/components/common/icon-button";
 import {
   Dialog,
   DialogContent,
@@ -34,7 +35,6 @@ import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Textarea } from "@multica/ui/components/ui/textarea";
-import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
 import { ReadonlyContent } from "../../editor";
 import { AppLink, useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
@@ -241,29 +241,21 @@ export function IssueTemplateDetailPage({ templateId }: { templateId: string }) 
                 <Label className="text-caption text-muted-foreground">
                   {t(($) => $.fields.issue_content)}
                 </Label>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={() => setEditingContent(!editingContent)}
-                        className="text-muted-foreground"
-                      >
-                        {editingContent ? (
-                          <Eye className="h-3.5 w-3.5" />
-                        ) : (
-                          <Pencil className="h-3.5 w-3.5" />
-                        )}
-                      </Button>
-                    }
-                  />
-                  <TooltipContent>
-                    {editingContent
-                      ? t(($) => $.detail.content_preview)
-                      : t(($) => $.detail.content_edit)}
-                  </TooltipContent>
-                </Tooltip>
+                <IconButton
+                  variant="ghost"
+                  size="icon-sm"
+                  label={editingContent
+                    ? t(($) => $.detail.content_preview)
+                    : t(($) => $.detail.content_edit)}
+                  onClick={() => setEditingContent(!editingContent)}
+                  className="text-muted-foreground"
+                >
+                  {editingContent ? (
+                    <Eye className="h-3.5 w-3.5" />
+                  ) : (
+                    <Pencil className="h-3.5 w-3.5" />
+                  )}
+                </IconButton>
               </div>
               {editingContent ? (
                 <Textarea

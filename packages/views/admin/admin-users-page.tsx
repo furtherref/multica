@@ -8,7 +8,7 @@ import {
   RotateCcw,
   Search,
   Users,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";

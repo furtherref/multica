@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronRight, FileText, Pencil } from "lucide-react";
+import { ChevronRight, FileText, Pencil } from "@multica/ui/icons";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { IssueTemplateSummary, MemberWithUser } from "@multica/core/types";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";

@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
-import { Loader2 } from "lucide-react";
+import { Loader2 } from "@multica/ui/icons";
 import { useT } from "../i18n";
 import { UnsupportedFallback } from "./attachment-preview-fallback";
 import { loadDocsApi, type DocsApiEditor } from "./utils/docs-api-loader";

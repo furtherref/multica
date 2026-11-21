@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { AlertCircle, FileText, Loader2, Plus, X } from "lucide-react";
+import { AlertCircle, FileText, Loader2, Plus, X } from "@multica/ui/icons";
 import { toast } from "sonner";
 import type { IssueTemplate } from "@multica/core/types";
 import { useCreateIssueTemplate } from "@multica/core/issue-templates";
@@ -53,7 +53,7 @@ export function CreateIssueTemplateDialog({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="flex max-h-[82vh] flex-col overflow-hidden p-0 sm:max-w-2xl">
+      <DialogContent className="flex max-h-[82%] flex-col overflow-hidden p-0 sm:max-w-2xl">
         <div className="flex h-12 shrink-0 items-center justify-between border-b px-5">
           <div>
             <DialogTitle className="text-body font-semibold">

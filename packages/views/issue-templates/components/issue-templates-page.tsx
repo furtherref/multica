@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { AlertCircle, FileText, Plus, Search } from "lucide-react";
+import { AlertCircle, FileText, Plus, Search } from "@multica/ui/icons";
 import type { MemberWithUser } from "@multica/core/types";
 import { useQuery } from "@tanstack/react-query";
 import { getCoreRowModel, useReactTable } from "@tanstack/react-table";

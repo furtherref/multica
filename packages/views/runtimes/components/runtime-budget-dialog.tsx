@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Server, X } from "lucide-react";
+import { Plus, Server, X } from "@multica/ui/icons";
 import type {
   MemberWithUser,
   RuntimeBudgetPeriodKey,
@@ -145,7 +145,7 @@ export function RuntimeBudgetDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
+      <DialogContent className="flex max-h-[85%] flex-col sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t(($) => $.budget.dialog.title)}</DialogTitle>
           <DialogDescription>{t(($) => $.budget.dialog.description)}</DialogDescription>
