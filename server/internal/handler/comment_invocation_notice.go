@@ -15,7 +15,9 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-func (h *Handler) noteCommentInvocationDenied(ctx context.Context, issue db.Issue, comment db.Comment, outcomes []CommentTriggerOutcome) {
+// submitted is the comment text as the author wrote it, before the fork's
+// write-time mention canonicalization; empty means comment.Content.
+func (h *Handler) noteCommentInvocationDenied(ctx context.Context, issue db.Issue, comment db.Comment, submitted string, outcomes []CommentTriggerOutcome) {
 	var denied []CommentTriggerOutcome
 	for _, outcome := range outcomes {
 		// invocation_not_allowed hides private/foreign targets;
@@ -33,9 +35,13 @@ func (h *Handler) noteCommentInvocationDenied(ctx context.Context, issue db.Issu
 		return
 	}
 	// Labels come only from the submitted text. Resolving a denied target's
-	// name or runtime here would reveal information the caller cannot access.
+	// name or runtime here would reveal information the caller cannot access,
+	// and the saved comment already carries canonicalized names.
+	if submitted == "" {
+		submitted = comment.Content
+	}
 	labels := make(map[string]string)
-	for _, match := range util.MentionRe.FindAllStringSubmatch(comment.Content, -1) {
+	for _, match := range util.MentionRe.FindAllStringSubmatch(submitted, -1) {
 		key := match[2] + ":" + match[3]
 		if _, exists := labels[key]; !exists {
 			labels[key] = match[1]

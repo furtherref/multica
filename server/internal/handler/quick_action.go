@@ -911,7 +911,7 @@ func (h *Handler) RunQuickAction(w http.ResponseWriter, r *http.Request) {
 		"issue_revision":      created.IssueRevision,
 	})
 
-	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, nil, actorType, actorID, originatorUserID, nil, commentSteerRequest{})
+	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, "", nil, actorType, actorID, originatorUserID, nil, commentSteerRequest{})
 
 	// Usage telemetry is best-effort and deliberately outside the run's
 	// success path: a failed counter must never cost the user the run.

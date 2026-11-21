@@ -1837,6 +1837,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// says "[@A](mention://agent/<B-uuid>)" — the UI renders @A but the
 	// routing layer triggers B, so the wrong agent picks up the task while
 	// humans see the right name.
+	submittedContent := req.Content
 	req.Content = mentionpkg.CanonicalizeMentions(r.Context(), h.Queries, issue.WorkspaceID, req.Content)
 
 	// NOTE: Comment content is stored as Markdown source. XSS is handled at the
@@ -1970,7 +1971,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// The comment is already saved; a blocked mention must not fail the whole
 	// request. Surface the per-target outcomes so the client can show partial
 	// success instead of a silent no-op (MUL-4525 §2).
-	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs, steer)
+	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, submittedContent, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs, steer)
 	if !steer.empty() {
 		applyCommentSupplements(&resp, h.listCommentSupplements(r.Context(), issue.WorkspaceID, []pgtype.UUID{comment.ID})[uuidToString(comment.ID)])
 	}
@@ -2017,7 +2018,10 @@ func isNoteComment(content string) bool {
 //
 // steer names the running turns the author chose: a recipient whose chosen
 // turn is still running receives this comment there instead of a follow-up run.
-func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs []pgtype.UUID, steer commentSteerRequest) []CommentTriggerOutcome {
+//
+// submitted is the text the author wrote, before mention canonicalization;
+// empty means comment.Content.
+func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, submitted string, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs []pgtype.UUID, steer commentSteerRequest) []CommentTriggerOutcome {
 	if isNoteComment(comment.Content) {
 		return nil
 	}
@@ -2034,7 +2038,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		enqueued[agentID] = result
 	}
 	outcomes := commentTriggerOutcomes(targets, enqueued)
-	h.noteCommentInvocationDenied(ctx, issue, comment, outcomes)
+	h.noteCommentInvocationDenied(ctx, issue, comment, submitted, outcomes)
 	return outcomes
 }
 
@@ -3732,6 +3736,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	submittedContent := req.Content
 	req.Content = mentionpkg.CanonicalizeMentions(r.Context(), h.Queries, wsUUID, req.Content)
 
 	updateParams := db.UpdateCommentParams{
@@ -3898,7 +3903,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		}
 
 		h.retriggerCancelledTaskSurvivors(r.Context(), issue, cancelled, existing.ID)
-		return h.triggerTasksForComment(r.Context(), issue, comment, parentComment, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), suppressAgentIDs, commentSteerRequest{})
+		return h.triggerTasksForComment(r.Context(), issue, comment, submittedContent, parentComment, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), suppressAgentIDs, commentSteerRequest{})
 	}
 
 	// Fetch reactions and attachments for the updated comment.

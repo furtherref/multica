@@ -109,5 +109,5 @@ func TestTriggerTasksForComment_NoteShortCircuits(t *testing.T) {
 	}
 
 	// Must not panic — the guard short-circuits before any DB access.
-	h.triggerTasksForComment(context.Background(), issue, comment, nil, "member", memberID, memberID, nil, commentSteerRequest{})
+	h.triggerTasksForComment(context.Background(), issue, comment, "", nil, "member", memberID, memberID, nil, commentSteerRequest{})
 }
