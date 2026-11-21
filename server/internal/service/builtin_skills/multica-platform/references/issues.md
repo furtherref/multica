@@ -286,9 +286,8 @@ replacement, preserve the lifecycle meaning (`done` to `done`, `closed` to
 Archival does not move issues automatically. Historical issues on previously
 archived statuses remain readable via an explicit status filter.
 
-- **`backlog`** parks an agent-assigned issue: the assignee is set but no task
-  fires. Moving `backlog → todo` (or any status that is not `done`, `cancelled`
-  or `archive`) enqueues the assigned agent then.
+- **`backlog`** parks an agent-assigned issue: no task fires until it moves to
+  a status other than `done`, `cancelled` or `archive`, which enqueues the agent.
 - **`in_progress` / `in_review`** are agent-managed CLI mutations, not automatic
   side effects of a task starting or finishing. The runtime brief asks agents to
   write the state the issue is in whenever their work changes it — not from
@@ -316,8 +315,7 @@ archived statuses remain readable via an explicit status filter.
 - **`done`** on a child issue can wake its parent's assignee (see Stages in `references/sub-issues.md`).
 - **`cancelled`** is a terminal, user-driven decision to close the issue. Like
   `done` it enqueues no new agent work, and — unlike `archive` — it does **not**
-  stop tasks already in flight: a run in progress keeps going. To stop a running
-  task, cancel the task itself.
+  stop in-flight tasks; to stop a running one, cancel the task itself.
   A cancelled issue may also be marked as a **duplicate** of another issue.
   When you cancel an issue because the work already exists elsewhere, mark it
   with `multica issue status <id> cancelled --duplicate-of <original>` rather
@@ -331,11 +329,9 @@ archived statuses remain readable via an explicit status filter.
   when it is really separate work. Marking logs `duplicate_marked` on the
   duplicate and `duplicate_added` on the original; removing the mark logs
   `duplicate_unmarked` / `duplicate_removed` (`multica issue timeline --action`).
-- **`archive`** (a built-in issue status in the closed lifecycle; unrelated to
-  archiving a custom status definition above) retires the issue: moving into it
-  cancels in-flight tasks, and nothing — comments, @mentions, rerun, or merged
-  PRs — starts a new run until the issue is restored to an active status.
-  Restoring sweeps any leftover tasks and does not itself enqueue.
+- **`archive`** (a built-in closed status, not the status-definition archival
+  above) retires the issue: entering it cancels in-flight tasks, nothing starts
+  a run until it is restored, and restoring sweeps leftovers without enqueuing.
 - **Failed issue-triggered tasks** may roll an issue from `in_progress` back to
   `todo` when no active task / retry remains — that is the main server-owned
   status write on the agent-run path.

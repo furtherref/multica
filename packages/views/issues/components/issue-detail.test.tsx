@@ -741,15 +741,10 @@ import {
 
 const READING_COLUMN_SELECTOR = READING_COLUMN.split(" ").map((cls) => `.${CSS.escape(cls)}`).join("");
 
-function createTestQueryClient() {
+function createTestQueryClient(queryOverrides: { staleTime?: number } = {}) {
   return new QueryClient({
     defaultOptions: {
-      queries: {
-        retry: false,
-        gcTime: 0,
-        staleTime: Infinity,
-        refetchOnWindowFocus: false,
-      },
+      queries: { retry: false, gcTime: 0, ...queryOverrides },
       mutations: { retry: false },
     },
   });
@@ -791,9 +786,11 @@ function renderIssueDetailWithStatusCatalog(
 function renderIssueDetailWithHighlight(
   highlightCommentId: string,
   issueId = "issue-1",
-  options: { seedTimeline?: boolean; seedTimelineData?: TimelineEntry[] } = {},
+  options: { seedTimeline?: boolean; seedTimelineData?: TimelineEntry[]; staleTime?: number } = {},
 ) {
-  const queryClient = createTestQueryClient();
+  const queryClient = createTestQueryClient(
+    options.staleTime === undefined ? {} : { staleTime: options.staleTime },
+  );
   if (options.seedTimeline) {
     // Pre-populate the timeline cache so the first render sees timeline.length>0.
     // This reproduces the inbox-click race: timeline data is available before
@@ -3313,6 +3310,8 @@ describe("IssueDetail (shared)", () => {
       renderIssueDetailWithHighlight("comment-2", "issue-1", {
         seedTimeline: true,
         seedTimelineData: [mockTimeline[0]!],
+        // The app's defaults: a seeded cache stays fresh until invalidated.
+        staleTime: Infinity,
       });
 
       expect(screen.queryByText("I can help with this")).not.toBeInTheDocument();

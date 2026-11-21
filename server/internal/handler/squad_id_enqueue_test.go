@@ -211,6 +211,18 @@ func TestCreateComment_LeaderAgentMentionOnAssignedSquadIssueIsLeaderTask(t *tes
 			if !isLeader || squadID != fx.SquadID {
 				t.Fatalf("leader mention task: is_leader_task=%v squad_id=%q, want true / %q", isLeader, squadID, fx.SquadID)
 			}
+			if author == "worker" {
+				// Fork cross-squad gate: a squad worker's @mention of an agent
+				// outside the issue's squad is dropped, not enqueued.
+				var n int
+				if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, fx.OtherID).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				if n != 0 {
+					t.Fatalf("worker's cross-squad mention enqueued %d task(s), want none", n)
+				}
+				return
+			}
 			if _, squadID, isLeader := load(fx.OtherID); isLeader || squadID != "" {
 				t.Fatalf("non-leader mention task: is_leader_task=%v squad_id=%q, want false / empty", isLeader, squadID)
 			}

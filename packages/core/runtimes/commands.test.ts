@@ -24,8 +24,8 @@ describe("daemonCommands", () => {
       throw new Error("expected confirmed Cloud commands");
     }
     expect(result.setupCmd).toBe("multica setup");
-    expect(result.tokenCmd).toContain("server_url https://api.multica.ai");
-    expect(result.tokenCmd).toContain("app_url https://multica.ai");
+    expect(result.tokenCmd).toContain("server_url https://multica.furtherref.com");
+    expect(result.tokenCmd).toContain("app_url https://multica.furtherref.com");
   });
 
   it("returns self-host commands with the configured URLs", () => {

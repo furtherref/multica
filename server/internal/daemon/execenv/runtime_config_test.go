@@ -2402,8 +2402,10 @@ func TestBriefSkillsListIsNamesOnly(t *testing.T) {
 			}
 			section, _, _ = strings.Cut(section, "## Mentions\n\n")
 			const want = "You have the following skills installed (discovered automatically):\n\n- **pr-review**\n\n"
-			if section != want {
-				t.Errorf("native-discovery Skills section changed:\ngot  %q\nwant %q", section, want)
+			// Fork: the Skills protocol ("Discovery is not application")
+			// precedes the names-only list.
+			if !strings.HasSuffix(section, want) || !strings.HasPrefix(section, "**Discovery is not application.**") {
+				t.Errorf("native-discovery Skills section changed:\ngot  %q\nwant the fork protocol, then %q", section, want)
 			}
 		})
 	}

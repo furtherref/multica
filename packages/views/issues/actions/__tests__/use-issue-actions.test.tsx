@@ -191,7 +191,7 @@ describe("useIssueActions", () => {
       result.current.updateField({ status: "cancelled" });
     });
 
-    expect(mockUpdateMutate).not.toHaveBeenCalled();
+    expect(mockUpdateMutateAsync).not.toHaveBeenCalled();
     expect(mockOpenModal).toHaveBeenCalledWith("issue-status-confirm", {
       status: "cancelled",
       count: 1,
@@ -205,7 +205,7 @@ describe("useIssueActions", () => {
       payload.onConfirm();
     });
 
-    expect(mockUpdateMutate).toHaveBeenCalledWith(
+    expect(mockUpdateMutateAsync).toHaveBeenCalledWith(
       { id: "issue-1", status: "cancelled" },
       expect.any(Object),
     );
@@ -218,7 +218,7 @@ describe("useIssueActions", () => {
       result.current.updateField({ status: "archive" });
     });
 
-    expect(mockUpdateMutate).not.toHaveBeenCalled();
+    expect(mockUpdateMutateAsync).not.toHaveBeenCalled();
     expect(mockOpenModal).toHaveBeenCalledWith("issue-status-confirm", {
       status: "archive",
       count: 1,

@@ -229,7 +229,8 @@ describe("SkillDetailPage header", () => {
     const menu = await openMoreActions();
     expect(
       within(menu).getAllByRole("menuitem").map((item) => item.textContent),
-    ).toEqual(["Copy link", "Version history", "Update from source", "Delete skill"]);
+    // Fork: zip export (#68) sits after version history.
+    ).toEqual(["Copy link", "Version history", "Download as .zip", "Update from source", "Delete skill"]);
   });
 
   it("copies the skill's shareable link", async () => {
@@ -253,7 +254,7 @@ describe("SkillDetailPage header", () => {
     const menu = await openMoreActions();
     expect(
       within(menu).getAllByRole("menuitem").map((item) => item.textContent),
-    ).toEqual(["Copy link", "Version history"]);
+    ).toEqual(["Copy link", "Version history", "Download as .zip"]);
   });
 });
 

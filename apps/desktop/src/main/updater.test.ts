@@ -57,6 +57,8 @@ vi.mock("electron", () => ({
       handlers.push(handler);
       ctx.appHandlers.set(event, handlers);
     }),
+    // The fork's macOS fallback install clears its timer on will-quit.
+    once: vi.fn(),
     quit: ctx.appQuit,
   },
   BrowserWindow: class BrowserWindow {},

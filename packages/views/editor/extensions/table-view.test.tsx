@@ -46,6 +46,14 @@ vi.mock("../../projects/components/project-mention-card", () => ({
   ProjectMentionCard: () => <span />,
 }));
 
+// Fork: entity mentions resolve their name by UUID (mention-name.test.tsx);
+// here the label stands in for the resolved name.
+vi.mock("../mention-name", () => ({
+  EntityMentionName: ({ fallbackLabel }: { fallbackLabel: string }) => (
+    <>@{fallbackLabel.replace(/^@/, "")}</>
+  ),
+}));
+
 vi.mock("../link-hover-card", () => ({
   useLinkHover: () => ({}),
   LinkHoverCard: () => null,

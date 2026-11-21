@@ -561,17 +561,17 @@ describe("PAGINATED_CATEGORIES — archive stays out of the default fetch", () =
     expect(PAGINATED_CATEGORIES).toEqual(["unstarted", "started", "done", "closed"]);
   });
 
-  it("requests exactly those categories and never archive", async () => {
+  it("fetches the first page in one request that never filters to archive", async () => {
     const listIssues = vi
       .fn<(params?: ListIssuesParams) => Promise<ListIssuesResponse>>()
       .mockResolvedValue({ issues: [], total: 0 });
     installFakeApi(listIssues);
 
-    await qc.fetchQuery(issueListOptions(WS_ID));
+    const data = await qc.fetchQuery(issueListOptions(WS_ID));
 
-    const requested = listIssues.mock.calls.map(([p]) => p?.status_category);
-    expect(requested).toEqual([...PAGINATED_CATEGORIES]);
-    expect(requested).not.toContain("archive");
+    expect(listIssues).toHaveBeenCalledTimes(1);
+    expect(listIssues.mock.calls[0]?.[0]?.status_category).toBeUndefined();
+    expect(Object.keys(data.byStatus)).toEqual([...PAGINATED_CATEGORIES]);
   });
 });
 

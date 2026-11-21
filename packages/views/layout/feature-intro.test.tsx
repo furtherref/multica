@@ -40,7 +40,7 @@ describe("FeatureIntro", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Work as a team" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New squad" })).toBeInTheDocument();
     const docs = screen.getByRole("link", { name: "Read the docs" });
-    expect(docs).toHaveAttribute("href", "https://multica.ai/docs/squads");
+    expect(docs).toHaveAttribute("href", "https://multica.furtherref.com/docs/squads");
     expect(docs).toHaveAttribute("target", "_blank");
   });
 
@@ -48,7 +48,7 @@ describe("FeatureIntro", () => {
     renderIntro("zh-Hans");
     expect(screen.getByRole("link", { name: "阅读文档" })).toHaveAttribute(
       "href",
-      "https://multica.ai/docs/zh/squads",
+      "https://multica.furtherref.com/docs/zh/squads",
     );
   });
 

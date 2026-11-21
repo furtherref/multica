@@ -71,7 +71,11 @@ type outsideProjectParam struct {
 // it cannot name a private project's object. A route declaring only these is
 // not probed.
 var routeParamsOutsideProjects = map[string]outsideProjectParam{
-	"workspaces/{id}":                {why: "the workspace itself"},
+	"workspaces/{id}": {why: "the workspace itself"},
+	// Fork routes.
+	"users/{id}":                     {why: "a user account, managed by system administrators (#91)"},
+	"issue-templates/{id}":           {why: "a workspace issue template ; it has no project"},
+	"office/{id}":                    {why: "a signed OnlyOffice fetch URL; only office-config mints its token, after the attachment's visibility check"},
 	"members/{memberId}":             {why: "a workspace membership"},
 	"invitations/{id}":               {why: "the caller's own workspace invitation"},
 	"invitations/{invitationId}":     {why: "a workspace invitation"},
@@ -490,6 +494,13 @@ func TestEveryRouteByProjectObjectIDHidesPrivateProjects(t *testing.T) {
 	t.Setenv("LOCAL_UPLOAD_BASE_URL", "")
 	shared.uploadDir = t.TempDir()
 	t.Setenv("LOCAL_UPLOAD_DIR", shared.uploadDir)
+	// Fork: enable OnlyOffice so office-config reaches its attachment
+	// visibility check instead of answering "not enabled" to everyone.
+	t.Setenv("ONLYOFFICE_ENABLED", "true")
+	t.Setenv("ONLYOFFICE_DOCUMENT_SERVER_PUBLIC_URL", "https://office.example.test")
+	t.Setenv("ONLYOFFICE_JWT_SECRET", "route-probe-jwt-secret")
+	t.Setenv("ONLYOFFICE_FETCH_SECRET", "route-probe-fetch-secret")
+	t.Setenv("ONLYOFFICE_FETCH_BASE_URL", "https://api.example.test")
 	router, _ := NewRouterWithOptions(testPool, realtime.NewHub(), events.New(), analytics.NoopClient{}, nil, RouterOptions{})
 	call := func(token, method, path, body string) routeAnswer {
 		var req *http.Request

@@ -162,9 +162,9 @@ describe("AttachmentCard — office preview gating", () => {
         onDownload={() => {}}
       />,
     );
-    expect(screen.queryByTitle("Preview")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
     // Download stays available so the file is still reachable.
-    expect(screen.getByTitle("Download")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Download" })).toBeTruthy();
   });
 
   it("shows the Eye for an office file when OnlyOffice preview is enabled", () => {
@@ -179,7 +179,7 @@ describe("AttachmentCard — office preview gating", () => {
         onDownload={() => {}}
       />,
     );
-    expect(screen.getByTitle("Preview")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Preview" })).toBeTruthy();
   });
 
   it("still hides the Eye for an office file without an attachmentId, even when enabled", () => {
@@ -193,7 +193,7 @@ describe("AttachmentCard — office preview gating", () => {
         onDownload={() => {}}
       />,
     );
-    expect(screen.queryByTitle("Preview")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
   });
 
   it("does not gate non-office kinds: a pdf Eye shows regardless of the office flag", () => {
@@ -207,7 +207,7 @@ describe("AttachmentCard — office preview gating", () => {
         onDownload={() => {}}
       />,
     );
-    expect(screen.getByTitle("Preview")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Preview" })).toBeTruthy();
   });
 });
 

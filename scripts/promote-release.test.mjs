@@ -124,11 +124,12 @@ test("promotion is serialized across tags and both upload paths use the gate", (
   assert.doesNotMatch(gate.concurrency.group, /\$\{\{/);
   assert.ok(gate.steps.some((s) => s.uses?.startsWith("actions/checkout@") && s.with.ref === "main"));
   assert.equal(gate["continue-on-error"], undefined);
+  // Fork: promote-release.yml only runs on multica-ai/multica, so the fork's
+  // release has no promote job and GoReleaser publishes it as Latest itself;
+  // make_latest: false here would leave every fork release un-promoted.
   const release = parse(readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8"));
-  assert.ok(release.jobs.promote.needs.includes("desktop"));
-  assert.ok(release.jobs.promote.needs.includes("verify"));
-  assert.equal(release.jobs.promote.uses, "./.github/workflows/promote-release.yml");
+  assert.equal(release.jobs.promote, undefined);
   const goreleaser = parse(readFileSync(new URL("../.goreleaser.yml", import.meta.url), "utf8"));
-  assert.equal(goreleaser.release.make_latest, false);
+  assert.notEqual(goreleaser.release.make_latest, false);
   assert.notEqual(goreleaser.release.draft, true);
 });

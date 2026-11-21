@@ -292,11 +292,8 @@ describe("UsageSection — Viewing timezone wiring", () => {
       expect(flows.at(-1)).toHaveAttribute("aria-label", "1K");
       expect(screen.getByText("Cost · 1D")).toBeInTheDocument();
 
-      // Weekly has no 1d: switching dimension drops the option and resets
-      // the period to that dimension's default.
-      fireEvent.click(screen.getByRole("button", { name: "Weekly" }));
-      expect(screen.queryByRole("button", { name: "1d" })).toBeNull();
-      expect(screen.getByText("Cost · 90D")).toBeInTheDocument();
+      // 1d allows only the daily grain, so no Daily/Weekly toggle is shown.
+      expect(screen.queryByRole("button", { name: "Weekly" })).toBeNull();
     } finally {
       usageOverride.rows = null;
     }

@@ -172,7 +172,7 @@ describe("HelpLauncher", () => {
   it("links to the GitHub repo and retires the star prompt on click", () => {
     render(<HelpLauncher />);
     const link = screen.getByRole("link", { name: /Star on GitHub/ });
-    expect(link).toHaveAttribute("href", "https://github.com/multica-ai/multica");
+    expect(link).toHaveAttribute("href", "https://github.com/furtherref/multica");
     fireEvent.click(link);
     expect(markStarPromptStarred).toHaveBeenCalledTimes(1);
   });

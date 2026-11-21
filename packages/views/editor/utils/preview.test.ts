@@ -190,6 +190,8 @@ describe("generated text preview whitelist", () => {
 
   it("accepts every generated extension", () => {
     for (const extension of TEXT_PREVIEW_EXTENSIONS) {
+      // Fork: .csv opens in OnlyOffice, not the text-backed table preview.
+      if (extension === "csv") continue;
       expectTextBacked("application/octet-stream", `source.${extension}`);
     }
   });
@@ -223,7 +225,7 @@ describe("text preview whitelist removals", () => {
     ["markdown", "markdown"],
     ["html", "html"],
     ["htm", "html"],
-    ["csv", "table"],
+    // Fork: csv routes to office before the whitelist is consulted.
     ["tsv", "table"],
     ["json", "structured"],
     ["jsonl", "structured"],
@@ -261,7 +263,8 @@ describe("text preview whitelist removals", () => {
   });
 
   it.each([
-    "text/markdown", "text/html", "text/csv", "text/tab-separated-values",
+    // Fork: text/csv routes to office before the whitelist is consulted.
+    "text/markdown", "text/html", "text/tab-separated-values",
     "text/yaml", "text/x-yaml", "text/plain",
   ])("hides extension-less %s previews when the text/ prefix is removed", (contentType) => {
     const remaining = new Set(TEXT_PREVIEW_CONTENT_TYPE_PREFIXES);

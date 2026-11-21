@@ -191,7 +191,7 @@ describe("What's new from the Help menu", () => {
     expect(release("0.2.0")).not.toHaveTextContent("New");
     expect(screen.getByRole("link", { name: /v0.2.0 release notes/ })).toHaveAttribute(
       "href",
-      "https://multica.ai/changelog#release-0-2-0",
+      "https://multica.furtherref.com/changelog#release-0-2-0",
     );
   });
 

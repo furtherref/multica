@@ -396,7 +396,8 @@ describe("TranscriptButton hosted terminal dialog", () => {
     const onOpenTranscript = vi.fn();
     renderWithClient(
       <TranscriptButton
-        task={completedTask}
+        // The fork fetches through the shared cache, which needs a UUID task.
+        task={{ ...completedTask, id: TASK_UUID }}
         agentName="Demo agent"
         onOpenTranscript={onOpenTranscript}
       />,

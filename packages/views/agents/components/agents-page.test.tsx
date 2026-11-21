@@ -364,7 +364,7 @@ describe("AgentsPage listReady gate", () => {
     expect(within(intro).getByRole("button", { name: "New agent" })).toBeInTheDocument();
     expect(within(intro).getByRole("link", { name: /Read the docs/ })).toHaveAttribute(
       "href",
-      "https://multica.ai/docs/agents",
+      "https://multica.furtherref.com/docs/agents",
     );
     const steps = within(intro).getByRole("list", { name: "Setup steps" });
     expect(within(steps).getByRole("link", { name: "Connect" })).toHaveAttribute(
