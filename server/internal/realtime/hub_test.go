@@ -236,6 +236,7 @@ func TestHub_ClientRegistrationJoinsOnlyVisibleAgentScopes(t *testing.T) {
 	go hub.Run()
 
 	mc := &mockMembershipChecker{}
+	hub.SetMembershipChecker(mc)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		HandleWebSocket(hub, mc, nil, nil, nil, w, r)

@@ -223,8 +223,10 @@ func TestRegisterListeners_ExtensionProjectEventReachesOnlyItsAudience(t *testin
 	if fb := publish(filed, ppPublic); len(fb.workspaceCalls) != 1 {
 		t.Fatalf("public project: workspace broadcasts = %d, want 1", len(fb.workspaceCalls))
 	}
-	if fb := publish("test_extension:unregistered", ppPrivate); len(fb.workspaceCalls) != 1 {
-		t.Fatalf("unregistered event: workspace broadcasts = %d, want 1", len(fb.workspaceCalls))
+	// Fork containment (#95): an event type nothing classified is dropped,
+	// never widened to the workspace.
+	if fb := publish("test_extension:unregistered", ppPrivate); len(fb.workspaceCalls) != 0 {
+		t.Fatalf("unregistered event: workspace broadcasts = %d, want 0", len(fb.workspaceCalls))
 	}
 }
 
@@ -246,10 +248,18 @@ func TestRegisterListeners_PrivateTaskLifecycleKeepsWorkspaceFanout(t *testing.T
 		bus := events.New()
 		fb := &fakeBroadcaster{}
 		registerListeners(bus, fb, newPrivateProjectAudience(fakeAudienceQuerier{}))
-		bus.Publish(events.Event{Type: eventType, WorkspaceID: ppWorkspace, TaskID: ppSecretTask,
+		bus.Publish(events.Event{Type: eventType, WorkspaceID: ppWorkspace, TaskID: ppSecretTask, AgentID: "agent",
 			Payload: map[string]any{"task_id": ppSecretTask, "issue_id": ppSecretIssue, "agent_id": "agent", "status": "x"}})
-		if len(fb.workspaceCalls) != 1 || len(privateAudienceScopes(fb)) != 0 {
-			t.Errorf("%s: workspace=%d scoped=%v; lifecycle events must reach every member", eventType, len(fb.workspaceCalls), privateAudienceScopes(fb))
+		// Fork containment (#95): lifecycle reaches every member who can see
+		// the Agent (its workspace-agent room), not only the project audience.
+		agentRoom := 0
+		for _, c := range fb.scopeCalls {
+			if c.scopeType == realtime.ScopeWorkspaceAgent && c.scopeID == realtime.WorkspaceAgentScopeID(ppWorkspace, "agent") {
+				agentRoom++
+			}
+		}
+		if agentRoom != 1 || len(privateAudienceScopes(fb)) != 0 {
+			t.Errorf("%s: agent room=%d scoped=%v; lifecycle events must reach every member who can see the Agent", eventType, agentRoom, privateAudienceScopes(fb))
 		}
 	}
 	// Run content stays with the project audience.

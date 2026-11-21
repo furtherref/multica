@@ -178,7 +178,9 @@ func TestRegisterListeners_TaskContentUsesTaskScope(t *testing.T) {
 	}
 }
 
-func TestRegisterListeners_ChatTaskContentUsesCreatorLegacyScope(t *testing.T) {
+// A chat task's transcript goes only to the creator's connections bound to the
+// session's workspace (joined at connect, so every client version gets it).
+func TestRegisterListeners_ChatTaskContentGoesToCreatorMemberScope(t *testing.T) {
 	bus := events.New()
 	fb := &fakeBroadcaster{}
 	registerListeners(bus, fb)
@@ -193,12 +195,15 @@ func TestRegisterListeners_ChatTaskContentUsesCreatorLegacyScope(t *testing.T) {
 		Payload:         map[string]any{"task_id": "task-1", "content": "private"},
 	})
 
-	if len(fb.scopeCalls) != 2 {
-		t.Fatalf("scope calls = %+v, want task scope plus legacy creator scope", fb.scopeCalls)
+	if len(fb.scopeCalls) != 1 {
+		t.Fatalf("scope calls = %+v, want the creator's member scope only", fb.scopeCalls)
 	}
-	wantLegacyID := realtime.UserAgentScopeID("creator-1", "agent-1")
-	if got := fb.scopeCalls[1]; got.scopeType != realtime.ScopeLegacyUserAgent || got.scopeID != wantLegacyID {
-		t.Fatalf("legacy chat task scope = %s:%s, want %s:%s", got.scopeType, got.scopeID, realtime.ScopeLegacyUserAgent, wantLegacyID)
+	wantID := realtime.WorkspaceMemberScopeID("ws-1", "creator-1")
+	if got := fb.scopeCalls[0]; got.scopeType != realtime.ScopeWorkspaceMember || got.scopeID != wantID {
+		t.Fatalf("chat task scope = %s:%s, want %s:%s", got.scopeType, got.scopeID, realtime.ScopeWorkspaceMember, wantID)
+	}
+	if len(fb.workspaceCalls) != 0 || len(fb.userCalls) != 0 {
+		t.Fatalf("chat transcript escaped the creator: workspaces=%+v users=%+v", fb.workspaceCalls, fb.userCalls)
 	}
 }
 
@@ -232,14 +237,14 @@ func TestRegisterListeners_ChatContentUsesTrustedRecipient(t *testing.T) {
 	})
 
 	if len(fb.scopeCalls) != 1 {
-		t.Fatalf("chat visibility-scope calls = %+v, want one", fb.scopeCalls)
+		t.Fatalf("chat scope calls = %+v, want one", fb.scopeCalls)
 	}
-	wantID := realtime.UserAgentScopeID("creator-1", "agent-1")
-	if got := fb.scopeCalls[0]; got.scopeType != realtime.ScopeUserAgent || got.scopeID != wantID {
-		t.Fatalf("chat scope = %s:%s, want %s:%s", got.scopeType, got.scopeID, realtime.ScopeUserAgent, wantID)
+	wantID := realtime.WorkspaceMemberScopeID("ws-1", "creator-1")
+	if got := fb.scopeCalls[0]; got.scopeType != realtime.ScopeWorkspaceMember || got.scopeID != wantID {
+		t.Fatalf("chat scope = %s:%s, want %s:%s", got.scopeType, got.scopeID, realtime.ScopeWorkspaceMember, wantID)
 	}
 	if len(fb.workspaceCalls) != 0 || len(fb.userCalls) != 0 {
-		t.Fatalf("chat content escaped creator-Agent routing: workspaces=%+v users=%+v", fb.workspaceCalls, fb.userCalls)
+		t.Fatalf("chat content escaped the creator: workspaces=%+v users=%+v", fb.workspaceCalls, fb.userCalls)
 	}
 }
 
@@ -287,7 +292,7 @@ func TestRegisterListeners_TaskLifecycleUsesVisibilityScope(t *testing.T) {
 		}
 	})
 
-	t.Run("direct chat task uses creator-agent scope", func(t *testing.T) {
+	t.Run("direct chat task stays with its creator", func(t *testing.T) {
 		bus := events.New()
 		fb := &fakeBroadcaster{}
 		registerListeners(bus, fb)
@@ -305,12 +310,12 @@ func TestRegisterListeners_TaskLifecycleUsesVisibilityScope(t *testing.T) {
 		if len(fb.scopeCalls) != 1 {
 			t.Fatalf("scope calls = %d, want 1", len(fb.scopeCalls))
 		}
-		wantID := realtime.UserAgentScopeID("creator-1", "agent-1")
-		if got := fb.scopeCalls[0]; got.scopeType != realtime.ScopeUserAgent || got.scopeID != wantID {
-			t.Fatalf("chat lifecycle scope = %s:%s, want %s:%s", got.scopeType, got.scopeID, realtime.ScopeUserAgent, wantID)
+		wantID := realtime.WorkspaceMemberScopeID("ws-1", "creator-1")
+		if got := fb.scopeCalls[0]; got.scopeType != realtime.ScopeWorkspaceMember || got.scopeID != wantID {
+			t.Fatalf("chat lifecycle scope = %s:%s, want %s:%s", got.scopeType, got.scopeID, realtime.ScopeWorkspaceMember, wantID)
 		}
 		if len(fb.workspaceCalls) != 0 || len(fb.userCalls) != 0 {
-			t.Fatalf("chat lifecycle escaped user-agent routing: workspaces=%+v users=%+v", fb.workspaceCalls, fb.userCalls)
+			t.Fatalf("chat lifecycle escaped the creator: workspaces=%+v users=%+v", fb.workspaceCalls, fb.userCalls)
 		}
 	})
 }
@@ -340,7 +345,6 @@ func TestRegisterListeners_VisibilityChangesInvalidateWorkspaceAuthorization(t *
 		{name: "Agent archived", event: events.Event{Type: protocol.EventAgentArchived, WorkspaceID: "ws-1"}},
 		{name: "Agent restored", event: events.Event{Type: protocol.EventAgentRestored, WorkspaceID: "ws-1"}},
 		{name: "member role updated", event: events.Event{Type: protocol.EventMemberUpdated, WorkspaceID: "ws-1"}},
-		{name: "member removed", event: events.Event{Type: protocol.EventMemberRemoved, WorkspaceID: "ws-1"}},
 		{name: "Agent permission updated", event: events.Event{Type: protocol.EventAgentStatus, WorkspaceID: "ws-1", AuthorizationChanged: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -359,6 +363,20 @@ func TestRegisterListeners_VisibilityChangesInvalidateWorkspaceAuthorization(t *
 				t.Fatalf("authorization invalidation was not published: %+v", fb.scopeCalls)
 			}
 		})
+	}
+}
+
+// The hub's DisconnectMember closes only the removed member's sockets; the
+// rest of the workspace stays connected to receive member:removed.
+func TestRegisterListeners_MemberRemovedDoesNotInvalidateWorkspace(t *testing.T) {
+	bus := events.New()
+	fb := &fakeBroadcaster{}
+	registerListeners(bus, fb)
+	bus.Publish(events.Event{Type: protocol.EventMemberRemoved, WorkspaceID: "ws-1"})
+	for _, call := range fb.scopeCalls {
+		if call.scopeType == realtime.ScopeWorkspaceAuthorization {
+			t.Fatalf("member removal invalidated the whole workspace: %+v", fb.scopeCalls)
+		}
 	}
 }
 

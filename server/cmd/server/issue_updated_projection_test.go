@@ -197,8 +197,10 @@ func TestProjectOutbound_TaskDispatchDropsPersistedContext(t *testing.T) {
 	if !ok {
 		t.Fatal("task:dispatch projection did not return a map")
 	}
+	// Routing ids only, as upstream's dispatch contract (agent_id included).
 	want := map[string]any{
 		"task_id":         "task-1",
+		"agent_id":        "agent-1",
 		"issue_id":        "issue-1",
 		"runtime_id":      "runtime-1",
 		"chat_session_id": "chat-1",

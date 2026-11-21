@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/extension"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -78,6 +79,18 @@ var workspaceRealtimeEvents = map[string]bool{
 	protocol.EventDingTalkAccountBindingUpdated: true,
 	protocol.EventWecomInstallationCreated:      true, protocol.EventWecomInstallationRevoked: true,
 	protocol.EventTelegramInstallationCreated: true, protocol.EventTelegramInstallationRevoked: true,
+	protocol.EventWeixinInstallationCreated: true, protocol.EventWeixinInstallationRevoked: true,
+	protocol.EventDocCreated: true, protocol.EventDocUpdated: true, protocol.EventDocDeleted: true,
+	protocol.EventDocCommentChanged: true,
+	protocol.EventDocFolderCreated:  true, protocol.EventDocFolderUpdated: true, protocol.EventDocFolderDeleted: true,
+	protocol.EventEnvironmentChanged:    true,
+	protocol.EventIssueViewChanged:      true,
+	protocol.EventIssueWorkflowChanged:  true,
+	protocol.EventProjectMembersChanged: true,
+	// ee/projectfolder's workspace-level events, as literals: an oss build
+	// links no ee package. Its project-scoped "filed" event is registered
+	// with extension.RegisterProjectEvent instead.
+	"project_folder:created": true, "project_folder:updated": true, "project_folder:deleted": true,
 }
 
 // publicRealtimePayloadKeys is the external contract registry for task and
@@ -86,7 +99,7 @@ var workspaceRealtimeEvents = map[string]bool{
 // newly-added producer field private until the external contract is reviewed.
 var publicRealtimePayloadKeys = map[string][]string{
 	protocol.EventTaskQueued:                {"task_id", "issue_id", "status", "chat_session_id"},
-	protocol.EventTaskDispatch:              {"task_id", "issue_id", "runtime_id", "chat_session_id"},
+	protocol.EventTaskDispatch:              {"task_id", "agent_id", "issue_id", "runtime_id", "chat_session_id"},
 	protocol.EventTaskRunning:               {"task_id", "issue_id", "status", "chat_session_id"},
 	protocol.EventTaskWaitingLocalDirectory: {"task_id", "issue_id", "status", "chat_session_id", "wait_reason"},
 	protocol.EventTaskProgress:              {"task_id", "summary", "step", "total"},
@@ -245,11 +258,14 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster, audience ...priv
 		}
 		b.BroadcastToScope(realtime.ScopeWorkspaceAuthorization, e.WorkspaceID, realtime.AuthorizationChangedFrame())
 	}
+	// member:removed is not here: the hub's DisconnectMember already closes
+	// the removed member's connections, and another member's removal changes
+	// no one else's Agent visibility, so the rest keep their sockets and
+	// receive the member:removed broadcast.
 	for _, eventType := range []string{
 		protocol.EventAgentArchived,
 		protocol.EventAgentRestored,
 		protocol.EventMemberUpdated,
-		protocol.EventMemberRemoved,
 	} {
 		bus.Subscribe(eventType, invalidateWorkspaceAuthorization)
 	}
@@ -467,6 +483,28 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster, audience ...priv
 			return
 		}
 
+		// A chat session is creator-private: its events and its tasks'
+		// transcript go only to the creator's connections bound to the
+		// session's workspace, so removal from the workspace stops them even
+		// while the creator stays connected elsewhere. The scope is joined at
+		// connect time. Without a known owner and workspace the event is
+		// dropped, never widened.
+		if isChatPrivateEvent(e) {
+			owner := e.ChatSessionOwnerID
+			if owner == "" {
+				owner = e.RecipientUserID
+			}
+			if owner == "" || e.WorkspaceID == "" {
+				realtime.M.MessagesDroppedTotal.Add(1)
+				slog.Warn("realtime: dropping chat event without session owner",
+					"event_type", e.Type, "chat_session_id", e.ChatSessionID, "task_id", e.TaskID)
+				return
+			}
+			realtime.M.RecordEvent(e.Type)
+			b.BroadcastToScope(realtime.ScopeWorkspaceMember, realtime.WorkspaceMemberScopeID(e.WorkspaceID, owner), data)
+			return
+		}
+
 		if e.MemberPrivateUserID != "" || memberPrivateEvents[e.Type] {
 			if e.MemberPrivateUserID == "" || e.WorkspaceID == "" {
 				slog.Warn("realtime: dropping member-private event without recipient", "event_type", e.Type)
@@ -524,13 +562,19 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster, audience ...priv
 				return
 			}
 			if e.ChatSessionID != "" {
-				if e.RecipientUserID == "" {
+				// Fork containment (#95): a chat task's lifecycle stays with the
+				// session's creator, bound to this workspace like its content.
+				owner := e.ChatSessionOwnerID
+				if owner == "" {
+					owner = e.RecipientUserID
+				}
+				if owner == "" || e.WorkspaceID == "" {
 					realtime.M.MessagesDroppedTotal.Add(1)
 					slog.Warn("dropping creator-owned task lifecycle event without trusted recipient", "event_type", e.Type)
 					return
 				}
 				realtime.M.RecordEvent(e.Type)
-				b.BroadcastToScope(realtime.ScopeUserAgent, realtime.UserAgentScopeID(e.RecipientUserID, e.AgentID), data)
+				b.BroadcastToScope(realtime.ScopeWorkspaceMember, realtime.WorkspaceMemberScopeID(e.WorkspaceID, owner), data)
 				return
 			}
 			if e.WorkspaceID == "" {
@@ -543,24 +587,10 @@ func registerListeners(bus *events.Bus, b realtime.Broadcaster, audience ...priv
 			return
 		}
 
-		if strings.HasPrefix(e.Type, "chat:") {
-			if e.RecipientUserID == "" {
-				e.RecipientUserID = e.ChatSessionOwnerID
-			}
-			if e.RecipientUserID == "" || e.AgentID == "" {
-				realtime.M.MessagesDroppedTotal.Add(1)
-				slog.Warn("dropping creator-owned chat event without trusted authorization metadata", "event_type", e.Type)
-				return
-			}
-			realtime.M.RecordEvent(e.Type)
-			b.BroadcastToScope(realtime.ScopeUserAgent, realtime.UserAgentScopeID(e.RecipientUserID, e.AgentID), data)
-			return
-		}
-
 		// Every recognized task event has returned through an authorized scope.
 		// Unknown task contracts are dropped by projectOutbound above.
 
-		if e.WorkspaceID != "" && workspaceRealtimeEvents[e.Type] {
+		if e.WorkspaceID != "" && (workspaceRealtimeEvents[e.Type] || extension.IsProjectEvent(e.Type)) {
 			realtime.M.RecordEvent(e.Type)
 			b.BroadcastToWorkspace(e.WorkspaceID, data)
 		} else if strings.HasPrefix(e.Type, "daemon:") {

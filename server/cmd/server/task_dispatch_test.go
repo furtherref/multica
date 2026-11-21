@@ -18,12 +18,21 @@ import (
 func requireWorkspaceDispatchPayload(t *testing.T, fb *fakeBroadcaster, want map[string]string) {
 	t.Helper()
 	found := 0
+	// Fork containment (#95) routes dispatch through the Agent's room (or the
+	// chat creator's member scope), so read scoped deliveries as well.
+	var msgs [][]byte
 	for _, call := range fb.workspaceCalls {
+		msgs = append(msgs, call.msg)
+	}
+	for _, call := range fb.scopeCalls {
+		msgs = append(msgs, call.msg)
+	}
+	for _, msg := range msgs {
 		var frame struct {
 			Type    string         `json:"type"`
 			Payload map[string]any `json:"payload"`
 		}
-		if err := json.Unmarshal(call.msg, &frame); err != nil {
+		if err := json.Unmarshal(msg, &frame); err != nil {
 			t.Fatal(err)
 		}
 		if frame.Type != protocol.EventTaskDispatch {
@@ -39,7 +48,7 @@ func requireWorkspaceDispatchPayload(t *testing.T, fb *fakeBroadcaster, want map
 		}
 	}
 	if found != 1 {
-		t.Fatalf("workspace dispatch events = %d, want 1", found)
+		t.Fatalf("dispatch events = %d, want 1", found)
 	}
 }
 

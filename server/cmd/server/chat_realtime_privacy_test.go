@@ -91,8 +91,7 @@ func TestChatRealtimeIsPrivateToSessionOwner(t *testing.T) {
 		t.Fatalf("load fixture agent: %v", err)
 	}
 
-	hub := realtime.NewHub()
-	go hub.Run()
+	hub := newAuthorizedTestHub(t)
 	bus := events.New()
 	registerListeners(bus, hub)
 	router, h := NewRouterWithOptions(testPool, hub, bus, analytics.NoopClient{}, nil, RouterOptions{})
@@ -176,12 +175,12 @@ func TestChatRealtimeIsPrivateToSessionOwner(t *testing.T) {
 			}
 		}
 	}
-	hasCompleted := false
+	// Fork containment (#95): a chat task's lifecycle stays with its creator
+	// too; bystanders follow the Agent's presence through agent:status.
 	for _, typ := range bystanderTypes {
-		hasCompleted = hasCompleted || typ == protocol.EventTaskCompleted
-	}
-	if !hasCompleted {
-		t.Errorf("bystander lost task:completed, which drives agent presence; got %v", bystanderTypes)
+		if typ == protocol.EventTaskCompleted {
+			t.Errorf("bystander received the chat task's lifecycle; got %v", bystanderTypes)
+		}
 	}
 }
 
