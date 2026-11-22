@@ -40,4 +40,12 @@ describe("macOS release validation before upload", () => {
     for (const platform of ["win32", "linux"]) verifyMacRelease(context("always", platform), execute);
     expect(execute).not.toHaveBeenCalled();
   });
+
+  it("skips validation when the release turns code signing off", () => {
+    const execute = vi.fn();
+    verifyMacRelease(context(), execute, { CSC_IDENTITY_AUTO_DISCOVERY: "false" });
+    expect(execute).not.toHaveBeenCalled();
+    verifyMacRelease(context(), execute, { CSC_IDENTITY_AUTO_DISCOVERY: "true" });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
 });
