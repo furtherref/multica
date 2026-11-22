@@ -131,28 +131,62 @@ func TestRemoveStaleRuntime_PreservesWorkspaceStatePointer(t *testing.T) {
 // handleRuntimeGoneFixture wires up a Daemon against a fake server that
 // answers register/recover-orphans. registerCount is incremented exactly
 // once per /api/daemon/register call so tests can assert on coalescing.
+//
+// recoveries records which runtime IDs the server received a recover-orphans
+// call for. RecoverOrphans hard-fails every in-flight task on the runtime it is
+// handed, so that set is the difference between "recover the deletion" and
+// "kill the workspace".
 type handleRuntimeGoneFixture struct {
-	daemon        *Daemon
-	server        *httptest.Server
-	registerCount *atomic.Int64
+	daemon           *Daemon
+	server           *httptest.Server
+	registerCount    *atomic.Int64
+	recoveredIDs     []string
+	recoveredIDsMu   sync.Mutex
+	registerRuntimes []Runtime
+}
+
+// recordedRecoverOrphans returns a copy of every runtime ID the fake server
+// received a /recover-orphans call for, in order.
+func (fx *handleRuntimeGoneFixture) recordedRecoverOrphans() []string {
+	fx.recoveredIDsMu.Lock()
+	defer fx.recoveredIDsMu.Unlock()
+	out := make([]string, len(fx.recoveredIDs))
+	copy(out, fx.recoveredIDs)
+	return out
 }
 
 func newHandleRuntimeGoneFixture(t *testing.T) *handleRuntimeGoneFixture {
 	t.Helper()
+	return newHandleRuntimeGoneFixtureWith(t, []Runtime{
+		{ID: "rt-new", Name: "Claude", Provider: "claude", Status: "online"},
+	})
+}
+
+// newHandleRuntimeGoneFixtureWith is newHandleRuntimeGoneFixture with a caller-
+// supplied register response, for tests that need several runtimes to tell
+// "recovered the deletion" apart from "recovered the whole workspace".
+func newHandleRuntimeGoneFixtureWith(t *testing.T, runtimes []Runtime) *handleRuntimeGoneFixture {
+	t.Helper()
 
 	var registerCount atomic.Int64
+	fx := &handleRuntimeGoneFixture{
+		registerCount:    &registerCount,
+		registerRuntimes: runtimes,
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/api/daemon/register":
 			registerCount.Add(1)
-			// Each register call returns the same fresh runtime ID so
-			// downstream assertions can observe it.
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(RegisterResponse{
-				Runtimes: []Runtime{{ID: "rt-new", Name: "Claude", Provider: "claude", Status: "online"}},
+				Runtimes: fx.registerRuntimes,
 				Repos:    []RepoData{},
 			})
 		case strings.HasSuffix(r.URL.Path, "/recover-orphans"):
+			parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/daemon/runtimes/"), "/recover-orphans"), "/")
+			fx.recoveredIDsMu.Lock()
+			fx.recoveredIDs = append(fx.recoveredIDs, parts[0])
+			fx.recoveredIDsMu.Unlock()
 			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusOK)
@@ -168,7 +202,68 @@ func newHandleRuntimeGoneFixture(t *testing.T) *handleRuntimeGoneFixture {
 	d.cfg.Agents = map[string]AgentEntry{"claude": {Path: "/usr/bin/true"}}
 	// Replace the agent version probe so the test doesn't shell out.
 	t.Cleanup(stubAgentVersion(t))
-	return &handleRuntimeGoneFixture{daemon: d, server: srv, registerCount: &registerCount}
+	fx.daemon = d
+	fx.server = srv
+	return fx
+}
+
+// TestHandleRuntimeGone_RecoversOnlyTheDeletedRuntime is the regression for the
+// workspace-wide task kill: a runtime the server deleted (here rt-old) took
+// every running task on its *siblings* down with it, because the recovery loop
+// passed the whole re-registered set to RecoverOrphans instead of the one ID
+// that was actually gone.
+func TestHandleRuntimeGone_RecoversOnlyTheDeletedRuntime(t *testing.T) {
+	// Not t.Parallel: stubAgentVersion mutates package-level vars.
+	// Three runtimes come back from the re-register: the deleted one is gone,
+	// the other two are healthy siblings with live in-flight work.
+	fx := newHandleRuntimeGoneFixtureWith(t, []Runtime{
+		{ID: "rt-claude", Name: "Claude", Provider: "claude", Status: "online"},
+		{ID: "rt-codex", Name: "Codex", Provider: "codex", Status: "online"},
+		{ID: "rt-openclaw", Name: "OpenClaw", Provider: "openclaw", Status: "online"},
+	})
+	d := fx.daemon
+	d.workspaces["ws-1"] = &workspaceState{workspaceID: "ws-1", runtimeIDs: []string{"rt-old"}}
+	d.runtimeIndex["rt-old"] = Runtime{ID: "rt-old"}
+	d.wsHBLastAck["rt-old"] = time.Now()
+
+	d.handleRuntimeGone("rt-old")
+
+	got := fx.recordedRecoverOrphans()
+	if len(got) != 1 || got[0] != "rt-old" {
+		t.Fatalf("recover-orphans called for %v, want exactly [rt-old] — recovering the re-registered "+
+			"set hard-fails in-flight tasks on healthy sibling runtimes", got)
+	}
+	// The siblings registered by the recovery must stay tracked and healthy.
+	for _, rt := range fx.registerRuntimes {
+		if _, ok := d.runtimeIndex[rt.ID]; !ok {
+			t.Errorf("runtime %s missing from runtimeIndex after recovery", rt.ID)
+		}
+	}
+}
+
+// TestReregisterWorkspaceAfterRuntimeGone_RecoverAllCoversWholeSet pins the
+// other caller's contract: when the workspace tracks no runtimes at all, every
+// task the old registration owned is orphaned, so the full set must be
+// recovered. Narrowing that path too would leave stale in-flight rows alive.
+func TestReregisterWorkspaceAfterRuntimeGone_RecoverAllCoversWholeSet(t *testing.T) {
+	// Not t.Parallel: stubAgentVersion mutates package-level vars.
+	fx := newHandleRuntimeGoneFixtureWith(t, []Runtime{
+		{ID: "rt-claude", Name: "Claude", Provider: "claude", Status: "online"},
+		{ID: "rt-codex", Name: "Codex", Provider: "codex", Status: "online"},
+	})
+	d := fx.daemon
+	d.workspaces["ws-1"] = &workspaceState{workspaceID: "ws-1", runtimeIDs: nil}
+
+	if err := d.reregisterWorkspaceAfterRuntimeGone(context.Background(), "ws-1", "", true); err != nil {
+		t.Fatalf("reregisterWorkspaceAfterRuntimeGone: %v", err)
+	}
+
+	got := fx.recordedRecoverOrphans()
+	if len(got) != len(fx.registerRuntimes) {
+		t.Fatalf("recover-orphans called for %v, want all %d re-registered runtimes — the "+
+			"workspace-has-no-runtimes retry has no survivors, so every task really is orphaned",
+			got, len(fx.registerRuntimes))
+	}
 }
 
 func TestHandleRuntimeGone_PrunesAndReregisters(t *testing.T) {
