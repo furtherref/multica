@@ -8,6 +8,8 @@ WORKDIR /app
 # Copy workspace config and all package.json files for dependency resolution.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json .npmrc ./
 COPY apps/docs/package.json apps/docs/
+# Root pnpm patchedDependencies is read even without the mobile workspace.
+COPY apps/mobile/patches/ apps/mobile/patches/
 COPY packages/ui/package.json packages/ui/
 COPY packages/tsconfig/package.json packages/tsconfig/
 COPY packages/eslint-config/package.json packages/eslint-config/
